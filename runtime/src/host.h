@@ -91,6 +91,7 @@ void net_init(void);
 void net_shutdown(void);
 void net_poll(JSContext *ctx);                 // deliver finished requests
 void net_register(JSContext *ctx, JSValue native);
+bool host_random_bytes(void *buf, size_t n);
 // Blocking GET used by the module loader. Returns malloc'd body or NULL.
 char *net_get_sync(const char *url, size_t *len, long *status);
 

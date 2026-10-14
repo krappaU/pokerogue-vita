@@ -404,7 +404,20 @@ static JSValue n_show_message(JSContext *ctx, JSValueConst this_val, int argc, J
     return JS_UNDEFINED;
 }
 
+// randomBytes(n) -> ArrayBuffer of cryptographically secure random bytes
+static JSValue n_random_bytes(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    uint32_t n = 0;
+    JS_ToUint32(ctx, &n, argv[0]);
+    if (n > 65536) return JS_ThrowRangeError(ctx, "randomBytes: at most 65536 bytes");
+    uint8_t *buf = malloc(n ? n : 1);
+    bool ok = host_random_bytes(buf, n);
+    JSValue ab = ok ? JS_NewArrayBufferCopy(ctx, buf, n) : JS_ThrowInternalError(ctx, "no random source");
+    free(buf);
+    return ab;
+}
+
 static const JSCFunctionListEntry native_funcs[] = {
+    JS_CFUNC_DEF("randomBytes", 1, n_random_bytes),
     JS_CFUNC_DEF("showMessage", 1, n_show_message),
     JS_CFUNC_DEF("memoryUsage", 0, n_memory_usage),
     JS_CFUNC_DEF("imeOpen", 4, n_ime_open),

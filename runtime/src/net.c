@@ -14,13 +14,16 @@
 #include <sys/stat.h>
 
 #include <curl/curl.h>
+#include <openssl/err.h>
 #include <openssl/pem.h>
+#include <openssl/rand.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
 
 #include "host.h"
 
 #ifdef __vita__
+#include <psp2/kernel/rng.h>
 #include <psp2/net/net.h>
 #include <psp2/net/netctl.h>
 #include <psp2/sysmodule.h>
@@ -37,15 +40,54 @@ static X509_STORE *ca_store;
 static X509_STORE *load_ca_store(const char *data, size_t len) {
     X509_STORE *store = X509_STORE_new();
     BIO *bio = BIO_new_mem_buf(data, (int)len);
-    int n = 0;
-    X509 *cert;
-    while ((cert = PEM_read_bio_X509(bio, NULL, NULL, NULL))) {
-        if (X509_STORE_add_cert(store, cert)) n++;
-        X509_free(cert);
+    int n = 0, bad = 0;
+    for (;;) {
+        X509 *cert = PEM_read_bio_X509(bio, NULL, NULL, NULL);
+        if (cert) {
+            if (X509_STORE_add_cert(store, cert)) n++;
+            X509_free(cert);
+            continue;
+        }
+        unsigned long e = ERR_peek_last_error();
+        if (ERR_GET_LIB(e) == ERR_LIB_PEM && ERR_GET_REASON(e) == PEM_R_NO_START_LINE) break; // end of file
+        // One unreadable certificate must not end the whole bundle: log it and skip to the next.
+        char msg[256];
+        ERR_error_string_n(e, msg, sizeof msg);
+        if (bad++ < 5) host_log("[net] skipping a CA certificate: %s", msg);
+        ERR_clear_error();
+        if (BIO_eof(bio) || bad > 200) break;
     }
+    ERR_clear_error();
     BIO_free(bio);
-    host_log("[net] %d CA certificates loaded", n);
+    host_log("[net] %d CA certificates loaded (%d skipped)", n, bad);
     return store;
+}
+
+#ifdef __vita__
+// OpenSSL finds no OS entropy source on the Vita ("Insufficient randomness" on every TLS
+// connection), so all of its random numbers come from the kernel's hardware RNG instead.
+static int vita_rand_bytes(unsigned char *buf, int num) {
+    while (num > 0) {
+        int n = num > 64 ? 64 : num; // the kernel call returns at most 64 bytes
+        if (sceKernelGetRandomNumber(buf, n) < 0) return 0;
+        buf += n;
+        num -= n;
+    }
+    return 1;
+}
+static int vita_rand_seed(const void *buf, int num) { return 1; }
+static int vita_rand_add(const void *buf, int num, double randomness) { return 1; }
+static int vita_rand_status(void) { return 1; }
+static RAND_METHOD vita_rand = {vita_rand_seed, vita_rand_bytes, NULL, vita_rand_add, vita_rand_bytes, vita_rand_status};
+#endif
+
+// Fills buf with cryptographically secure random bytes (also used for JS crypto.getRandomValues).
+bool host_random_bytes(void *buf, size_t n) {
+#ifdef __vita__
+    return vita_rand_bytes(buf, (int)n);
+#else
+    return RAND_bytes(buf, (int)n) == 1;
+#endif
 }
 
 static CURLcode ssl_ctx_cb(CURL *curl, void *sslctx, void *userptr) {
@@ -101,6 +143,9 @@ void net_init(void) {
     if (rc < 0) host_log("[net] sceNetInit: 0x%08x", rc);
     rc = sceNetCtlInit();
     if (rc < 0) host_log("[net] sceNetCtlInit: 0x%08x", rc);
+#endif
+#ifdef __vita__
+    RAND_set_rand_method(&vita_rand);
 #endif
     curl_global_init(CURL_GLOBAL_DEFAULT);
     multi = curl_multi_init();
@@ -226,7 +271,9 @@ static void encode_url(const char *in, char *out, size_t n) {
 static void apply_common_opts(CURL *e) {
     curl_easy_setopt(e, CURLOPT_USERAGENT, USER_AGENT);
     curl_easy_setopt(e, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(e, CURLOPT_ACCEPT_ENCODING, "");
+    // gzip only: zstd (which Cloudflare prefers) needs megabytes of buffer per download, too much for
+    // the Vita with many parallel requests.
+    curl_easy_setopt(e, CURLOPT_ACCEPT_ENCODING, "gzip, deflate");
     curl_easy_setopt(e, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(e, CURLOPT_CONNECTTIMEOUT, 15L);
     curl_easy_setopt(e, CURLOPT_TIMEOUT, 120L);

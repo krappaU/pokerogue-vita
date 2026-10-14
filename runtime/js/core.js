@@ -389,7 +389,7 @@
 
   // ---------------------------------------------------------------- crypto
   function randomBytes(arr) {
-    for (let i = 0; i < arr.length; i++) arr[i] = (Math.random() * 256) | 0;
+    arr.set(new Uint8Array(N.randomBytes(arr.length)));
     return arr;
   }
   g.crypto = {
