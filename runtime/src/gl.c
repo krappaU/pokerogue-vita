@@ -383,16 +383,67 @@ FN(w_generateMipmap) { glGenerateMipmap(gi(ctx, A(0))); return JS_UNDEFINED; }
 
 // ---------------------------------------------------------------- shaders / programs
 
+// Shader sources and program->shader attachments, kept so a failed link can be reported with the
+// compiler's messages and the full sources saved to <data dir>/shader-fail-*.txt.
+#define MAX_GL_IDS 4096
+static char *shader_src[MAX_GL_IDS];
+static GLuint prog_shaders[MAX_GL_IDS][2];
+static int link_failures;
+
+static void report_link_failure(GLuint prog) {
+    link_failures++;
+    host_log("[gl] program %u failed to link (shader compile error)", prog);
+    for (int i = 0; i < 2; i++) {
+        GLuint sh = prog < MAX_GL_IDS ? prog_shaders[prog][i] : 0;
+        if (!sh) continue;
+        char log[2048] = "";
+        glGetShaderInfoLog(sh, sizeof log, NULL, log);
+        GLint type = 0;
+        glGetShaderiv(sh, GL_SHADER_TYPE, &type);
+        const char *kind = type == GL_VERTEX_SHADER ? "vertex" : "fragment";
+        host_log("[gl]   %s shader %u: %s", kind, sh, log[0] ? log : "(no compiler message)");
+        if (link_failures <= 8 && sh < MAX_GL_IDS && shader_src[sh]) {
+            char path[512];
+            snprintf(path, sizeof path, "%s/shader-fail-%d-%s.txt", g_cfg.data_dir, link_failures, kind);
+            FILE *f = fopen(path, "w");
+            if (f) {
+                fprintf(f, "%s\n\n/* compiler messages:\n%s\n*/\n", shader_src[sh], log);
+                fclose(f);
+                host_log("[gl]   source saved to %s", path);
+            }
+        }
+    }
+}
+
 FN(w_shaderSource) {
     const char *src = JS_ToCString(ctx, A(1));
-    if (src) glShaderSource(oid(A(0)), 1, &src, NULL);
+    GLuint id = oid(A(0));
+    if (src) {
+        glShaderSource(id, 1, &src, NULL);
+        if (id < MAX_GL_IDS) {
+            free(shader_src[id]);
+            shader_src[id] = strdup(src);
+        }
+    }
     JS_FreeCString(ctx, src);
     return JS_UNDEFINED;
 }
 FN(w_compileShader) { glCompileShader(oid(A(0))); return JS_UNDEFINED; }
-FN(w_attachShader) { glAttachShader(oid(A(0)), oid(A(1))); return JS_UNDEFINED; }
+FN(w_attachShader) {
+    GLuint prog = oid(A(0)), sh = oid(A(1));
+    glAttachShader(prog, sh);
+    if (prog < MAX_GL_IDS) prog_shaders[prog][prog_shaders[prog][0] ? 1 : 0] = sh;
+    return JS_UNDEFINED;
+}
 FN(w_detachShader) { glDetachShader(oid(A(0)), oid(A(1))); return JS_UNDEFINED; }
-FN(w_linkProgram) { glLinkProgram(oid(A(0))); return JS_UNDEFINED; }
+FN(w_linkProgram) {
+    GLuint prog = oid(A(0));
+    glLinkProgram(prog);
+    GLint ok = 0;
+    glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+    if (!ok) report_link_failure(prog);
+    return JS_UNDEFINED;
+}
 FN(w_validateProgram) { glValidateProgram(oid(A(0))); return JS_UNDEFINED; }
 FN(w_useProgram) {
     glUseProgram(oid(A(0)));

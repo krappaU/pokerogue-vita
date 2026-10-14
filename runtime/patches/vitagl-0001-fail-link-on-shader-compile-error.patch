@@ -1,0 +1,19 @@
+diff --git a/source/custom_shaders.c b/source/custom_shaders.c
+index e5b3d82..4dc52a4 100644
+--- a/source/custom_shaders.c
++++ b/source/custom_shaders.c
+@@ -2174,6 +2174,14 @@ void glLinkProgram(GLuint progr) {
+ 			}
+ 		}
+ 
++		// Patched (pokerogue-vita): if a shader failed to compile, fail the link instead of
++		// dereferencing a NULL program below. The caller sees GL_LINK_STATUS = GL_FALSE.
++		if (!p->vshader->prog || !p->fshader->prog) {
++			glsl_sema_mode = VGL_MODE_POSTPONED;
++			p->status = PROG_UNLINKED;
++			return;
++		}
++
+ 		// Setting progressive default attribute bindings
+ 		set_default_attrib_binding();
+ 

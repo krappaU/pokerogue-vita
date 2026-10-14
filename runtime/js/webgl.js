@@ -12,6 +12,15 @@
   // Constants are also static properties in browsers (WebGLRenderingContext.TEXTURE_2D).
   for (const k of Object.keys(proto)) if (/^[A-Z0-9_]+$/.test(k)) WebGLRenderingContext[k] = proto[k];
 
+  // vitaGL translates GLSL to Sony's Cg dialect, where some words GLSL allows as identifiers are
+  // reserved (Phaser's main shader names a variable "texture"; Cg then fails to parse it). Rename
+  // those identifiers. Whole words only: texture2D and friends are untouched.
+  const CG_RESERVED = /\b(texture|half|fixed|string|sampler|pass|technique|compile|decl|emit|get|packed|matrix|vector|register|shared|dword|row_major|column_major|interface|template|typedef|union|this|sampler_state|pixelshader|vertexshader|pixelfragment|vertexfragment)\b/g;
+  const nativeShaderSource = proto.shaderSource;
+  proto.shaderSource = function (shader, source) {
+    return nativeShaderSource.call(this, shader, String(source).replace(CG_RESERVED, "pkr_$1"));
+  };
+
   let mainCanvas = null;
   const lose = { loseContext() {}, restoreContext() {} };
   // Extensions Phaser can use when present; none are needed for PokeRogue.

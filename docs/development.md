@@ -56,6 +56,14 @@ vitaGL needs it to compile shaders at runtime.
 - OpenSSL 1.1 creates a pthread rwlock (backed by kernel objects) for every certificate and TLS
   context; the Vita runs out of them after ~90 certificates, reported as "malloc failure". The app
   replaces OpenSSL's lock functions with single-threaded versions (`runtime/src/vita_compat.c`).
+- vitaGL compiles GLSL inside `glLinkProgram` (compile status always reads true) and, unpatched,
+  crashes in `SceGxm` when a shader fails; `runtime/patches/vitagl-0001-*.patch` makes the link fail
+  instead, and the runtime logs the compiler messages and saves the shader sources to the data dir.
+- vitaGL translates GLSL to Cg, where words like `texture`, `half`, `fixed` and `sampler` are
+  reserved. Phaser's main shader has a variable named `texture`; `js/webgl.js` renames such
+  identifiers before handing shaders over.
+- Crash dumps (`ux0:data/psp2core-*.psp2dmp`) decode with vita-parse-core and the unstripped
+  `build-vita/pokerogue-rt` (the tool needs small Python 3 fixes).
 - Don't offer zstd in Accept-Encoding: each stream needs megabytes of buffer.
 - LiveArea images must be 8-bit palette PNGs (`runtime/scripts/make_livearea.py` writes them).
 
