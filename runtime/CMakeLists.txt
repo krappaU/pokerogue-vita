@@ -58,7 +58,7 @@ if(VITA)
   endforeach()
   # Extended memory mode: lets the app use more of the Vita's main RAM.
   set(VITA_MKSFOEX_FLAGS "${VITA_MKSFOEX_FLAGS} -d ATTRIBUTE2=12")
-  vita_create_vpk(pokerogue.vpk "PKRV00001" eboot.bin VERSION "00.13" NAME "PokeRogue" ${VPK_FILES})
+  vita_create_vpk(pokerogue.vpk "PKRV00001" eboot.bin VERSION "00.14" NAME "PokeRogue" ${VPK_FILES})
 else()
   add_executable(pokerogue-rt ${RT_SRC} src/platform_sdl.c)
   target_include_directories(pokerogue-rt PRIVATE src third_party/stb third_party)

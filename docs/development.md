@@ -53,6 +53,9 @@ vitaGL needs it to compile shaders at runtime.
   `X509_STORE` attached through `CURLOPT_SSL_CTX_FUNCTION`.
 - OpenSSL finds no entropy source on the Vita ("Insufficient randomness" on every TLS connection);
   the runtime installs a `RAND_METHOD` backed by `sceKernelGetRandomNumber`. Vita3K hides this.
+- OpenSSL 1.1 creates a pthread rwlock (backed by kernel objects) for every certificate and TLS
+  context; the Vita runs out of them after ~90 certificates, reported as "malloc failure". The app
+  replaces OpenSSL's lock functions with single-threaded versions (`runtime/src/vita_compat.c`).
 - Don't offer zstd in Accept-Encoding: each stream needs megabytes of buffer.
 - LiveArea images must be 8-bit palette PNGs (`runtime/scripts/make_livearea.py` writes them).
 
