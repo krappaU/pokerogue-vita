@@ -17,6 +17,7 @@ typedef struct {
     const char *control;     // optional FIFO path for test commands (see main.c)
     int win_w, win_h;        // window / screen size
     int exit_after_frames;   // 0 = run forever
+    int interrupt_after_s;   // 0 = never interrupt long-running JS (config.txt interrupt=N)
 } host_config;
 
 extern host_config g_cfg;

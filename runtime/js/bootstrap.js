@@ -12,6 +12,14 @@
   }
   const rt = g.__rt, doc = g.document;
 
+  // Debugging aid: <data>/debug.js, if present, runs before the game loads (e.g. to install hooks).
+  // g.__shaderHook(source), if a debug script defines it, can rewrite shader sources.
+  const debugScript = N.readFile("debug.js");
+  if (debugScript) {
+    N.log("[debug] running debug.js from the data folder");
+    try { (0, eval)(debugScript); } catch (e) { N.log("[debug] debug.js failed: " + e + "\n" + (e && e.stack)); }
+  }
+
   // Runtime adjustments to Phaser, applied the moment the game's bundle assigns window.Phaser
   // (before any Phaser.Game exists):
   //  - pre-FX off: Phaser otherwise allocates 99 square render targets plus 3 full-screen ones up
@@ -26,15 +34,6 @@
     PM.boot = function () {
       if (this.game && this.game.config) this.game.config.disablePreFX = true;
       return boot.apply(this, arguments);
-    };
-    // One texture per draw call. Phaser's default shader samples from an array of 16 textures, but
-    // vitaGL binds a sampler array as a single texture unit, so batches mixing textures would draw
-    // with the wrong ones. It also spares the GPU a 16-way branch per pixel.
-    const WR = P.Renderer.WebGL.WebGLRenderer.prototype;
-    const init = WR.init;
-    WR.init = function () {
-      if (this.game && this.game.config) this.game.config.maxTextures = 1;
-      return init.apply(this, arguments);
     };
     N.loadScript("fastpath.js");
     const on = g.localStorage.getItem("PKR_FASTPATH") !== "0";

@@ -67,7 +67,13 @@ vitaGL needs it to compile shaders at runtime.
 - Don't offer zstd in Accept-Encoding: each stream needs megabytes of buffer.
 - LiveArea images must be 8-bit palette PNGs (`runtime/scripts/make_livearea.py` writes them).
 - vitaGL uniform locations are negated pointers and often negative; only -1 means "not found".
-- vitaGL binds a sampler array as one texture unit, so Phaser runs with `maxTextures = 1`.
+- vitaGL compiles a sampler array (`uniform sampler2D s[16]`) as one sampler, so only `s[0]` gets
+  a texture. Phaser's batch shader and PokeRogue's shaders use one; `js/webgl.js` rewrites each
+  array into separate samplers and maps the uniform calls back onto them. (Symptom: every sprite
+  whose texture sat on another unit drew as horizontal streaks.)
+- vitaGL's GLSL header had `lessThan`/`lessThanEqual` swapped (`runtime/patches/vitagl-0003-*`).
+- Shaders that stop using their texture result crash libshacccg ("fatal internal error"); keep a
+  small dependency on it in debug shaders (e.g. `+ color * 0.002`).
 - Memory: the newlib heap and vitaGL's pools are fixed, and Phaser's defaults don't fit. The runtime
   disables Phaser's pre-FX (one full-screen render target per camera), frees canvas pixels once
   they're uploaded to the GPU, and allocates full-screen render targets at half size. The `[mem]`
@@ -83,6 +89,12 @@ vitaGL needs it to compile shaders at runtime.
   its file system), e.g. `evalfile ux0:data/pokerogue/probe_gl.js`. `scripts/probe_*.js` are
   diagnostic probes; comparing a probe's output on the desktop runtime and on Vita3K narrows down
   where they differ.
+- `<data>/debug.js` runs before the game loads; a `__shaderHook(source)` function defined there
+  rewrites every shader, e.g. to output intermediate values as colours. Comparing the same hook on
+  the desktop runtime and on Vita3K narrows down where the two differ.
+- Vita3K's shader translation is not exact: for PokeRogue's field shader it disagrees with the
+  real Vita. Confirm graphics findings on the console.
+- `interrupt=N` in `<data>/config.txt` stops JS that runs N s in one frame and logs its stack.
 - An empty file named `dump-shaders` in the data folder makes vitaGL write each shader as handed
   to the Cg compiler (after GLSL translation) to `<data>/shaders/`
   (`runtime/patches/vitagl-0002-*.patch`).

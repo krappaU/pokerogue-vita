@@ -281,8 +281,9 @@ static void perf_add(double js_ms) {
 }
 
 // Watchdog: the main loop marks which step it is in. A background thread logs when one step takes
-// longer than 5 s, and JS that runs for more than 20 s in one frame is interrupted, which logs a
-// stack trace of where it was stuck.
+// longer than 5 s. With interrupt=N in config.txt, JS that runs for N s in one frame is stopped,
+// which logs a stack trace of where it was (and may break the game: setup can legitimately take a
+// minute on the Vita).
 static const char *volatile loop_phase = "startup";
 static volatile double phase_t0;
 static volatile bool in_frame_js;
@@ -315,8 +316,9 @@ static void *watchdog(void *arg) {
 
 static int js_interrupt(JSRuntime *rt, void *opaque) {
     (void)rt, (void)opaque;
-    if (!in_frame_js || host_now_ms() - phase_t0 < 20000) return 0;
-    host_log("[watchdog] interrupting JS that has run for 20 s in one frame");
+    if (!in_frame_js || !g_cfg.interrupt_after_s || host_now_ms() - phase_t0 < g_cfg.interrupt_after_s * 1000.0)
+        return 0;
+    host_log("[watchdog] interrupting JS that has run for %d s in one frame", g_cfg.interrupt_after_s);
     in_frame_js = false;
     return 1;
 }
@@ -340,6 +342,7 @@ static void save_screenshot(const char *path) {
 // Optional <data dir>/config.txt with key=value lines (overrides defaults; command line wins):
 //   url=http://192.168.1.10:8000/   load the game from another server (testing)
 //   frames=600                      quit after N frames
+//   interrupt=20                    stop JS that runs N s in one frame, logging where (debugging)
 static void load_config_file(void) {
     char path[512];
     snprintf(path, sizeof path, "%s/config.txt", g_cfg.data_dir);
@@ -358,6 +361,8 @@ static void load_config_file(void) {
             g_cfg.base_url = url;
         } else if (!strcmp(k, "frames")) {
             g_cfg.exit_after_frames = atoi(v);
+        } else if (!strcmp(k, "interrupt")) {
+            g_cfg.interrupt_after_s = atoi(v);
         }
     }
     fclose(f);

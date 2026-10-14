@@ -4,7 +4,8 @@
 #   NO_SPLASHSCREEN  no vitaGL boot logo
 #   HAVE_SHARK_LOG   keep the shader compiler's messages (glGetShaderInfoLog)
 #   patches/vitagl-*.patch (fail glLinkProgram instead of crashing when a shader did not compile;
-#   optional dump of translated shader sources for debugging)
+#   optional dump of translated shader sources for debugging; GLSL lessThan/lessThanEqual were
+#   swapped)
 # Output: third_party/vita-vitagl/{include,lib}
 set -euo pipefail
 cd "$(dirname "$0")/.."
