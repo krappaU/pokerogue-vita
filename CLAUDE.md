@@ -11,16 +11,6 @@ Goal: parity with the online mode of Admiral-Billy's PokeRogue App. That means t
 auto-updates, the same rendering, gamepad controls, online saves, and the system keyboard for login.
 Never fork or patch the game itself. Anything the game needs is provided by the runtime.
 
-## The user
-- A backend web developer in a non-JS language who knows a bit of JS, and is new to C, VitaSDK and
-  graphics. Explain Vita and graphics specifics in plain terms.
-- Owns a real PS Vita (firmware 3.65, HENkaku, VitaShell) and runs builds on it, then sends back
-  logs or photos. `libshacccg.suprx` has not been extracted yet; it is needed from Phase 2.
-- Works through the Claude desktop app against a remote Linux server. They cannot download files
-  from the server directly. To hand over a build, publish an Artifact download page (the `downloads`
-  capability allows `.zip` but not `.vpk`, so offer the .vpk as `.zip` and have the upload command
-  name it `.vpk` on the Vita).
-
 ## Where things are
 - `phase0/`: the feasibility benchmark (finished; reference only).
 - `runtime/`: the actual app: C host (`src/`) + browser shim (`js/`). See `runtime/README.md` for
@@ -29,20 +19,23 @@ Never fork or patch the game itself. Anything the game needs is provided by the 
 - `docs/phase1-findings.md`: real-game performance profile and the optimization plan.
 
 ## How to work
-- All toolchains run in Docker (see `docs/development.md`). The host has no gcc or node. `gh` is installed
-  and logged in as the user (krappaU), and pushes to github.com/krappaU/pokerogue-vita.
+- All toolchains run in Docker (see `docs/development.md`); the host only needs Docker, git, curl
+  and python3.
 - Runtime loop: `runtime/scripts/build_linux.sh`, run headless with `run_linux.sh --control
   .cache/control.txt` (in the background), then drive it with `drive.sh` and read the
   `.cache/shots/*.png` screenshots and `.cache/data/log.txt`. `[perf]` lines report JS time per frame.
 - If Docker builds seem to ignore a source change, `touch` the file (a timestamp mismatch was seen once).
-- Loop for Vita builds: build on Linux first for fast iteration → build the .vpk → `phase0/scripts/run_vita3k.sh`
-  as a crash check → the user runs it on the real Vita for timing. **Never treat Vita3K timings as
-  real performance.**
+- Loop for Vita builds: build on Linux first for fast iteration → build the .vpk
+  (`runtime/scripts/build_vita.sh`) → optionally `runtime/scripts/run_vita3k.sh` as a crash check →
+  test on a real Vita for timing. **Never treat Vita3K timings as real performance.**
+- vitaGL needs `libshacccg.suprx`, Sony's shader compiler, which each user installs on their own
+  console. Never commit, bundle or publish it; for emulator tests keep a personal copy in
+  `runtime/.cache/private/` (ignored by git).
 - Any native fast path that replaces Phaser code must be checked against Phaser's own output
   (see `bench.verifyFastpath()` in `phase0/js/bench.js`).
 - Record measured results in the relevant README or `docs/`, with dates and game/Phaser versions.
-- This server also runs unrelated services. Stop heavy containers when done
-  (`docker rm -f pkr-browse`, since headless Chrome with software GL is CPU-heavy).
+- Stop heavy containers when done (`docker rm -f pkr-rt pkr-browse pkr-serve`): headless rendering
+  with software GL is CPU-heavy, and leftover runtimes skew performance measurements.
 
 ## Conventions
 - License: AGPL-3.0-only, the same as PokeRogue. New source files start with an

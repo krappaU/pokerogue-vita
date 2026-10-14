@@ -83,8 +83,9 @@ Docker image and is tested in Vita3K (does it boot?) and on the real Vita (perfo
 4. **Polish:** performance (native container walk, uniform batching, 30 fps cap), memory work,
    offline cache and last-good fallback, LiveArea assets, settings.
 
-## Needed from the Vita side
-- HENkaku/Ensō, VitaShell (for FTP installs)
-- `libshacccg.suprx` extracted (ShaRKF00D), which vitaGL needs to compile shaders. Needed from Phase 2.
-- Firmware: the test Vita is on 3.65 with HENkaku + VitaShell
-- Phase 0 and later builds write logs to `ux0:data/pokerogue/log.txt`; send those back
+## Requirements on the Vita
+- HENkaku or Ensō, with unsafe homebrew enabled; VitaShell to install builds (over FTP or USB)
+- `libshacccg.suprx` in `ur0:data/` (or `ur0:data/external/`), which vitaGL needs to compile shaders.
+  Each user installs their own copy, for example with PIB-Configuration-Tool, ShaRKBR33D or ShaRKF00D.
+- Wi-Fi: the app loads the live game from pokerogue.net
+- Logs go to `ux0:data/pokerogue/log.txt` (the Phase 0 benchmark used `ux0:data/pokerogue-bench/`)
