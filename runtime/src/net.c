@@ -149,6 +149,8 @@ typedef struct req {
 static CURLM *multi;
 static req *reqs;
 static int next_id = 1;
+static int n_done, n_cache_hits;
+static unsigned long long n_bytes;
 static char origin[256];
 
 void net_init(void) {
@@ -488,6 +490,8 @@ static void *ab_realloc(JSRuntime *rt, void *opaque, void *ptr, size_t size) {
 }
 
 static void deliver(JSContext *ctx, req *r, long status, const char *error, const char *final_url) {
+    n_done++;
+    n_bytes += r->body.len;
     if (r->body.len > 1024 * 1024)
         host_log("[net] large response: %s (%lu KB)", r->url, (unsigned long)(r->body.len / 1024));
     // Keep only the last response's headers (redirects produce several blocks).
@@ -531,11 +535,15 @@ static void req_free(JSContext *ctx, req *r) {
 }
 
 void net_poll(JSContext *ctx) {
-    // Cache hits first.
+    // Cache hits first, at most ~8 ms worth per frame: the game handles each response right away
+    // (decoding images among other things), and hundreds at once would freeze the screen.
+    double t0 = host_now_ms();
     for (req *r = reqs, *next; r; r = next) {
         next = r->next;
         if (r->from_cache) {
+            if (host_now_ms() - t0 > 8) break;
             buf_add(&r->resp_headers, "HTTP/1.1 200 OK\r\nx-runtime-cache: hit\r\n\r\n", 41);
+            n_cache_hits++;
             deliver(ctx, r, 200, NULL, NULL);
             req_free(ctx, r);
             next = reqs; // list changed; restart (cheap, few entries)
@@ -561,6 +569,13 @@ void net_poll(JSContext *ctx) {
         deliver(ctx, r, err ? 0 : status, err, fu);
         req_free(ctx, r);
     }
+}
+
+void net_stats(char *out, size_t n) {
+    int pending = 0;
+    for (req *r = reqs; r; r = r->next) pending++;
+    snprintf(out, n, "%d requests done (%d from cache, %.1f MB), %d pending", n_done, n_cache_hits,
+             n_bytes / 1048576.0, pending);
 }
 
 static JSValue n_http_abort(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {

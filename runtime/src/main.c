@@ -13,6 +13,7 @@
 //   quit
 
 #include <errno.h>
+#include <pthread.h>
 #include <malloc.h>
 #include <math.h>
 #include <stdarg.h>
@@ -264,16 +265,60 @@ static int cmp_d(const void *a, const void *b) {
 static void perf_add(double js_ms) {
     if (perf_n == 0) perf_t0 = host_now_ms();
     perf_js[perf_n++] = js_ms;
-    if (perf_n < PERF_WINDOW) return;
+    double secs = (host_now_ms() - perf_t0) / 1000.0;
+    // A window closes after 300 frames or 10 s, so slow stretches (loading) still get reported.
+    if (perf_n < PERF_WINDOW && secs < 10) return;
     double sum = 0;
     for (int i = 0; i < perf_n; i++) sum += perf_js[i];
     qsort(perf_js, perf_n, sizeof *perf_js, cmp_d);
-    double secs = (host_now_ms() - perf_t0) / 1000.0;
-    host_log("[perf] %.1f fps | JS per frame: avg %.2f ms, p50 %.2f, p95 %.2f, max %.2f", perf_n / secs,
-             sum / perf_n, perf_js[perf_n / 2], perf_js[perf_n * 95 / 100], perf_js[perf_n - 1]);
+    char net[160];
+    net_stats(net, sizeof net);
+    host_log("[perf] %.1f fps | JS per frame: avg %.2f ms, p50 %.2f, p95 %.2f, max %.2f | net: %s", perf_n / secs,
+             sum / perf_n, perf_js[perf_n / 2], perf_js[perf_n * 95 / 100], perf_js[perf_n - 1], net);
     static int windows;
     if (windows++ % 4 == 0) mem_breakdown("running");
     perf_n = 0;
+}
+
+// Watchdog: the main loop marks which step it is in. A background thread logs when one step takes
+// longer than 5 s, and JS that runs for more than 20 s in one frame is interrupted, which logs a
+// stack trace of where it was stuck.
+static const char *volatile loop_phase = "startup";
+static volatile double phase_t0;
+static volatile bool in_frame_js;
+
+static void set_phase(const char *name) {
+    loop_phase = name;
+    phase_t0 = host_now_ms();
+}
+
+static void *watchdog(void *arg) {
+    (void)arg;
+    const char *reported = NULL;
+    double reported_t0 = 0;
+    for (;;) {
+#ifdef __vita__
+        sceKernelDelayThread(1000 * 1000);
+#else
+        struct timespec ts = {1, 0};
+        nanosleep(&ts, NULL);
+#endif
+        const char *ph = loop_phase;
+        double t0 = phase_t0, stuck = (host_now_ms() - t0) / 1000.0;
+        if (stuck >= 5 && !(ph == reported && t0 == reported_t0)) {
+            host_log("[watchdog] main loop stuck for %.0f s in: %s", stuck, ph);
+            reported = ph, reported_t0 = t0;
+        }
+    }
+    return NULL;
+}
+
+static int js_interrupt(JSRuntime *rt, void *opaque) {
+    (void)rt, (void)opaque;
+    if (!in_frame_js || host_now_ms() - phase_t0 < 20000) return 0;
+    host_log("[watchdog] interrupting JS that has run for 20 s in one frame");
+    in_frame_js = false;
+    return 1;
 }
 
 static void save_screenshot(const char *path) {
@@ -365,6 +410,17 @@ int main(int argc, char **argv) {
         overlay_present(msg);
     }
 
+    host_js_set_interrupt(js_interrupt);
+    set_phase("loading the game code");
+    {
+        pthread_t wd;
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setstacksize(&attr, 64 * 1024);
+        if (pthread_create(&wd, &attr, watchdog, NULL) == 0) pthread_detach(wd);
+        pthread_attr_destroy(&attr);
+    }
+
     snprintf(path, sizeof path, "%s/bootstrap.js", g_cfg.js_dir);
     if (host_eval_file(ctx, path)) {
         host_log("bootstrap failed");
@@ -394,23 +450,37 @@ int main(int argc, char **argv) {
             host_call_rt(ctx, "onInput", 7, args);
             for (int i = 0; i < 7; i++) JS_FreeValue(ctx, args[i]);
         }
+        set_phase("control channel");
         control_poll(ctx, &quit);
+        set_phase("network");
         net_poll(ctx);
+        set_phase("promise jobs");
+        in_frame_js = true;
         host_run_jobs(ctx);
 
         double t_js = host_now_ms();
         JSValue now = JS_NewFloat64(ctx, t_js);
+        set_phase("game frame (JS)");
+        in_frame_js = true;
         host_call_rt(ctx, "onFrame", 1, &now);
+        set_phase("promise jobs after frame");
+        in_frame_js = true;
         host_run_jobs(ctx);
-        perf_add(host_now_ms() - t_js);
+        in_frame_js = false;
+        double js_ms = host_now_ms() - t_js;
+        if (js_ms > 1000) host_log("[perf] slow frame: %.0f ms of JS", js_ms);
+        perf_add(js_ms);
 
+        set_phase("drawing");
         overlay_draw();
         if (pending_shot[0]) {
             save_screenshot(pending_shot);
             pending_shot[0] = 0;
         }
+        set_phase("swap");
         plat_swap();
         gl_after_frame();
+        set_phase("input");
         frame_no++;
         if (g_cfg.exit_after_frames && frame_no >= g_cfg.exit_after_frames) quit = true;
 

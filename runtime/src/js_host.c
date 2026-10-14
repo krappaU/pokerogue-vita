@@ -435,6 +435,8 @@ static const JSCFunctionListEntry native_funcs[] = {
     JS_CFUNC_DEF("importModule", 1, n_import),
 };
 
+void host_js_set_interrupt(JSInterruptHandler *cb) { JS_SetInterruptHandler(rt, cb, NULL); }
+
 JSContext *host_js_init(void) {
     rt = JS_NewRuntime();
     JS_SetMaxStackSize(rt, 4 * 1024 * 1024);

@@ -90,7 +90,9 @@ void url_resolve(const char *base, const char *url, char *out, size_t n);
 
 void net_init(void);
 void net_shutdown(void);
+void host_js_set_interrupt(JSInterruptHandler *cb);
 void net_poll(JSContext *ctx);                 // deliver finished requests
+void net_stats(char *out, size_t n);           // one-line summary for the log
 void net_register(JSContext *ctx, JSValue native);
 bool host_random_bytes(void *buf, size_t n);
 // Blocking GET used by the module loader. Returns malloc'd body or NULL.
