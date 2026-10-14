@@ -35,6 +35,7 @@
 unsigned int sceUserMainThreadStackSize = 8 * 1024 * 1024;
 // newlib heap for the JS engine and decoded images. vitaGL allocates GPU memory separately.
 int _newlib_heap_size_user = 200 * 1024 * 1024;
+#include <psp2/kernel/sysmem.h>
 #define DEFAULT_JS_DIR "app0:js"
 #define DEFAULT_DATA_DIR "ux0:data/pokerogue"
 #define DEFAULT_CONTROL "ux0:data/pokerogue/control.txt"
@@ -91,6 +92,30 @@ static void mkdirs(const char *path) {
         }
     }
     mkdir(tmp, 0777);
+}
+
+// ---------------------------------------------------------------- memory diagnostics
+
+// Logs free system memory (Vita) and the largest block malloc can hand out right now.
+static void mem_report(const char *stage) {
+    static const int sizes_mb[] = {256, 192, 160, 128, 96, 64, 48, 32, 16, 8, 4, 2, 1};
+    int largest = 0;
+    for (size_t i = 0; i < sizeof sizes_mb / sizeof *sizes_mb; i++) {
+        void *p = malloc((size_t)sizes_mb[i] << 20);
+        if (p) {
+            free(p);
+            largest = sizes_mb[i];
+            break;
+        }
+    }
+#ifdef __vita__
+    SceKernelFreeMemorySizeInfo info = {.size = sizeof info};
+    sceKernelGetFreeMemorySize(&info);
+    host_log("[mem] %s: largest malloc %d MB | system free: main %d MB, video %d MB, contiguous %d MB", stage, largest,
+             info.size_user >> 20, info.size_cdram >> 20, info.size_phycont >> 20);
+#else
+    host_log("[mem] %s: largest malloc %d MB", stage, largest);
+#endif
 }
 
 // ---------------------------------------------------------------- control channel
@@ -300,8 +325,11 @@ int main(int argc, char **argv) {
     log_fp = fopen(path, "w");
     host_log("PokeRogue runtime (QuickJS-ng %s), page %s", JS_GetVersion(), g_cfg.base_url);
 
+    mem_report("start");
     if (!plat_init(g_cfg.win_w, g_cfg.win_h)) return 1;
+    mem_report("after graphics init");
     net_init();
+    mem_report("after network init");
     JSContext *ctx = host_js_init();
     if (!ctx) return 1;
 
