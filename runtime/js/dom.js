@@ -598,6 +598,19 @@
 
   // ---------------------------------------------------------------- FontFace / document.fonts
   const fontFaces = new Set();
+  // The game declares the same font file several times (CSS @font-face plus FontFace objects for
+  // different families and languages). Download each URL once; the native side also shares
+  // identical font data. Entries are dropped shortly after so the bytes don't stay in the JS heap.
+  const fontDownloads = new Map();
+  function fontBytes(url) {
+    let p = fontDownloads.get(url);
+    if (!p) {
+      p = fetchBytes(url);
+      fontDownloads.set(url, p);
+      p.finally(() => g.setTimeout(() => fontDownloads.delete(url), 30000));
+    }
+    return p;
+  }
   // Does a CSS unicode-range ("U+0000-00FF, U+3000-30FF, U+4E??") include "A" (U+0041)?
   function coversLatin(range) {
     for (const part of String(range).split(",")) {
@@ -626,7 +639,7 @@
       this.status = "loading";
       const src = this._source;
       const bytes = typeof src === "string"
-        ? fetchBytes(N.resolveURL(g.location.href, (/url\(\s*["']?([^"')]+)["']?\s*\)/.exec(src) || [, src])[1]))
+        ? fontBytes(N.resolveURL(g.location.href, (/url\(\s*["']?([^"')]+)["']?\s*\)/.exec(src) || [, src])[1]))
         : Promise.resolve(src instanceof ArrayBuffer ? src : src.buffer.slice(src.byteOffset, src.byteOffset + src.byteLength));
       this._promise = bytes.then((ab) => {
         const bold = /bold|[6-9]00/.test(this.weight), italic = this.style === "italic";

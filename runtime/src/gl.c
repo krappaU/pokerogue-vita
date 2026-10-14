@@ -43,7 +43,14 @@ static struct {
     GLfloat clear_color[4];
     GLboolean color_mask[4];
     GLuint fb;
-} st = {.default_fb = true, .virt_w = 300, .virt_h = 150, .color_mask = {1, 1, 1, 1}};
+    float fb_scale; // render-target scale of the bound framebuffer (1 or 0.5)
+} st = {.default_fb = true, .virt_w = 300, .virt_h = 150, .color_mask = {1, 1, 1, 1}, .fb_scale = 1};
+
+// Off-screen render targets the size of the whole game canvas (Phaser's post-FX frames, 1920x1080)
+// are allocated at half size: the screen shows the game at about half that resolution anyway, and
+// each one saves 6 MB of video memory. Drawing into them is scaled to match.
+#define RT_SCALE 0.5f
+static uint8_t tex_scaled[65536], fb_scaled[65536];
 
 // ---------------------------------------------------------------- helpers
 
@@ -82,6 +89,7 @@ static JSValue new_obj(JSContext *ctx, GLuint id, int kind) {
 }
 
 static void obj_finalizer(JSRuntime *rt, JSValue v) { free(JS_GetOpaque(v, obj_class)); }
+static void tex_account(GLuint id, size_t bytes);
 static void uloc_finalizer(JSRuntime *rt, JSValue v) { free(JS_GetOpaque(v, uloc_class)); }
 
 static void track(JSContext *ctx, JSValue *slot, JSValueConst v) {
@@ -270,7 +278,8 @@ FN(w_viewport) {
         st.vp[2] = (GLsizei)lroundf(w * s);
         st.vp[3] = (GLsizei)lroundf(h * s);
     } else {
-        st.vp[0] = x, st.vp[1] = y, st.vp[2] = w, st.vp[3] = h;
+        float k = st.fb_scale;
+        st.vp[0] = (GLint)(x * k), st.vp[1] = (GLint)(y * k), st.vp[2] = (GLsizei)(w * k), st.vp[3] = (GLsizei)(h * k);
     }
     glViewport(st.vp[0], st.vp[1], st.vp[2], st.vp[3]);
     return JS_UNDEFINED;
@@ -284,7 +293,8 @@ FN(w_scissor) {
         fb_map(&s, &ox, &oy);
         glScissor((GLint)floorf(ox + x * s), (GLint)floorf(oy + y * s), (GLsizei)ceilf(w * s), (GLsizei)ceilf(h * s));
     } else {
-        glScissor(x, y, w, h);
+        float k = st.fb_scale;
+        glScissor((GLint)floorf(x * k), (GLint)floorf(y * k), (GLsizei)ceilf(w * k), (GLsizei)ceilf(h * k));
     }
     return JS_UNDEFINED;
 }
@@ -299,8 +309,23 @@ FN(w_createProgram) { return new_obj(ctx, glCreateProgram(), GLO_PROGRAM); }
 FN(w_createShader) { return new_obj(ctx, glCreateShader(gi(ctx, A(0))), GLO_SHADER); }
 
 FN(w_deleteBuffer) { GLuint id = oid(A(0)); if (id) glDeleteBuffers(1, &id); return JS_UNDEFINED; }
-FN(w_deleteTexture) { GLuint id = oid(A(0)); if (id) glDeleteTextures(1, &id); return JS_UNDEFINED; }
-FN(w_deleteFramebuffer) { GLuint id = oid(A(0)); if (id) glDeleteFramebuffers(1, &id); return JS_UNDEFINED; }
+FN(w_deleteTexture) {
+    GLuint id = oid(A(0));
+    if (id) {
+        tex_account(id, 0);
+        if (id < 65536) tex_scaled[id] = 0;
+        glDeleteTextures(1, &id);
+    }
+    return JS_UNDEFINED;
+}
+FN(w_deleteFramebuffer) {
+    GLuint id = oid(A(0));
+    if (id) {
+        if (id < 65536) fb_scaled[id] = 0;
+        glDeleteFramebuffers(1, &id);
+    }
+    return JS_UNDEFINED;
+}
 FN(w_deleteRenderbuffer) { GLuint id = oid(A(0)); if (id) glDeleteRenderbuffers(1, &id); return JS_UNDEFINED; }
 FN(w_deleteProgram) { GLuint id = oid(A(0)); if (id) glDeleteProgram(id); return JS_UNDEFINED; }
 FN(w_deleteShader) { GLuint id = oid(A(0)); if (id) glDeleteShader(id); return JS_UNDEFINED; }
@@ -328,6 +353,7 @@ FN(w_bindFramebuffer) {
     glBindFramebuffer(gi(ctx, A(0)), id);
     st.default_fb = id == 0;
     st.fb = id;
+    st.fb_scale = id && id < 65536 && fb_scaled[id] ? RT_SCALE : 1;
     track(ctx, &st.bound_framebuffer, A(1));
     return JS_UNDEFINED;
 }
@@ -359,7 +385,12 @@ FN(w_bufferSubData) {
 
 FN(w_checkFramebufferStatus) { return JS_NewInt32(ctx, glCheckFramebufferStatus(gi(ctx, A(0)))); }
 FN(w_framebufferTexture2D) {
-    glFramebufferTexture2D(gi(ctx, A(0)), gi(ctx, A(1)), gi(ctx, A(2)), oid(A(3)), gi(ctx, A(4)));
+    GLuint tex = oid(A(3));
+    if (st.fb && st.fb < 65536 && gi(ctx, A(1)) == GL_COLOR_ATTACHMENT0) {
+        fb_scaled[st.fb] = tex < 65536 ? tex_scaled[tex] : 0;
+        st.fb_scale = fb_scaled[st.fb] ? RT_SCALE : 1;
+    }
+    glFramebufferTexture2D(gi(ctx, A(0)), gi(ctx, A(1)), gi(ctx, A(2)), tex, gi(ctx, A(4)));
     return JS_UNDEFINED;
 }
 FN(w_framebufferRenderbuffer) {
@@ -380,6 +411,54 @@ FN(w_renderbufferStorage) {
     return JS_UNDEFINED;
 }
 FN(w_generateMipmap) { glGenerateMipmap(gi(ctx, A(0))); return JS_UNDEFINED; }
+
+// ---------------------------------------------------------------- texture memory accounting
+
+// Bytes of level-0 texture storage per GL texture id (RGBA8 = 4 bytes per pixel).
+static uint32_t tex_bytes[65536];
+static size_t tex_total, tex_peak;
+static int tex_count;
+static GLuint bound_tex_id(void) {
+    return st.active_unit >= 0 && st.active_unit < 32 ? oid(st.bound_texture[st.active_unit]) : 0;
+}
+static void tex_account(GLuint id, size_t bytes) {
+    if (!id || id >= 65536) return;
+    if (getenv("PKR_TEX_LOG") && bytes >= 512 * 1024) host_log("[tex] %u: %lu KB", id, (unsigned long)(bytes / 1024));
+    if (!tex_bytes[id] && bytes) tex_count++;
+    if (tex_bytes[id] && !bytes) tex_count--;
+    tex_total = tex_total - tex_bytes[id] + bytes;
+    tex_bytes[id] = (uint32_t)bytes;
+    if (tex_total > tex_peak) tex_peak = tex_total;
+}
+// textureDump(minKB) -> "id:KB ..." for live textures of at least minKB, largest first (diagnostics)
+static JSValue n_texture_dump(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    int32_t min_kb = 512;
+    if (argc > 0) JS_ToInt32(ctx, &min_kb, argv[0]);
+    static char out[16384];
+    size_t o = 0;
+    int hist[8] = {0}; // <64K, <256K, <1M, <4M, <8M, >=8M
+    double sum[8] = {0};
+    for (uint32_t id = 1; id < 65536; id++) {
+        uint32_t b = tex_bytes[id];
+        if (!b) continue;
+        int k = b < 65536 ? 0 : b < 262144 ? 1 : b < 1048576 ? 2 : b < 4194304 ? 3 : b < 8388608 ? 4 : 5;
+        hist[k]++;
+        sum[k] += b / 1048576.0;
+        if (b >= (uint32_t)min_kb * 1024 && o + 32 < sizeof out) o += snprintf(out + o, sizeof out - o, "%u:%uKB ", id, b / 1024);
+    }
+    char summary[256];
+    snprintf(summary, sizeof summary, "by size (count/MB): <64K %d/%.0f, <256K %d/%.0f, <1M %d/%.0f, <4M %d/%.0f, <8M %d/%.0f, >=8M %d/%.0f | ",
+             hist[0], sum[0], hist[1], sum[1], hist[2], sum[2], hist[3], sum[3], hist[4], sum[4], hist[5], sum[5]);
+    static char all[16640];
+    snprintf(all, sizeof all, "%s%s", summary, out);
+    return JS_NewString(ctx, all);
+}
+
+void gl_texture_memory(size_t *bytes, size_t *peak, int *count) {
+    *bytes = tex_total;
+    *peak = tex_peak;
+    *count = tex_count;
+}
 
 // ---------------------------------------------------------------- shaders / programs
 
@@ -523,7 +602,8 @@ FN(w_getUniformLocation) {
     const char *name = JS_ToCString(ctx, A(1));
     GLint l = name ? glGetUniformLocation(oid(A(0)), name) : -1;
     JS_FreeCString(ctx, name);
-    if (l < 0) return JS_NULL;
+    // Only -1 means "no such uniform": vitaGL's locations are negated pointers, often negative.
+    if (l == -1) return JS_NULL;
     JSValue v = JS_NewObjectClass(ctx, uloc_class);
     uloc *u = malloc(sizeof *u);
     u->loc = l;
@@ -685,6 +765,7 @@ FN(w_texImage2D) {
         const uint8_t *up = unpack(px, w, h, owned, &fr);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
         glTexImage2D(target, level, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, up);
+        if (level == 0) tex_account(bound_tex_id(), (size_t)w * h * 4);
         (void)ifmt, (void)fmt, (void)type;
         if (fr) free((void *)up);
         if (owned && up != px) free((void *)px);
@@ -693,10 +774,18 @@ FN(w_texImage2D) {
     int w = gi(ctx, A(3)), h = gi(ctx, A(4)), fmt = gi(ctx, A(6)), type = gi(ctx, A(7));
     size_t len = 0;
     const uint8_t *px = JS_IsNull(A(8)) || JS_IsUndefined(A(8)) ? NULL : buffer_data(ctx, A(8), &len);
+    GLuint tid = bound_tex_id();
+    if (tid && tid < 65536) tex_scaled[tid] = 0;
+    if (!px && level == 0 && tid && tid < 65536 && w == st.virt_w && h == st.virt_h && w >= 1280) {
+        w = (int)(w * RT_SCALE);
+        h = (int)(h * RT_SCALE);
+        tex_scaled[tid] = 1;
+    }
     bool fr = false;
     const uint8_t *up = px;
     if (px && fmt == GL_RGBA && type == GL_UNSIGNED_BYTE && len >= (size_t)w * h * 4) up = unpack(px, w, h, false, &fr);
     glTexImage2D(target, level, ifmt, w, h, 0, fmt, type, up);
+    if (level == 0) tex_account(bound_tex_id(), (size_t)w * h * 4);
     if (fr) free((void *)up);
     return JS_UNDEFINED;
 }
@@ -906,6 +995,7 @@ void gl_register(JSContext *ctx, JSValue native) {
     st.bound_framebuffer = st.bound_renderbuffer = JS_NULL;
     for (int i = 0; i < 32; i++) st.bound_texture[i] = JS_NULL;
     JS_SetPropertyStr(ctx, native, "createWebGLPrototype", JS_NewCFunction(ctx, n_create_gl_proto, "createWebGLPrototype", 0));
+    JS_SetPropertyStr(ctx, native, "textureDump", JS_NewCFunction(ctx, n_texture_dump, "textureDump", 1));
 }
 
 void gl_after_frame(void) {

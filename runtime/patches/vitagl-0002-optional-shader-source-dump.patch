@@ -1,0 +1,32 @@
+diff --git a/source/custom_shaders.c b/source/custom_shaders.c
+index 4dc52a4..a39ee49 100644
+--- a/source/custom_shaders.c
++++ b/source/custom_shaders.c
+@@ -609,6 +609,8 @@ void unserialize_shader(void *in, size_t sz, shader *s, GLboolean load_bindings)
+ 	}
+ }
+ 
++char vgl_shader_dump_path[256] = {0};
++
+ #ifdef HAVE_SHADER_CACHE
+ #define vgl_compile_shader(shd, sv) compile_shader(shd, sv, fname)
+ static inline __attribute__((always_inline)) void compile_shader(shader *s, GLboolean save_bindings, const char *cache_fname) {
+@@ -616,6 +618,18 @@ static inline __attribute__((always_inline)) void compile_shader(shader *s, GLbo
+ #define vgl_compile_shader(shd, sv) compile_shader(shd, sv)
+ static inline __attribute__((always_inline)) void compile_shader(shader *s, GLboolean save_bindings) {
+ #endif
++	// Patched (pokerogue-vita): debug aid, write the source handed to the Cg compiler (after GLSL
++	// translation) to <vgl_shader_dump_path>/NNN-v.cg or -f.cg when that path is set.
++	if (vgl_shader_dump_path[0]) {
++		static int dump_n = 0;
++		char dump_name[300];
++		snprintf(dump_name, sizeof(dump_name), "%s/%03d-%c.cg", vgl_shader_dump_path, dump_n++, s->type == GL_FRAGMENT_SHADER ? 'f' : 'v');
++		SceUID df = sceIoOpen(dump_name, SCE_O_CREAT | SCE_O_WRONLY | SCE_O_TRUNC, 0777);
++		if (df >= 0) {
++			sceIoWrite(df, s->source, strlen((const char *)s->source));
++			sceIoClose(df);
++		}
++	}
+ 	// Compiling shader source
+ 	s->prog = shark_compile_shader_extended((const char *)s->source, &s->size, s->type == GL_FRAGMENT_SHADER ? SHARK_FRAGMENT_SHADER : SHARK_VERTEX_SHADER, compiler_opts, compiler_fastmath, compiler_fastprecision, compiler_fastint);
+ 	if (s->prog) {

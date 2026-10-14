@@ -52,6 +52,8 @@ static bool file_exists(const char *path) {
     return sceIoGetstat(path, &st) >= 0;
 }
 
+extern char vgl_shader_dump_path[256]; // vitaGL, patches/vitagl-0002
+
 bool plat_init(int w, int h) {
     scePowerSetArmClockFrequency(444);
     scePowerSetBusClockFrequency(222);
@@ -65,6 +67,15 @@ bool plat_init(int w, int h) {
         host_log("libshacccg.suprx not found in ur0:data/ or ur0:data/external/. "
                  "Install it (e.g. with PIB-Configuration-Tool) to compile shaders.");
         return false;
+    }
+    // Debug aid: with a file named "dump-shaders" in the data folder, the shader sources that vitaGL
+    // hands to the Cg compiler (after GLSL translation) are written to <data>/shaders/.
+    char flag[512];
+    snprintf(flag, sizeof flag, "%s/dump-shaders", g_cfg.data_dir);
+    if (file_exists(flag)) {
+        snprintf(vgl_shader_dump_path, sizeof vgl_shader_dump_path, "%s/shaders", g_cfg.data_dir);
+        sceIoMkdir(vgl_shader_dump_path, 0777);
+        host_log("[gl] writing translated shaders to %s", vgl_shader_dump_path);
     }
     // Full float precision: the game samples big texture atlases where half floats misplace pixels.
     vglSetupRuntimeShaderCompiler(SHARK_OPT_FAST, SHARK_ENABLE, SHARK_DISABLE, SHARK_ENABLE);

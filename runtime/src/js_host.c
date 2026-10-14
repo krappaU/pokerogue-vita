@@ -219,6 +219,7 @@ static JSModuleDef *module_load(JSContext *ctx, const char *url, void *opaque) {
     JS_FreeValue(ctx, meta);
     host_log("[module] %s (%lu KB) fetched %.0f ms, compiled %.0f ms", url, (unsigned long)(len / 1024), t1 - t0,
              host_now_ms() - t1);
+    if (len > 256 * 1024) mem_breakdown("after compiling");
     JS_FreeValue(ctx, fn);
     return m;
 }

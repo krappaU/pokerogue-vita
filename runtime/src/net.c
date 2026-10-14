@@ -104,14 +104,31 @@ typedef struct buf {
     size_t len, cap;
 } buf;
 
-static void buf_add(buf *b, const void *p, size_t n) {
+// Appends to a growing buffer. Returns false (buffer unchanged) if memory runs out.
+static bool buf_add(buf *b, const void *p, size_t n) {
     if (b->len + n + 1 > b->cap) {
-        b->cap = (b->len + n + 1) * 2;
-        b->data = realloc(b->data, b->cap);
+        // Grow by 1.5x rather than 2x: big responses are sized up front from Content-Length anyway.
+        size_t cap = b->len + n + 1 + (b->len + n) / 2;
+        char *d = realloc(b->data, cap);
+        if (!d) return false;
+        b->data = d;
+        b->cap = cap;
     }
     memcpy(b->data + b->len, p, n);
     b->len += n;
     b->data[b->len] = 0;
+    return true;
+}
+
+// Size a response buffer exactly once the server announces Content-Length (avoids repeated
+// reallocations of multi-megabyte downloads, e.g. the game's 5 MB font).
+static void buf_reserve(buf *b, size_t total) {
+    if (total + 1 <= b->cap) return;
+    char *d = realloc(b->data, total + 1);
+    if (d) {
+        b->data = d;
+        b->cap = total + 1;
+    }
 }
 
 typedef struct req {
@@ -235,8 +252,23 @@ static void cache_write(const char *url, const char *data, size_t len) {
 // ---------------------------------------------------------------- curl helpers
 
 static size_t on_write(char *p, size_t size, size_t n, void *ud) {
-    buf_add(ud, p, size * n);
+    buf *b = ud;
+    if (!buf_add(b, p, size * n)) {
+        host_log("[net] out of memory while downloading (%lu KB so far)", (unsigned long)(b->len / 1024));
+        return 0; // aborts this transfer with CURLE_WRITE_ERROR
+    }
     return size * n;
+}
+
+// Body writer for async requests: reserves the full size on the first chunk when it's known.
+static size_t on_write_body(char *p, size_t size, size_t n, void *ud) {
+    struct req *r = ud;
+    if (r->body.len == 0) {
+        curl_off_t total = -1;
+        curl_easy_getinfo(r->easy, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &total);
+        if (total > 0) buf_reserve(&r->body, (size_t)total);
+    }
+    return on_write(p, size, n, &r->body);
 }
 
 static struct curl_slist *default_headers(struct curl_slist *h, bool has_origin, bool has_referer) {
@@ -320,7 +352,16 @@ char *net_get_sync(const char *url, size_t *len, long *status) {
     curl_easy_setopt(e, CURLOPT_HTTPHEADER, h);
     curl_easy_setopt(e, CURLOPT_WRITEFUNCTION, on_write);
     curl_easy_setopt(e, CURLOPT_WRITEDATA, &b);
-    CURLcode rc = curl_easy_perform(e);
+    // Retry transient failures (DNS hiccups, dropped Wi-Fi): game code is essential.
+    CURLcode rc = CURLE_OK;
+    for (int attempt = 0; attempt < 3; attempt++) {
+        if (attempt) {
+            host_log("[net] retrying %s", url);
+            b.len = 0;
+        }
+        rc = curl_easy_perform(e);
+        if (rc == CURLE_OK || rc == CURLE_WRITE_ERROR) break;
+    }
     *status = 0;
     if (rc == CURLE_OK) curl_easy_getinfo(e, CURLINFO_RESPONSE_CODE, status);
     else host_log("[net] GET %s failed: %s (%s)", url, curl_easy_strerror(rc), errbuf);
@@ -329,7 +370,7 @@ char *net_get_sync(const char *url, size_t *len, long *status) {
         free(b.data);
         return NULL;
     }
-    if (!b.data) buf_add(&b, "", 0);
+    if (!b.data && !buf_add(&b, "", 0)) return NULL;
     if (*status == 200 && is_cacheable("GET", url)) cache_write(url, b.data, b.len);
     *len = b.len;
     return b.data;
@@ -426,8 +467,8 @@ static JSValue n_http(JSContext *ctx, JSValueConst this_val, int argc, JSValueCo
         }
         JS_FreeCString(ctx, str);
     }
-    curl_easy_setopt(e, CURLOPT_WRITEFUNCTION, on_write);
-    curl_easy_setopt(e, CURLOPT_WRITEDATA, &r->body);
+    curl_easy_setopt(e, CURLOPT_WRITEFUNCTION, on_write_body);
+    curl_easy_setopt(e, CURLOPT_WRITEDATA, r);
     curl_easy_setopt(e, CURLOPT_HEADERFUNCTION, on_write);
     curl_easy_setopt(e, CURLOPT_HEADERDATA, &r->resp_headers);
     curl_easy_setopt(e, CURLOPT_PRIVATE, r);
@@ -447,6 +488,8 @@ static void *ab_realloc(JSRuntime *rt, void *opaque, void *ptr, size_t size) {
 }
 
 static void deliver(JSContext *ctx, req *r, long status, const char *error, const char *final_url) {
+    if (r->body.len > 1024 * 1024)
+        host_log("[net] large response: %s (%lu KB)", r->url, (unsigned long)(r->body.len / 1024));
     // Keep only the last response's headers (redirects produce several blocks).
     const char *hdrs = r->resp_headers.data ? r->resp_headers.data : "";
     const char *last = hdrs, *p = hdrs;

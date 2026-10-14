@@ -12,17 +12,41 @@
   }
   const rt = g.__rt, doc = g.document;
 
-  // Native render fast paths (js/fastpath.js) attach to Phaser once the game has loaded it.
-  // PKR_FASTPATH=0 in localStorage turns them off for A/B measurements.
-  const fpHook = () => {
-    if (!g.Phaser || !g.Phaser.Renderer) return;
-    rt.frameHooks.splice(rt.frameHooks.indexOf(fpHook), 1);
+  // Runtime adjustments to Phaser, applied the moment the game's bundle assigns window.Phaser
+  // (before any Phaser.Game exists):
+  //  - pre-FX off: Phaser otherwise allocates 99 square render targets plus 3 full-screen ones up
+  //    front (~180 MB of GPU memory at 1920x1080) for per-object effects PokeRogue never uses.
+  //  - native render fast paths (js/fastpath.js); PKR_FASTPATH=0 in localStorage turns them off.
+  let phaserValue;
+  function onPhaser(P) {
+    if (!P || !P.Renderer || !P.Renderer.WebGL || rt.phaserPatched) return;
+    rt.phaserPatched = true;
+    const PM = P.Renderer.WebGL.PipelineManager.prototype;
+    const boot = PM.boot;
+    PM.boot = function () {
+      if (this.game && this.game.config) this.game.config.disablePreFX = true;
+      return boot.apply(this, arguments);
+    };
+    // One texture per draw call. Phaser's default shader samples from an array of 16 textures, but
+    // vitaGL binds a sampler array as a single texture unit, so batches mixing textures would draw
+    // with the wrong ones. It also spares the GPU a 16-way branch per pixel.
+    const WR = P.Renderer.WebGL.WebGLRenderer.prototype;
+    const init = WR.init;
+    WR.init = function () {
+      if (this.game && this.game.config) this.game.config.maxTextures = 1;
+      return init.apply(this, arguments);
+    };
     N.loadScript("fastpath.js");
     const on = g.localStorage.getItem("PKR_FASTPATH") !== "0";
     rt.fastpath.set(on);
-    N.log("[fastpath] " + (on ? "enabled" : "disabled"));
-  };
-  rt.frameHooks.push(fpHook);
+    N.log("[phaser] patched: pre-FX disabled, fast path " + (on ? "enabled" : "disabled"));
+  }
+  Object.defineProperty(g, "Phaser", {
+    configurable: true,
+    enumerable: true,
+    get() { return phaserValue; },
+    set(v) { phaserValue = v; onPhaser(v); },
+  });
 
   function fontFacesFromCSS(css) {
     const out = [];

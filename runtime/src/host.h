@@ -25,6 +25,7 @@ extern host_config g_cfg;
 
 void host_log(const char *fmt, ...);
 double host_now_ms(void);
+void mem_breakdown(const char *stage); // logs where main memory goes
 
 // ---------------------------------------------------------------- platform (platform_sdl.c)
 
@@ -99,6 +100,7 @@ char *net_get_sync(const char *url, size_t *len, long *status);
 
 void gl_register(JSContext *ctx, JSValue native);        // gl.c
 void gl_after_frame(void);
+void gl_texture_memory(size_t *bytes, size_t *peak, int *count);
 void canvas_register(JSContext *ctx, JSValue native);    // canvas2d.c
 void fastpath_register(JSContext *ctx, JSValue native);  // fastpath.c
 
@@ -110,6 +112,7 @@ void overlay_disable(void);
 
 // Bytes held by decoded-image objects: compressed files kept, and decoded pixels currently alive.
 void canvas_image_memory(size_t *encoded, size_t *decoded);
+void canvas_memory(size_t *canvas_bytes, int *canvas_count, size_t *font_bytes);
 
 // Pixel source lookup shared by gl.c (texImage2D) and canvas2d.c (drawImage).
 // Returns RGBA8 pixels (straight alpha) of an Image/Canvas/ImageData-like object, or NULL.

@@ -101,8 +101,11 @@ static void mem_report(const char *stage) {
     static const int sizes_mb[] = {256, 192, 160, 128, 96, 64, 48, 32, 16, 8, 4, 2, 1};
     int largest = 0;
     for (size_t i = 0; i < sizeof sizes_mb / sizeof *sizes_mb; i++) {
-        void *p = malloc((size_t)sizes_mb[i] << 20);
+        // volatile + a write: otherwise the compiler removes the unused malloc/free pair and the
+        // "allocation" always succeeds.
+        char *volatile p = malloc((size_t)sizes_mb[i] << 20);
         if (p) {
+            p[0] = 1;
             free(p);
             largest = sizes_mb[i];
             break;
@@ -223,6 +226,30 @@ static void control_poll(JSContext *ctx, bool *quit) {
 
 // ---------------------------------------------------------------- frame stats
 
+static JSContext *g_ctx_for_mem;
+
+// Where main memory goes: the whole heap, and the parts we can attribute.
+void mem_breakdown(const char *stage) {
+    struct mallinfo mi = mallinfo();
+    size_t img_enc, img_dec, canv, fonts;
+    int n_canv;
+    canvas_image_memory(&img_enc, &img_dec);
+    canvas_memory(&canv, &n_canv, &fonts);
+    double js = 0;
+    if (g_ctx_for_mem) {
+        JSMemoryUsage m;
+        JS_ComputeMemoryUsage(JS_GetRuntime(g_ctx_for_mem), &m);
+        js = m.malloc_size / 1048576.0;
+    }
+    size_t tex, tex_peak;
+    int n_tex;
+    gl_texture_memory(&tex, &tex_peak, &n_tex);
+    host_log("[mem] %s: heap in use %.0f MB | JS %.0f MB | canvases %.1f MB (%d) | fonts %.1f MB | images %.1f MB "
+             "files + %.1f MB decoded | GPU textures %.1f MB (%d), peak %.1f MB",
+             stage, (unsigned)mi.uordblks / 1048576.0, js, canv / 1048576.0, n_canv, fonts / 1048576.0,
+             img_enc / 1048576.0, img_dec / 1048576.0, tex / 1048576.0, n_tex, tex_peak / 1048576.0);
+}
+
 #define PERF_WINDOW 300
 static double perf_js[PERF_WINDOW];
 static int perf_n;
@@ -242,13 +269,10 @@ static void perf_add(double js_ms) {
     for (int i = 0; i < perf_n; i++) sum += perf_js[i];
     qsort(perf_js, perf_n, sizeof *perf_js, cmp_d);
     double secs = (host_now_ms() - perf_t0) / 1000.0;
-    struct mallinfo mi = mallinfo();
-    size_t img_enc, img_dec;
-    canvas_image_memory(&img_enc, &img_dec);
-    host_log("[perf] %.1f fps | JS per frame: avg %.2f ms, p50 %.2f, p95 %.2f, max %.2f | heap %.0f MB "
-             "(images: %.0f MB files, %.0f MB decoded)",
-             perf_n / secs, sum / perf_n, perf_js[perf_n / 2], perf_js[perf_n * 95 / 100], perf_js[perf_n - 1],
-             (unsigned)mi.uordblks / 1048576.0, img_enc / 1048576.0, img_dec / 1048576.0);
+    host_log("[perf] %.1f fps | JS per frame: avg %.2f ms, p50 %.2f, p95 %.2f, max %.2f", perf_n / secs,
+             sum / perf_n, perf_js[perf_n / 2], perf_js[perf_n * 95 / 100], perf_js[perf_n - 1]);
+    static int windows;
+    if (windows++ % 4 == 0) mem_breakdown("running");
     perf_n = 0;
 }
 
@@ -332,6 +356,7 @@ int main(int argc, char **argv) {
     mem_report("after network init");
     JSContext *ctx = host_js_init();
     if (!ctx) return 1;
+    g_ctx_for_mem = ctx;
 
     // Something on screen right away: loading and compiling the game's code takes a while on the Vita.
     {

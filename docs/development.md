@@ -66,6 +66,26 @@ vitaGL needs it to compile shaders at runtime.
   `build-vita/pokerogue-rt` (the tool needs small Python 3 fixes).
 - Don't offer zstd in Accept-Encoding: each stream needs megabytes of buffer.
 - LiveArea images must be 8-bit palette PNGs (`runtime/scripts/make_livearea.py` writes them).
+- vitaGL uniform locations are negated pointers and often negative; only -1 means "not found".
+- vitaGL binds a sampler array as one texture unit, so Phaser runs with `maxTextures = 1`.
+- Memory: the newlib heap and vitaGL's pools are fixed, and Phaser's defaults don't fit. The runtime
+  disables Phaser's pre-FX (one full-screen render target per camera), frees canvas pixels once
+  they're uploaded to the GPU, and allocates full-screen render targets at half size. The `[mem]`
+  lines in the log break memory use down; `eval __native.textureDump(100)` lists big textures.
+
+## Debugging on the Vita and in Vita3K
+- `PREFILL_FROM=.cache/data ./scripts/run_vita3k.sh 300` copies the desktop runtime's HTTP cache
+  into the emulator, so the game loads without going through Vita3K's network emulation.
+- Vita3K compiles shaders in the background and skips draws until they're ready, so the first run
+  after a shader change shows a black screen. Run it twice. Its rendering of the game is not
+  reliable either: treat it as a crash and memory check, not a picture of what the Vita shows.
+- Control commands go in `<data>/control.txt` (on Vita3K: `ux0/data/pokerogue/control.txt` under
+  its file system), e.g. `evalfile ux0:data/pokerogue/probe_gl.js`. `scripts/probe_*.js` are
+  diagnostic probes; comparing a probe's output on the desktop runtime and on Vita3K narrows down
+  where they differ.
+- An empty file named `dump-shaders` in the data folder makes vitaGL write each shader as handed
+  to the Cg compiler (after GLSL translation) to `<data>/shaders/`
+  (`runtime/patches/vitagl-0002-*.patch`).
 
 ## Measuring the real game
 See [phase0/measure/README.md](../phase0/measure/README.md): headless Chrome running a local dev

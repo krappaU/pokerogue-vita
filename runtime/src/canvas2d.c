@@ -124,6 +124,7 @@ void canvas_image_memory(size_t *encoded, size_t *decoded) {
     *decoded = mem_decoded;
 }
 
+
 // ---------------------------------------------------------------- fonts
 
 typedef struct {
@@ -135,6 +136,22 @@ typedef struct {
 
 static font_entry fonts[32];
 static int n_fonts;
+
+// The game registers the same font file under several family names (and several times). Faces are
+// shared by content, so each distinct file is held in memory once.
+static struct {
+    uint64_t hash;
+    size_t len;
+    plutovg_font_face_t *face;
+} font_files[16];
+static int n_font_files;
+static size_t mem_fonts;
+
+static uint64_t fnv1a(const uint8_t *p, size_t n) {
+    uint64_t h = 1469598103934665603ULL;
+    for (size_t i = 0; i < n; i++) h = (h ^ p[i]) * 1099511628211ULL;
+    return h;
+}
 
 static void lower(char *s) {
     for (; *s; s++) *s = (char)tolower((unsigned char)*s);
@@ -149,9 +166,24 @@ static JSValue n_register_font(JSContext *ctx, JSValueConst this_val, int argc, 
     uint8_t *p = JS_GetArrayBuffer(ctx, &len, argv[1]);
     bool ok = false;
     if (fam && p && n_fonts < 32) {
-        void *copy = malloc(len);
-        memcpy(copy, p, len);
-        plutovg_font_face_t *face = plutovg_font_face_load_from_data(copy, (unsigned)len, 0, free_font_data, copy);
+        uint64_t h = fnv1a(p, len);
+        plutovg_font_face_t *face = NULL;
+        for (int i = 0; i < n_font_files; i++)
+            if (font_files[i].hash == h && font_files[i].len == len) face = plutovg_font_face_reference(font_files[i].face);
+        if (!face) {
+            void *copy = malloc(len);
+            if (copy) {
+                memcpy(copy, p, len);
+                face = plutovg_font_face_load_from_data(copy, (unsigned)len, 0, free_font_data, copy);
+                if (!face) free(copy);
+            }
+            if (face && n_font_files < 16) {
+                font_files[n_font_files].hash = h;
+                font_files[n_font_files].len = len;
+                font_files[n_font_files++].face = plutovg_font_face_reference(face);
+                mem_fonts += len;
+            }
+        }
         if (face) {
             font_entry *f = &fonts[n_fonts++];
             snprintf(f->family, sizeof f->family, "%s", fam);
@@ -161,8 +193,6 @@ static JSValue n_register_font(JSContext *ctx, JSValueConst this_val, int argc, 
             f->latin = argc <= 4 || JS_ToBool(ctx, argv[4]);
             f->face = face;
             ok = true;
-        } else {
-            free(copy);
         }
     }
     if (!ok) JS_FreeValue(ctx, JS_GetException(ctx));
@@ -198,14 +228,30 @@ typedef struct {
     float fill[4], stroke[4];
     plutovg_font_face_t *face;
     float font_size;
+    // Pixel memory is freed once the canvas has been uploaded to the GPU, unless the canvas is one
+    // the game reads back or draws images into ("keep"). Phaser redraws text canvases from scratch
+    // whenever their text changes, so a released canvas is recreated blank on its next use.
+    bool keep, released;
 } c2d;
 
+static size_t mem_canvas;
+static int n_canvas;
+static bool release_canvases = true;
+static int n_released, n_keep_getimage, n_keep_draw, n_keep_put, n_keep_source, n_uploads;
+
 static void c2d_alloc(c2d *c, int w, int h) {
+    c->released = false;
     if (c->canvas) plutovg_canvas_destroy(c->canvas);
-    if (c->surface) plutovg_surface_destroy(c->surface);
+    if (c->surface) {
+        mem_canvas -= (size_t)c->w * c->h * 4;
+        plutovg_surface_destroy(c->surface);
+    } else if (!c->w) {
+        n_canvas++; // first allocation (not a re-allocation after release)
+    }
     c->w = w > 0 ? w : 1;
     c->h = h > 0 ? h : 1;
     c->surface = plutovg_surface_create(c->w, c->h);
+    mem_canvas += (size_t)c->w * c->h * 4;
     c->canvas = plutovg_canvas_create(c->surface);
     if (c->face) plutovg_canvas_set_font(c->canvas, c->face, c->font_size);
 }
@@ -213,8 +259,10 @@ static void c2d_alloc(c2d *c, int w, int h) {
 static void canvas_finalizer(JSRuntime *rt, JSValue v) {
     c2d *c = JS_GetOpaque(v, canvas_class);
     if (!c) return;
-    plutovg_canvas_destroy(c->canvas);
-    plutovg_surface_destroy(c->surface);
+    if (c->surface) mem_canvas -= (size_t)c->w * c->h * 4;
+    n_canvas--;
+    if (c->canvas) plutovg_canvas_destroy(c->canvas);
+    if (c->surface) plutovg_surface_destroy(c->surface);
     free(c);
 }
 
@@ -228,11 +276,15 @@ static inline double nd(JSContext *ctx, JSValueConst v) {
 #define CFN(name) static JSValue name(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
 #define SELF                                            \
     c2d *c = JS_GetOpaque(this_val, canvas_class);      \
-    if (!c) return JS_ThrowTypeError(ctx, "not a Canvas2D");
+    if (!c) return JS_ThrowTypeError(ctx, "not a Canvas2D"); \
+    if (c->released) c2d_alloc(c, c->w, c->h);
 #define F(i) ((float)nd(ctx, argv[i]))
 
 CFN(c_resize) {
     SELF;
+    // Like browsers, setting width/height wipes the canvas, so earlier read-backs no longer pin its
+    // pixels (Phaser's canvas pool hands measured canvases on to text objects).
+    c->keep = false;
     c2d_alloc(c, (int)nd(ctx, argv[0]), (int)nd(ctx, argv[1]));
     return JS_UNDEFINED;
 }
@@ -370,11 +422,18 @@ CFN(c_measure_text) {
 // drawImage(src: Bitmap | Canvas2D, sx, sy, sw, sh, dx, dy, dw, dh, smoothing)
 CFN(c_draw_image) {
     SELF;
+    if (!c->keep) n_keep_draw++;
+    c->keep = true;
     plutovg_surface_t *src = NULL;
     bitmap *b = JS_GetOpaque(argv[0], bitmap_class);
     c2d *sc = b ? NULL : JS_GetOpaque(argv[0], canvas_class);
     if (b) src = bitmap_surface(b);
-    else if (sc) src = sc->surface;
+    else if (sc) {
+        if (!sc->keep) n_keep_source++;
+        sc->keep = true; // read back as an image source: keep its pixels from now on
+        if (sc->released) c2d_alloc(sc, sc->w, sc->h);
+        src = sc->surface;
+    }
     if (!src) return JS_ThrowTypeError(ctx, "drawImage: unsupported source");
     float sx = F(1), sy = F(2), sw = F(3), sh = F(4), dx = F(5), dy = F(6), dw = F(7), dh = F(8);
     if (sw == 0 || sh == 0) return JS_UNDEFINED;
@@ -390,6 +449,8 @@ CFN(c_draw_image) {
 // getImageData(x, y, w, h) -> ArrayBuffer (RGBA, straight alpha)
 CFN(c_get_image_data) {
     SELF;
+    if (!c->keep) n_keep_getimage++;
+    c->keep = true;
     int x = (int)F(0), y = (int)F(1), w = (int)F(2), h = (int)F(3);
     if (w <= 0 || h <= 0) return JS_NewArrayBufferCopy(ctx, (const uint8_t *)"", 0);
     uint8_t *out = calloc((size_t)w * h, 4);
@@ -411,6 +472,8 @@ CFN(c_get_image_data) {
 // putImageData(ArrayBuffer|TypedArray rgba, w, h, dx, dy)
 CFN(c_put_image_data) {
     SELF;
+    if (!c->keep) n_keep_put++;
+    c->keep = true;
     size_t len = 0;
     uint8_t *p = JS_GetArrayBuffer(ctx, &len, argv[0]);
     if (!p) {
@@ -463,6 +526,20 @@ static const JSCFunctionListEntry canvas_funcs[] = {
 
 static JSValue canvas_proto;
 
+// canvasStats() -> diagnostics about canvas pixel releases
+static JSValue n_canvas_stats(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    char buf[256];
+    snprintf(buf, sizeof buf, "canvases %d, uploads %d, released %d, kept for: getImageData %d, drawImage into %d, putImageData %d, used as source %d",
+             n_canvas, n_uploads, n_released, n_keep_getimage, n_keep_draw, n_keep_put, n_keep_source);
+    return JS_NewString(ctx, buf);
+}
+
+// setCanvasRelease(bool): free canvas pixels after GPU upload (default on)
+static JSValue n_set_canvas_release(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    release_canvases = JS_ToBool(ctx, argv[0]);
+    return JS_UNDEFINED;
+}
+
 static JSValue n_create_canvas(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     c2d *c = calloc(1, sizeof *c);
     c->fill[3] = c->stroke[3] = 1;
@@ -501,8 +578,24 @@ const uint8_t *pixels_from_js(JSContext *ctx, JSValueConst obj, int *w, int *h, 
         *w = c->w;
         *h = c->h;
         uint8_t *out = malloc((size_t)c->w * c->h * 4);
-        plutovg_convert_argb_to_rgba(out, plutovg_surface_get_data(c->surface), c->w, c->h,
-                                     plutovg_surface_get_stride(c->surface));
+        if (!out) return NULL;
+        if (c->released) {
+            memset(out, 0, (size_t)c->w * c->h * 4);
+        } else {
+            plutovg_convert_argb_to_rgba(out, plutovg_surface_get_data(c->surface), c->w, c->h,
+                                         plutovg_surface_get_stride(c->surface));
+            // This is a GPU upload: the GPU now has the pixels. Free ours unless the game needs them.
+            n_uploads++;
+            if (!c->keep && release_canvases) {
+                n_released++;
+                plutovg_canvas_destroy(c->canvas);
+                plutovg_surface_destroy(c->surface);
+                mem_canvas -= (size_t)c->w * c->h * 4;
+                c->canvas = NULL;
+                c->surface = NULL;
+                c->released = true;
+            }
+        }
         *owned = true;
         return out;
     }
@@ -549,4 +642,12 @@ void canvas_register(JSContext *ctx, JSValue native) {
     JS_SetPropertyStr(ctx, native, "imageMemory", JS_NewCFunction(ctx, n_image_memory, "imageMemory", 0));
     JS_SetPropertyStr(ctx, native, "registerFont", JS_NewCFunction(ctx, n_register_font, "registerFont", 5));
     JS_SetPropertyStr(ctx, native, "createCanvas2D", JS_NewCFunction(ctx, n_create_canvas, "createCanvas2D", 2));
+    JS_SetPropertyStr(ctx, native, "setCanvasRelease", JS_NewCFunction(ctx, n_set_canvas_release, "setCanvasRelease", 1));
+    JS_SetPropertyStr(ctx, native, "canvasStats", JS_NewCFunction(ctx, n_canvas_stats, "canvasStats", 0));
+}
+
+void canvas_memory(size_t *canvas_bytes, int *canvas_count, size_t *font_bytes) {
+    *canvas_bytes = mem_canvas;
+    *canvas_count = n_canvas;
+    *font_bytes = mem_fonts;
 }
