@@ -1,0 +1,20 @@
+diff --git a/src/overrides.ts b/src/overrides.ts
+index b20c21c..f21a297 100644
+--- a/src/overrides.ts
++++ b/src/overrides.ts
+@@ -51,7 +51,14 @@ import type { IntClosedRange, TupleOf } from "type-fest";
+  * }
+  * ```
+  */
+-const overrides = {} satisfies Partial<InstanceType<OverridesType>>;
++const overrides = {
++  STARTING_WAVE_OVERRIDE: 120,
++  STARTING_LEVEL_OVERRIDE: 100,
++  FIELD_SIZE_OVERRIDE: "double",
++  STARTING_MODIFIER_OVERRIDE: [{ name: "EXP_SHARE", count: 2 }, { name: "EXP_CHARM", count: 2 }, { name: "SUPER_EXP_CHARM", count: 2 }, { name: "GOLDEN_EXP_CHARM", count: 2 }, { name: "OVAL_CHARM", count: 2 }, { name: "AMULET_COIN", count: 2 }, { name: "MAP", count: 2 }, { name: "MEGA_BRACELET", count: 2 }, { name: "TERA_ORB", count: 2 }, { name: "DYNAMAX_BAND", count: 2 }, { name: "LOCK_CAPSULE", count: 2 }, { name: "HEALING_CHARM", count: 2 }, { name: "CANDY_JAR", count: 2 }, { name: "BERRY_POUCH", count: 2 }, { name: "EXP_BALANCE", count: 2 }, { name: "COIN_CASE", count: 2 }, { name: "DIRE_HIT", count: 2 }],
++  STARTING_HELD_ITEMS_OVERRIDE: [{ name: "LUCKY_EGG", count: 2 }, { name: "GOLDEN_EGG", count: 2 }, { name: "SOOTHE_BELL", count: 2 }, { name: "SCOPE_LENS", count: 2 }, { name: "GRIP_CLAW", count: 2 }, { name: "WIDE_LENS", count: 2 }, { name: "MULTI_LENS", count: 2 }, { name: "FOCUS_BAND", count: 2 }, { name: "QUICK_CLAW", count: 2 }, { name: "SOUL_DEW", count: 2 }, { name: "GOLDEN_PUNCH", count: 2 }, { name: "REVIVER_SEED", count: 2 }],
++  ENEMY_HELD_ITEMS_OVERRIDE: [{ name: "SCOPE_LENS", count: 2 }, { name: "GRIP_CLAW", count: 2 }, { name: "WIDE_LENS", count: 2 }, { name: "FOCUS_BAND", count: 2 }, { name: "QUICK_CLAW", count: 2 }, { name: "SOUL_DEW", count: 2 }],
++} satisfies Partial<InstanceType<OverridesType>>;
+ 
+ /**
+  * If you need to add Overrides values for local testing do that inside {@linkcode overrides}

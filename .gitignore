@@ -1,0 +1,12 @@
+# Build output
+phase0/build-*/
+phase0/bench-log.txt
+*.vpk
+
+# Fetched third-party code and data (see phase0/scripts/fetch_deps.sh)
+phase0/third_party/
+phase0/data/
+
+# Tool caches (Vita3K, asset proxy, screenshots)
+.cache/
+node_modules/
