@@ -31,13 +31,13 @@
   Object.defineProperty(proto, "drawingBufferHeight", { get() { return this.canvas.height; } });
   Object.defineProperty(proto, "drawingBufferColorSpace", { get() { return "srgb"; } });
 
-  rt.createWebGL = function (canvas) {
+  rt.createWebGL = function (canvas, attrs) {
     const ctx = Object.create(proto);
     ctx.canvas = canvas;
     // The last canvas to ask for WebGL is the one the game renders to; its size drives the
     // screen scaling in gl.c.
     mainCanvas = canvas;
-    ctx.setCanvas(canvas);
+    ctx.setCanvas(canvas, attrs !== undefined && attrs !== null);
     return ctx;
   };
   rt.mainCanvas = () => mainCanvas;

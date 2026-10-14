@@ -101,6 +101,12 @@ void gl_after_frame(void);
 void canvas_register(JSContext *ctx, JSValue native);    // canvas2d.c
 void fastpath_register(JSContext *ctx, JSValue native);  // fastpath.c
 
+// Status messages drawn before the game takes over the screen (overlay.c).
+void overlay_set(const char *msg);
+void overlay_present(const char *msg); // draw + swap immediately (main thread is about to block)
+bool overlay_draw(void);
+void overlay_disable(void);
+
 // Bytes held by decoded-image objects: compressed files kept, and decoded pixels currently alive.
 void canvas_image_memory(size_t *encoded, size_t *decoded);
 

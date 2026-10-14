@@ -305,12 +305,12 @@ int main(int argc, char **argv) {
     JSContext *ctx = host_js_init();
     if (!ctx) return 1;
 
-    // Something on screen right away: compiling the game's code blocks for a while on the Vita.
-    glClearColor(0.20f, 0.13f, 0.24f, 1);
-    glClear(GL_COLOR_BUFFER_BIT);
-    plat_swap();
-    glClear(GL_COLOR_BUFFER_BIT);
-    plat_swap();
+    // Something on screen right away: loading and compiling the game's code takes a while on the Vita.
+    {
+        char msg[1200];
+        snprintf(msg, sizeof msg, "PokeRogue\n\nConnecting to %s", g_cfg.base_url);
+        overlay_present(msg);
+    }
 
     snprintf(path, sizeof path, "%s/bootstrap.js", g_cfg.js_dir);
     if (host_eval_file(ctx, path)) {
@@ -351,6 +351,7 @@ int main(int argc, char **argv) {
         host_run_jobs(ctx);
         perf_add(host_now_ms() - t_js);
 
+        overlay_draw();
         if (pending_shot[0]) {
             save_screenshot(pending_shot);
             pending_shot[0] = 0;

@@ -19,3 +19,6 @@ ls third_party
 # CA certificates for HTTPS on the Vita (Mozilla's bundle as published by curl; MPL 2.0).
 [ -f third_party/cacert.pem ] || curl -sfL https://curl.se/ca/cacert-2025-09-09.pem -o third_party/cacert.pem \
   || curl -sfL https://curl.se/ca/cacert.pem -o third_party/cacert.pem
+
+# 8x8 bitmap font for on-screen status messages (public domain, Daniel Hepper)
+[ -f third_party/font8x8_basic.h ] || curl -sfL https://raw.githubusercontent.com/dhepper/font8x8/8e279d2d864e79128e96188a6b9526cfa3fbfef9/font8x8_basic.h -o third_party/font8x8_basic.h

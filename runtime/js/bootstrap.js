@@ -86,5 +86,11 @@
     }, 0);
   }
 
-  boot().catch((e) => N.log("[boot] failed: " + e + "\n" + (e && e.stack || "")));
+  boot().catch((e) => {
+    N.log("[boot] failed: " + e + "\n" + (e && e.stack || ""));
+    const net = /fetch|resolve|connect|SSL|timed? ?out/i.test(String(e));
+    N.showMessage("PokeRogue could not start\n\n" + String(e).replace(/^TypeError: /, "") + "\n\n" +
+      (net ? "Check that Wi-Fi is connected, then restart the app.\n\n" : "") +
+      "Log: ux0:data/pokerogue/log.txt\nPress START + SELECT to quit.");
+  });
 })(globalThis);

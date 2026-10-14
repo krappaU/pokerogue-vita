@@ -10,9 +10,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
 #include <sys/stat.h>
 
 #include <curl/curl.h>
+#include <openssl/pem.h>
+#include <openssl/ssl.h>
+#include <openssl/x509.h>
 
 #include "host.h"
 
@@ -20,9 +24,35 @@
 #include <psp2/net/net.h>
 #include <psp2/net/netctl.h>
 #include <psp2/sysmodule.h>
-// CA bundle for HTTPS (curl's cacert.pem, shipped in the vpk).
+// CA bundle for HTTPS (curl's cacert.pem, shipped in the vpk). OpenSSL on the Vita can't open it by
+// path, so it is read here and handed to curl from memory.
 #define CA_FILE "app0:cacert.pem"
 #endif
+
+// The CA bundle is parsed once into a shared OpenSSL certificate store that every connection uses.
+// (Handing curl the bundle per request makes it re-parse ~150 certificates for each new connection,
+// which on the Vita is slow and fails under the game's many parallel downloads.)
+static X509_STORE *ca_store;
+
+static X509_STORE *load_ca_store(const char *data, size_t len) {
+    X509_STORE *store = X509_STORE_new();
+    BIO *bio = BIO_new_mem_buf(data, (int)len);
+    int n = 0;
+    X509 *cert;
+    while ((cert = PEM_read_bio_X509(bio, NULL, NULL, NULL))) {
+        if (X509_STORE_add_cert(store, cert)) n++;
+        X509_free(cert);
+    }
+    BIO_free(bio);
+    host_log("[net] %d CA certificates loaded", n);
+    return store;
+}
+
+static CURLcode ssl_ctx_cb(CURL *curl, void *sslctx, void *userptr) {
+    X509_STORE_up_ref(ca_store);
+    SSL_CTX_set_cert_store((SSL_CTX *)sslctx, ca_store);
+    return CURLE_OK;
+}
 
 // Cloudflare in front of pokerogue.net rejects requests that don't look like a browser.
 #define USER_AGENT "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36"
@@ -43,6 +73,7 @@ static void buf_add(buf *b, const void *p, size_t n) {
 }
 
 typedef struct req {
+    char errbuf[CURL_ERROR_SIZE];
     int id;
     CURL *easy;
     struct curl_slist *headers;
@@ -73,10 +104,33 @@ void net_init(void) {
 #endif
     curl_global_init(CURL_GLOBAL_DEFAULT);
     multi = curl_multi_init();
-    const char *p = strstr(g_cfg.base_url, "://");
-    p = p ? strchr(p + 3, '/') : NULL;
-    snprintf(origin, sizeof origin, "%.*s", (int)(p ? p - g_cfg.base_url : (long)strlen(g_cfg.base_url)),
-             g_cfg.base_url);
+    // PKR_CA_FILE (Linux) tests the same in-memory path the Vita uses.
+    const char *ca = getenv("PKR_CA_FILE");
+#ifdef CA_FILE
+    if (!ca) ca = CA_FILE;
+#endif
+    if (ca) {
+        FILE *f = fopen(ca, "rb");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long n = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            char *data = malloc(n);
+            size_t got = fread(data, 1, n, f);
+            fclose(f);
+            ca_store = load_ca_store(data, got);
+            free(data);
+            time_t now = time(NULL);
+            host_log("[net] CA bundle %s: %lu KB; system clock (UTC): %s", ca, (unsigned long)(got / 1024),
+                     asctime(gmtime(&now)));
+        } else {
+            host_log("[net] cannot open CA bundle %s; HTTPS will fail", ca);
+        }
+    }
+    // Like browsers: at most 6 connections per host; extra requests wait and reuse them.
+    curl_multi_setopt(multi, CURLMOPT_MAX_HOST_CONNECTIONS, 6L);
+    curl_multi_setopt(multi, CURLMOPT_MAX_TOTAL_CONNECTIONS, 8L);
+    curl_multi_setopt(multi, CURLMOPT_PIPELINING, CURLPIPE_MULTIPLEX);
     char dir[512];
     snprintf(dir, sizeof dir, "%s/http", g_cfg.data_dir);
     mkdir(dir, 0777);
@@ -169,22 +223,32 @@ static void encode_url(const char *in, char *out, size_t n) {
     out[o] = 0;
 }
 
-static CURL *make_easy(const char *raw_url) {
-    char url[8192];
-    encode_url(raw_url, url, sizeof url);
-    CURL *e = curl_easy_init();
-    curl_easy_setopt(e, CURLOPT_URL, url);
+static void apply_common_opts(CURL *e) {
     curl_easy_setopt(e, CURLOPT_USERAGENT, USER_AGENT);
     curl_easy_setopt(e, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(e, CURLOPT_ACCEPT_ENCODING, "");
     curl_easy_setopt(e, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(e, CURLOPT_CONNECTTIMEOUT, 15L);
     curl_easy_setopt(e, CURLOPT_TIMEOUT, 120L);
-#ifdef CA_FILE
-    curl_easy_setopt(e, CURLOPT_CAINFO, CA_FILE);
-#endif
+    if (ca_store) {
+        curl_easy_setopt(e, CURLOPT_CAINFO, NULL);
+        curl_easy_setopt(e, CURLOPT_CAPATH, NULL);
+        curl_easy_setopt(e, CURLOPT_SSL_CTX_FUNCTION, ssl_ctx_cb);
+    }
+}
+
+static CURL *make_easy(const char *raw_url) {
+    char url[8192];
+    encode_url(raw_url, url, sizeof url);
+    CURL *e = curl_easy_init();
+    curl_easy_setopt(e, CURLOPT_URL, url);
+    apply_common_opts(e);
     return e;
 }
+
+// Module downloads reuse one easy handle, so they share a single connection (a new TLS handshake
+// per chunk is slow on the Vita).
+static CURL *sync_easy;
 
 char *net_get_sync(const char *url, size_t *len, long *status) {
     if (is_cacheable("GET", url)) {
@@ -194,8 +258,17 @@ char *net_get_sync(const char *url, size_t *len, long *status) {
             return d;
         }
     }
-    CURL *e = make_easy(url);
+    if (!sync_easy) sync_easy = curl_easy_init();
+    else curl_easy_reset(sync_easy);
+    CURL *e = sync_easy;
+    char enc[8192];
+    encode_url(url, enc, sizeof enc);
+    curl_easy_setopt(e, CURLOPT_URL, enc);
+    apply_common_opts(e);
     buf b = {0};
+    static char errbuf[CURL_ERROR_SIZE];
+    errbuf[0] = 0;
+    curl_easy_setopt(e, CURLOPT_ERRORBUFFER, errbuf);
     struct curl_slist *h = default_headers(NULL, false, false);
     curl_easy_setopt(e, CURLOPT_HTTPHEADER, h);
     curl_easy_setopt(e, CURLOPT_WRITEFUNCTION, on_write);
@@ -203,9 +276,8 @@ char *net_get_sync(const char *url, size_t *len, long *status) {
     CURLcode rc = curl_easy_perform(e);
     *status = 0;
     if (rc == CURLE_OK) curl_easy_getinfo(e, CURLINFO_RESPONSE_CODE, status);
-    else host_log("[net] GET %s failed: %s", url, curl_easy_strerror(rc));
+    else host_log("[net] GET %s failed: %s (%s)", url, curl_easy_strerror(rc), errbuf);
     curl_slist_free_all(h);
-    curl_easy_cleanup(e);
     if (rc != CURLE_OK) {
         free(b.data);
         return NULL;
@@ -250,6 +322,7 @@ static JSValue n_http(JSContext *ctx, JSValueConst this_val, int argc, JSValueCo
     }
 
     CURL *e = r->easy = make_easy(url);
+    curl_easy_setopt(e, CURLOPT_ERRORBUFFER, r->errbuf);
     bool has_origin = false, has_referer = false;
     uint32_t nh = 0;
     JSValue lenv = JS_GetPropertyStr(ctx, argv[2], "length");
@@ -391,7 +464,7 @@ void net_poll(JSContext *ctx) {
         curl_easy_getinfo(r->easy, CURLINFO_RESPONSE_CODE, &status);
         curl_easy_getinfo(r->easy, CURLINFO_EFFECTIVE_URL, &final_url);
         const char *err = m->data.result == CURLE_OK ? NULL : curl_easy_strerror(m->data.result);
-        if (err) host_log("[net] %s failed: %s", r->url, err);
+        if (err) host_log("[net] %s failed: %s (%s)", r->url, err, r->errbuf);
         if (!err && status == 200 && r->cacheable && r->body.data) cache_write(r->url, r->body.data, r->body.len);
         char fu[4096];
         snprintf(fu, sizeof fu, "%s", final_url ? final_url : r->url);

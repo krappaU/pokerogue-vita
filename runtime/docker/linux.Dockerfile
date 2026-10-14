@@ -4,6 +4,6 @@
 FROM debian:bookworm
 RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
       build-essential cmake pkg-config git ca-certificates \
-      libsdl2-dev libcurl4-openssl-dev libgles2-mesa-dev libegl1-mesa-dev \
+      libsdl2-dev libcurl4-openssl-dev libssl-dev libgles2-mesa-dev libegl1-mesa-dev \
       xvfb xauth >/dev/null \
  && rm -rf /var/lib/apt/lists/*

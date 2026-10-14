@@ -23,7 +23,7 @@ target_include_directories(plutovg PUBLIC third_party/plutovg/include)
 target_compile_definitions(plutovg PUBLIC PLUTOVG_BUILD_STATIC PRIVATE PLUTOVG_DISABLE_FONT_FACE_CACHE_LOAD)
 target_compile_options(plutovg PRIVATE -w)
 
-set(RT_SRC src/main.c src/js_host.c src/net.c src/gl.c src/canvas2d.c src/fastpath.c)
+set(RT_SRC src/main.c src/js_host.c src/net.c src/gl.c src/canvas2d.c src/fastpath.c src/overlay.c)
 
 if(VITA)
   set(CMAKE_C_FLAGS_RELEASE "-O2 -marm -mcpu=cortex-a9 -mfpu=neon")
@@ -33,7 +33,10 @@ if(VITA)
   # VitaSDK's OpenSSL 1.1.
   target_include_directories(pokerogue-rt BEFORE PRIVATE third_party/vita-curl/include)
   target_link_directories(pokerogue-rt BEFORE PRIVATE third_party/vita-curl/lib)
-  target_include_directories(pokerogue-rt PRIVATE src third_party/stb)
+  # Our own vitaGL build (scripts/build_vita_vitagl.sh): same as VitaSDK's, without the boot splash.
+  target_include_directories(pokerogue-rt BEFORE PRIVATE third_party/vita-vitagl/include)
+  target_link_directories(pokerogue-rt BEFORE PRIVATE third_party/vita-vitagl/lib)
+  target_include_directories(pokerogue-rt PRIVATE src third_party/stb third_party)
   target_compile_options(pokerogue-rt PRIVATE -Wall -Wno-unused-function -Wno-missing-braces -Wno-unused-variable)
   target_link_libraries(pokerogue-rt quickjs plutovg
     curl ssl crypto z zstd
@@ -44,20 +47,25 @@ if(VITA)
     stdc++ pthread m)
   vita_create_self(eboot.bin pokerogue-rt UNSAFE)
   file(GLOB JS_FILES js/*.js)
-  set(VPK_FILES FILE third_party/cacert.pem cacert.pem)
+  set(VPK_FILES FILE third_party/cacert.pem cacert.pem
+    FILE sce_sys/icon0.png sce_sys/icon0.png
+    FILE sce_sys/livearea/contents/bg.png sce_sys/livearea/contents/bg.png
+    FILE sce_sys/livearea/contents/startup.png sce_sys/livearea/contents/startup.png
+    FILE sce_sys/livearea/contents/template.xml sce_sys/livearea/contents/template.xml)
   foreach(f ${JS_FILES})
     get_filename_component(n ${f} NAME)
     list(APPEND VPK_FILES FILE ${f} js/${n})
   endforeach()
-  vita_create_vpk(pokerogue.vpk "PKRV00001" eboot.bin VERSION "00.10" NAME "PokeRogue" ${VPK_FILES})
+  vita_create_vpk(pokerogue.vpk "PKRV00001" eboot.bin VERSION "00.11" NAME "PokeRogue" ${VPK_FILES})
 else()
   add_executable(pokerogue-rt ${RT_SRC} src/platform_sdl.c)
-  target_include_directories(pokerogue-rt PRIVATE src third_party/stb)
+  target_include_directories(pokerogue-rt PRIVATE src third_party/stb third_party)
   target_compile_options(pokerogue-rt PRIVATE -Wall -Wno-unused-function -Wno-missing-braces)
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(SDL2 REQUIRED sdl2)
   pkg_check_modules(CURL REQUIRED libcurl)
   pkg_check_modules(GLES REQUIRED glesv2)
-  target_include_directories(pokerogue-rt PRIVATE ${SDL2_INCLUDE_DIRS} ${CURL_INCLUDE_DIRS} ${GLES_INCLUDE_DIRS})
-  target_link_libraries(pokerogue-rt quickjs plutovg ${SDL2_LIBRARIES} ${CURL_LIBRARIES} ${GLES_LIBRARIES} m pthread)
+  pkg_check_modules(SSL REQUIRED openssl)
+  target_include_directories(pokerogue-rt PRIVATE ${SDL2_INCLUDE_DIRS} ${CURL_INCLUDE_DIRS} ${GLES_INCLUDE_DIRS} ${SSL_INCLUDE_DIRS})
+  target_link_libraries(pokerogue-rt quickjs plutovg ${SDL2_LIBRARIES} ${CURL_LIBRARIES} ${GLES_LIBRARIES} ${SSL_LIBRARIES} m pthread)
 endif()

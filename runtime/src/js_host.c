@@ -196,6 +196,10 @@ static JSModuleDef *module_load(JSContext *ctx, const char *url, void *opaque) {
     size_t len = 0;
     long status = 0;
     double t0 = host_now_ms();
+    const char *base = strrchr(url, '/');
+    char msg[600];
+    snprintf(msg, sizeof msg, "PokeRogue\n\nDownloading game code\n%s", base ? base + 1 : url);
+    overlay_present(msg);
     char *src = net_get_sync(url, &len, &status);
     if (!src || status != 200) {
         JS_ThrowReferenceError(ctx, "could not load module %s (HTTP %ld)", url, status);
@@ -203,6 +207,9 @@ static JSModuleDef *module_load(JSContext *ctx, const char *url, void *opaque) {
         return NULL;
     }
     double t1 = host_now_ms();
+    snprintf(msg, sizeof msg, "PokeRogue\n\nPreparing game code\n%s (%lu KB)\n\nThe first start takes a while.",
+             base ? base + 1 : url, (unsigned long)(len / 1024));
+    overlay_present(msg);
     JSValue fn = JS_Eval(ctx, src, len, url, JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
     free(src);
     if (JS_IsException(fn)) return NULL;
@@ -389,7 +396,16 @@ static JSValue n_memory_usage(JSContext *ctx, JSValueConst this_val, int argc, J
     return o;
 }
 
+// showMessage(text | null): full-screen status message (only before the game takes over the screen)
+static JSValue n_show_message(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    const char *msg = JS_IsNull(argv[0]) || JS_IsUndefined(argv[0]) ? NULL : JS_ToCString(ctx, argv[0]);
+    overlay_set(msg);
+    JS_FreeCString(ctx, msg);
+    return JS_UNDEFINED;
+}
+
 static const JSCFunctionListEntry native_funcs[] = {
+    JS_CFUNC_DEF("showMessage", 1, n_show_message),
     JS_CFUNC_DEF("memoryUsage", 0, n_memory_usage),
     JS_CFUNC_DEF("imeOpen", 4, n_ime_open),
     JS_CFUNC_DEF("imePoll", 0, n_ime_poll),

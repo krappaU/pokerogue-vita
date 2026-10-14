@@ -793,6 +793,9 @@ FN(w_getParameter) {
 // ---------------------------------------------------------------- class setup
 
 FN(w_setCanvas) {
+    // A second argument means this is the game's real renderer (Phaser's feature probe passes no
+    // context attributes): status messages must not draw from now on, so GL state stays the game's.
+    if (argc > 1 && JS_ToBool(ctx, A(1))) overlay_disable();
     track(ctx, &st.canvas, A(0));
     refresh_virtual_size(ctx);
     return JS_UNDEFINED;
@@ -825,7 +828,7 @@ static const JSCFunctionListEntry gl_funcs[] = {
     F(uniform3f, 4), F(uniform3fv, 2), F(uniform3i, 4), F(uniform3iv, 2), F(uniform4f, 5), F(uniform4fv, 2),
     F(uniform4i, 5), F(uniform4iv, 2), F(uniformMatrix2fv, 3), F(uniformMatrix3fv, 3), F(uniformMatrix4fv, 3),
     F(useProgram, 1), F(validateProgram, 1), F(vertexAttrib1f, 2), F(vertexAttrib2f, 3), F(vertexAttrib3f, 4),
-    F(vertexAttrib4f, 5), F(vertexAttribPointer, 6), F(viewport, 4), F(setCanvas, 1),
+    F(vertexAttrib4f, 5), F(vertexAttribPointer, 6), F(viewport, 4), F(setCanvas, 2),
 #define GLC(name, value) JS_PROP_INT32_DEF(#name, value, JS_PROP_ENUMERABLE),
 #include "gl_consts.h"
 #undef GLC
