@@ -51,6 +51,9 @@ vitaGL needs it to compile shaders at runtime.
   `inet_pton`: the Vita's accepts host names as IPv4 addresses, which silently disables SNI.
 - OpenSSL on the Vita can't open the CA bundle by path. The runtime parses it once into a shared
   `X509_STORE` attached through `CURLOPT_SSL_CTX_FUNCTION`.
+- OpenSSL finds no entropy source on the Vita ("Insufficient randomness" on every TLS connection);
+  the runtime installs a `RAND_METHOD` backed by `sceKernelGetRandomNumber`. Vita3K hides this.
+- Don't offer zstd in Accept-Encoding: each stream needs megabytes of buffer.
 - LiveArea images must be 8-bit palette PNGs (`runtime/scripts/make_livearea.py` writes them).
 
 ## Measuring the real game
