@@ -5,8 +5,9 @@ It runs the **live pokerogue.net game**, which means automatic updates, online a
 saves, much like the online mode of [Admiral-Billy's PokeRogue App](https://github.com/Admiral-Billy/Pokerogue-App)
 on desktop and Android.
 
-> **Status: early research.** Phase 0 (feasibility) is done and Phase 1 (desktop runtime) is next.
-> Nothing playable exists yet.
+> **Status: early development.** The desktop version of the runtime runs the real game into battles
+> (Phase 1). Next is the same runtime on the Vita (Phase 2). Nothing is playable on a Vita yet, and
+> performance on busy screens needs a lot more work (see [docs/phase1-findings.md](docs/phase1-findings.md)).
 
 ## Why this isn't just a browser wrapper
 The Vita's built-in browser runs ES5 and has no WebGL. PokeRogue needs about 6 MB of ES2022, WebGL,
@@ -28,7 +29,8 @@ The full design is in [docs/PLAN.md](docs/PLAN.md), and the measurements behind 
 ## Repository layout
 | path | contents |
 |---|---|
-| `docs/` | plan, Phase 0 findings, development guide |
+| `docs/` | plan, Phase 0 and Phase 1 findings, development guide |
+| `runtime/` | the app: C host (QuickJS, WebGL, Canvas 2D, HTTP) and JS browser shim |
 | `phase0/` | feasibility benchmark: C harness, JS shim, native fast path, build scripts |
 | `phase0/measure/` | tools to run the real game in headless Chrome and count what it draws |
 
@@ -40,7 +42,8 @@ Debian for desktop).
 [AGPL-3.0](LICENSE), the same license as PokeRogue.
 
 Third-party components fetched at build time keep their own licenses: QuickJS-ng (MIT),
-Phaser (MIT), and the VitaSDK samples' debugScreen helper.
+plutovg (MIT), stb_image/stb_image_write (MIT or public domain), Phaser (MIT, used only by the
+Phase 0 benchmark), and the VitaSDK samples' debugScreen helper.
 
 ## Disclaimer
 This is a fan project. It is not affiliated with or endorsed by Pagefault Games, Nintendo,

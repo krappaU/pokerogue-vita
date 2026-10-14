@@ -21,9 +21,21 @@ Never fork or patch the game itself. Anything the game needs is provided by the 
   capability allows `.zip` but not `.vpk`, so offer the .vpk as `.zip` and have the upload command
   name it `.vpk` on the Vita).
 
+## Where things are
+- `phase0/`: the feasibility benchmark (finished; reference only).
+- `runtime/`: the actual app: C host (`src/`) + browser shim (`js/`). See `runtime/README.md` for
+  building, running headless, the control channel (`scripts/drive.sh`: keys, screenshots, eval) and
+  how to play without an account (a login-bypass build served on a Docker network).
+- `docs/phase1-findings.md`: real-game performance profile and the optimization plan.
+
 ## How to work
-- All toolchains run in Docker (see `docs/development.md`). The host has no gcc, node or gh.
-- Loop: build on Linux first for fast iteration → build the .vpk → `phase0/scripts/run_vita3k.sh`
+- All toolchains run in Docker (see `docs/development.md`). The host has no gcc or node. `gh` is installed
+  and logged in as the user (krappaU), and pushes to github.com/krappaU/pokerogue-vita.
+- Runtime loop: `runtime/scripts/build_linux.sh`, run headless with `run_linux.sh --control
+  .cache/control.txt` (in the background), then drive it with `drive.sh` and read the
+  `.cache/shots/*.png` screenshots and `.cache/data/log.txt`. `[perf]` lines report JS time per frame.
+- If Docker builds seem to ignore a source change, `touch` the file (a timestamp mismatch was seen once).
+- Loop for Vita builds: build on Linux first for fast iteration → build the .vpk → `phase0/scripts/run_vita3k.sh`
   as a crash check → the user runs it on the real Vita for timing. **Never treat Vita3K timings as
   real performance.**
 - Any native fast path that replaces Phaser code must be checked against Phaser's own output

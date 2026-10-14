@@ -10,3 +10,8 @@ phase0/data/
 # Tool caches (Vita3K, asset proxy, screenshots)
 .cache/
 node_modules/
+
+# Runtime
+runtime/build-*/
+runtime/third_party/
+runtime/.cache/

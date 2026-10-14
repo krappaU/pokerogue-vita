@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-only
+# Fetch pinned third-party sources into third_party/ (not committed).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+mkdir -p third_party
+clone() { # name url tag
+  [ -d "third_party/$1" ] || git -c advice.detachedHead=false clone -q --depth 1 --branch "$3" "$2" "third_party/$1"
+}
+clone quickjs https://github.com/quickjs-ng/quickjs v0.17.0
+clone plutovg https://github.com/sammycage/plutovg v1.3.3
+mkdir -p third_party/stb
+STB=f58f558c120e9b32c217290b80bad1a0729fbb2c   # nothings/stb, 2025-05-26 (stb_image 2.30)
+for f in stb_image.h stb_image_write.h; do
+  [ -f "third_party/stb/$f" ] || curl -sfL "https://raw.githubusercontent.com/nothings/stb/$STB/$f" -o "third_party/stb/$f"
+done
+ls third_party

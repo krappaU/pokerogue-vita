@@ -73,9 +73,12 @@ Docker image and is tested in Vita3K (does it boot?) and on the real Vita (perfo
 0. **Feasibility spike: done (go).** See [phase0-findings.md](phase0-findings.md). On real
    hardware, the synthetic battle frame went from 57.8 ms (stock Phaser) to 27.4 ms (native
    batching fast path). Compiling the 6 MB of JS takes 14.8 s; loading the bytecode cache takes 0.9 s.
-1. **Desktop runtime:** boot the real live bundle in QuickJS on Linux with real GLES rendering,
-   to the title screen and into a battle. Measure real per-frame cost (x ~16.6 gives the Vita estimate).
-2. **Vita runtime:** title screen on Vita (vitaGL, fetch, images, text).
+1. **Desktop runtime: largely done.** See [phase1-findings.md](phase1-findings.md) and `runtime/`.
+   The live client boots to its login screen, and a login-bypass build plays into battles.
+   The real game turned out much heavier than the Phase 0 benchmark (busy battle ~12–15 ms JS per
+   frame on x86, estimated ~200 ms on the Vita before optimizations).
+2. **Vita runtime:** the same runtime on Vita (SDL2 + vitaGL, curl), then measure the *real* game's
+   frame cost on the device. That number decides how much native rendering work Phase 4 needs.
 3. **Playable:** audio, gamepad, touch, IME login, online saves.
 4. **Polish:** performance (native container walk, uniform batching, 30 fps cap), memory work,
    offline cache and last-good fallback, LiveArea assets, settings.
