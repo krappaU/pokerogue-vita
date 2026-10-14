@@ -42,7 +42,16 @@ vitaGL needs it to compile shaders at runtime.
 - CMake needs `-DCMAKE_TOOLCHAIN_FILE=$VITASDK/share/vita.toolchain.cmake`.
 - Vita newlib's printf has no `%zu`; use `%lu` with a cast.
 - Size `_newlib_heap_size_user` and `sceUserMainThreadStackSize` explicitly (see `phase0/src/main.c`).
-- Vita3K is for crash checks only: it does not emulate the Vita's CPU speed.
+- Vita3K is for crash checks only: it does not emulate the Vita's CPU speed. It also crashes on its
+  own now and then, and loses the app's unflushed file writes when it does; the app's console
+  output (`*** TTY:` lines in `.cache/vita3k-shots/vita3k.log`) survives.
+- vitaGL's init functions return whether the resolution *fell back*, not success.
+- VitaSDK's prebuilt libcurl uses OpenSSL 1.0 struct layouts and crashes with the SDK's OpenSSL
+  1.1, so `runtime/scripts/build_vita_curl.sh` builds our own. It also forces curl's own
+  `inet_pton`: the Vita's accepts host names as IPv4 addresses, which silently disables SNI.
+- OpenSSL on the Vita can't open the CA bundle by path. The runtime parses it once into a shared
+  `X509_STORE` attached through `CURLOPT_SSL_CTX_FUNCTION`.
+- LiveArea images must be 8-bit palette PNGs (`runtime/scripts/make_livearea.py` writes them).
 
 ## Measuring the real game
 See [phase0/measure/README.md](../phase0/measure/README.md): headless Chrome running a local dev
