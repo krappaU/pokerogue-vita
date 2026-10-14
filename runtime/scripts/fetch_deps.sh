@@ -15,3 +15,7 @@ for f in stb_image.h stb_image_write.h; do
   [ -f "third_party/stb/$f" ] || curl -sfL "https://raw.githubusercontent.com/nothings/stb/$STB/$f" -o "third_party/stb/$f"
 done
 ls third_party
+
+# CA certificates for HTTPS on the Vita (Mozilla's bundle as published by curl; MPL 2.0).
+[ -f third_party/cacert.pem ] || curl -sfL https://curl.se/ca/cacert-2025-09-09.pem -o third_party/cacert.pem \
+  || curl -sfL https://curl.se/ca/cacert.pem -o third_party/cacert.pem

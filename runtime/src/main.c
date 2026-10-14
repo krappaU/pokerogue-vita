@@ -4,12 +4,16 @@
 // Control channel (--control FILE): append one command per line to FILE while the runtime runs.
 //   key <Key>        press and release a key (DOM key names: Space, Enter, Backspace, ArrowUp, a, ...)
 //   keydown <Key> / keyup <Key>
+//   tap <x> <y>      touch/click at window coordinates
 //   shot <path.png>  save the next rendered frame
 //   eval <js>        evaluate JS in the page and log the result
 //   evalfile <path>  evaluate a JS file in the page and log the result
+//   ime <text>       answer an open text-entry request (Linux stand-in for the Vita keyboard)
+//   ime-cancel       cancel it
 //   quit
 
 #include <errno.h>
+#include <malloc.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -18,18 +22,33 @@
 #include <sys/stat.h>
 #include <time.h>
 
-#include <GLES2/gl2.h>
+#include "gles.h"
 
 #include "host.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
+#ifdef __vita__
+#include <psp2/kernel/processmgr.h>
+// QuickJS needs a deep native stack to parse the game's minified chunks; the default is 256 KB.
+unsigned int sceUserMainThreadStackSize = 8 * 1024 * 1024;
+// newlib heap for the JS engine and decoded images. vitaGL allocates GPU memory separately.
+int _newlib_heap_size_user = 200 * 1024 * 1024;
+#define DEFAULT_JS_DIR "app0:js"
+#define DEFAULT_DATA_DIR "ux0:data/pokerogue"
+#define DEFAULT_CONTROL "ux0:data/pokerogue/control.txt"
+#else
+#define DEFAULT_JS_DIR "js"
+#define DEFAULT_DATA_DIR "data"
+#define DEFAULT_CONTROL NULL
+#endif
+
 host_config g_cfg = {
     .base_url = "https://pokerogue.net/",
-    .js_dir = "js",
-    .data_dir = "data",
-    .control = NULL,
+    .js_dir = DEFAULT_JS_DIR,
+    .data_dir = DEFAULT_DATA_DIR,
+    .control = DEFAULT_CONTROL,
     .win_w = 960,
     .win_h = 544,
     .exit_after_frames = 0,
@@ -53,6 +72,9 @@ void host_log(const char *fmt, ...) {
 }
 
 double host_now_ms(void) {
+#ifdef __vita__
+    return sceKernelGetProcessTimeWide() / 1000.0;
+#endif
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
@@ -80,6 +102,8 @@ static struct {
     int release_frame;
 } pending_release[8];
 static int frame_no;
+static int pending_tap_up = -1;
+static float tap_x, tap_y;
 
 static void control_line(JSContext *ctx, char *line, bool *quit) {
     char *arg = strchr(line, ' ');
@@ -97,6 +121,14 @@ static void control_line(JSContext *ctx, char *line, bool *quit) {
         plat_inject_key(arg, true);
     } else if (!strcmp(line, "keyup") && arg) {
         plat_inject_key(arg, false);
+    } else if (!strcmp(line, "tap") && arg) {
+        float x = 0, y = 0;
+        if (sscanf(arg, "%f %f", &x, &y) == 2) {
+            plat_inject_pointer(PEV_POINTER_DOWN, x, y);
+            pending_tap_up = frame_no + 3;
+            tap_x = x;
+            tap_y = y;
+        }
     } else if (!strcmp(line, "shot") && arg) {
         snprintf(pending_shot, sizeof pending_shot, "%s", arg);
     } else if (!strcmp(line, "eval") && arg) {
@@ -122,6 +154,10 @@ static void control_line(JSContext *ctx, char *line, bool *quit) {
         host_log("[evalfile] %s", res ? res : "(exception)");
         free(res);
         free(src);
+    } else if (!strcmp(line, "ime")) {
+        plat_ime_answer(arg ? arg : "");
+    } else if (!strcmp(line, "ime-cancel")) {
+        plat_ime_answer(NULL);
     } else if (!strcmp(line, "quit")) {
         *quit = true;
     } else if (line[0]) {
@@ -130,6 +166,10 @@ static void control_line(JSContext *ctx, char *line, bool *quit) {
 }
 
 static void control_poll(JSContext *ctx, bool *quit) {
+    if (pending_tap_up >= 0 && frame_no >= pending_tap_up) {
+        plat_inject_pointer(PEV_POINTER_UP, tap_x, tap_y);
+        pending_tap_up = -1;
+    }
     for (int i = 0; i < 8; i++) {
         if (pending_release[i].key[0] && frame_no >= pending_release[i].release_frame) {
             plat_inject_key(pending_release[i].key, false);
@@ -177,8 +217,13 @@ static void perf_add(double js_ms) {
     for (int i = 0; i < perf_n; i++) sum += perf_js[i];
     qsort(perf_js, perf_n, sizeof *perf_js, cmp_d);
     double secs = (host_now_ms() - perf_t0) / 1000.0;
-    host_log("[perf] %.1f fps | JS per frame: avg %.2f ms, p50 %.2f, p95 %.2f, max %.2f", perf_n / secs, sum / perf_n,
-             perf_js[perf_n / 2], perf_js[perf_n * 95 / 100], perf_js[perf_n - 1]);
+    struct mallinfo mi = mallinfo();
+    size_t img_enc, img_dec;
+    canvas_image_memory(&img_enc, &img_dec);
+    host_log("[perf] %.1f fps | JS per frame: avg %.2f ms, p50 %.2f, p95 %.2f, max %.2f | heap %.0f MB "
+             "(images: %.0f MB files, %.0f MB decoded)",
+             perf_n / secs, sum / perf_n, perf_js[perf_n / 2], perf_js[perf_n * 95 / 100], perf_js[perf_n - 1],
+             (unsigned)mi.uordblks / 1048576.0, img_enc / 1048576.0, img_dec / 1048576.0);
     perf_n = 0;
 }
 
@@ -196,6 +241,34 @@ static void save_screenshot(const char *path) {
     free(px);
 }
 
+// ---------------------------------------------------------------- config file
+
+// Optional <data dir>/config.txt with key=value lines (overrides defaults; command line wins):
+//   url=http://192.168.1.10:8000/   load the game from another server (testing)
+//   frames=600                      quit after N frames
+static void load_config_file(void) {
+    char path[512];
+    snprintf(path, sizeof path, "%s/config.txt", g_cfg.data_dir);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    static char url[1024];
+    char line[1100];
+    while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        char *eq = strchr(line, '=');
+        if (!eq || line[0] == '#') continue;
+        *eq = 0;
+        const char *k = line, *v = eq + 1;
+        if (!strcmp(k, "url")) {
+            snprintf(url, sizeof url, "%s", v);
+            g_cfg.base_url = url;
+        } else if (!strcmp(k, "frames")) {
+            g_cfg.exit_after_frames = atoi(v);
+        }
+    }
+    fclose(f);
+}
+
 // ---------------------------------------------------------------- main
 
 static void usage(void) {
@@ -204,6 +277,10 @@ static void usage(void) {
 }
 
 int main(int argc, char **argv) {
+    // The data dir may come from the command line; the config file lives inside it.
+    for (int i = 1; i + 1 < argc; i++)
+        if (!strcmp(argv[i], "--data")) g_cfg.data_dir = argv[i + 1];
+    load_config_file();
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
         if (!strcmp(a, "--url") && v) g_cfg.base_url = argv[++i];
@@ -227,6 +304,13 @@ int main(int argc, char **argv) {
     net_init();
     JSContext *ctx = host_js_init();
     if (!ctx) return 1;
+
+    // Something on screen right away: compiling the game's code blocks for a while on the Vita.
+    glClearColor(0.20f, 0.13f, 0.24f, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    plat_swap();
+    glClear(GL_COLOR_BUFFER_BIT);
+    plat_swap();
 
     snprintf(path, sizeof path, "%s/bootstrap.js", g_cfg.js_dir);
     if (host_eval_file(ctx, path)) {
@@ -276,7 +360,8 @@ int main(int argc, char **argv) {
         frame_no++;
         if (g_cfg.exit_after_frames && frame_no >= g_cfg.exit_after_frames) quit = true;
 
-        // Pace to 60 Hz (Xvfb has no vsync).
+#ifndef __vita__
+        // Pace to 60 Hz (Xvfb has no vsync; on the Vita, vglSwapBuffers waits for vblank).
         next += frame_ms;
         double now_ms = host_now_ms();
         if (next > now_ms) {
@@ -286,6 +371,7 @@ int main(int argc, char **argv) {
         } else if (now_ms - next > 100) {
             next = now_ms; // fell far behind: don't try to catch up
         }
+#endif
     }
 
     host_js_shutdown();

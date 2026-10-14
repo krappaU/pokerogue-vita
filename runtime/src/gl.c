@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <GLES2/gl2.h>
+#include "gles.h"
 
 #include "host.h"
 
@@ -37,7 +37,13 @@ static struct {
     JSValue bound_program, bound_array_buffer, bound_element_buffer, bound_framebuffer, bound_renderbuffer;
     JSValue bound_texture[32];
     int active_unit;
-} st = {.default_fb = true, .virt_w = 300, .virt_h = 150};
+    // Shadow copies of state that gl_after_frame changes and restores (no glGet round trips).
+    bool scissor_on;
+    GLint vp[4];
+    GLfloat clear_color[4];
+    GLboolean color_mask[4];
+    GLuint fb;
+} st = {.default_fb = true, .virt_w = 300, .virt_h = 150, .color_mask = {1, 1, 1, 1}};
 
 // ---------------------------------------------------------------- helpers
 
@@ -193,19 +199,34 @@ FN(w_blendFuncSeparate) {
     return JS_UNDEFINED;
 }
 FN(w_clear) { glClear(gi(ctx, A(0))); return JS_UNDEFINED; }
-FN(w_clearColor) { glClearColor(gf(ctx, A(0)), gf(ctx, A(1)), gf(ctx, A(2)), gf(ctx, A(3))); return JS_UNDEFINED; }
+FN(w_clearColor) {
+    for (int i = 0; i < 4; i++) st.clear_color[i] = gf(ctx, A(i));
+    glClearColor(st.clear_color[0], st.clear_color[1], st.clear_color[2], st.clear_color[3]);
+    return JS_UNDEFINED;
+}
 FN(w_clearDepth) { glClearDepthf(gf(ctx, A(0))); return JS_UNDEFINED; }
 FN(w_clearStencil) { glClearStencil(gi(ctx, A(0))); return JS_UNDEFINED; }
 FN(w_colorMask) {
-    glColorMask(JS_ToBool(ctx, A(0)), JS_ToBool(ctx, A(1)), JS_ToBool(ctx, A(2)), JS_ToBool(ctx, A(3)));
+    for (int i = 0; i < 4; i++) st.color_mask[i] = JS_ToBool(ctx, A(i));
+    glColorMask(st.color_mask[0], st.color_mask[1], st.color_mask[2], st.color_mask[3]);
     return JS_UNDEFINED;
 }
 FN(w_cullFace) { glCullFace(gi(ctx, A(0))); return JS_UNDEFINED; }
 FN(w_depthFunc) { glDepthFunc(gi(ctx, A(0))); return JS_UNDEFINED; }
 FN(w_depthMask) { glDepthMask(JS_ToBool(ctx, A(0))); return JS_UNDEFINED; }
 FN(w_depthRange) { glDepthRangef(gf(ctx, A(0)), gf(ctx, A(1))); return JS_UNDEFINED; }
-FN(w_disable) { glDisable(gi(ctx, A(0))); return JS_UNDEFINED; }
-FN(w_enable) { glEnable(gi(ctx, A(0))); return JS_UNDEFINED; }
+FN(w_disable) {
+    int cap = gi(ctx, A(0));
+    if (cap == GL_SCISSOR_TEST) st.scissor_on = false;
+    glDisable(cap);
+    return JS_UNDEFINED;
+}
+FN(w_enable) {
+    int cap = gi(ctx, A(0));
+    if (cap == GL_SCISSOR_TEST) st.scissor_on = true;
+    glEnable(cap);
+    return JS_UNDEFINED;
+}
 FN(w_finish) { glFinish(); return JS_UNDEFINED; }
 FN(w_flush) { glFlush(); return JS_UNDEFINED; }
 FN(w_frontFace) { glFrontFace(gi(ctx, A(0))); return JS_UNDEFINED; }
@@ -244,11 +265,14 @@ FN(w_viewport) {
         refresh_virtual_size(ctx);
         float s, ox, oy;
         fb_map(&s, &ox, &oy);
-        glViewport((GLint)lroundf(ox + x * s), (GLint)lroundf(oy + y * s), (GLsizei)lroundf(w * s),
-                   (GLsizei)lroundf(h * s));
+        st.vp[0] = (GLint)lroundf(ox + x * s);
+        st.vp[1] = (GLint)lroundf(oy + y * s);
+        st.vp[2] = (GLsizei)lroundf(w * s);
+        st.vp[3] = (GLsizei)lroundf(h * s);
     } else {
-        glViewport(x, y, w, h);
+        st.vp[0] = x, st.vp[1] = y, st.vp[2] = w, st.vp[3] = h;
     }
+    glViewport(st.vp[0], st.vp[1], st.vp[2], st.vp[3]);
     return JS_UNDEFINED;
 }
 
@@ -303,6 +327,7 @@ FN(w_bindFramebuffer) {
     GLuint id = oid(A(1));
     glBindFramebuffer(gi(ctx, A(0)), id);
     st.default_fb = id == 0;
+    st.fb = id;
     track(ctx, &st.bound_framebuffer, A(1));
     return JS_UNDEFINED;
 }
@@ -830,17 +855,8 @@ void gl_register(JSContext *ctx, JSValue native) {
 }
 
 void gl_after_frame(void) {
-    // Clear the whole screen (including the letterbox bars) for the next frame, then put back every
-    // piece of GL state touched, since Phaser caches its own view of the state.
-    GLint fb = 0, vp[4];
-    GLfloat cc[4];
-    GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
-    GLboolean mask[4];
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb);
-    glGetIntegerv(GL_VIEWPORT, vp);
-    glGetFloatv(GL_COLOR_CLEAR_VALUE, cc);
-    glGetBooleanv(GL_COLOR_WRITEMASK, mask);
-
+    // Clear the whole screen (including the letterbox bars) for the next frame, then put back the
+    // GL state touched, from our own shadow copies, since Phaser caches its own view of the state.
     int w, h;
     plat_drawable_size(&w, &h);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -850,9 +866,9 @@ void gl_after_frame(void) {
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
 
-    glColorMask(mask[0], mask[1], mask[2], mask[3]);
-    glClearColor(cc[0], cc[1], cc[2], cc[3]);
-    glViewport(vp[0], vp[1], vp[2], vp[3]);
-    if (scissor) glEnable(GL_SCISSOR_TEST);
-    glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    glColorMask(st.color_mask[0], st.color_mask[1], st.color_mask[2], st.color_mask[3]);
+    glClearColor(st.clear_color[0], st.clear_color[1], st.clear_color[2], st.clear_color[3]);
+    glViewport(st.vp[0], st.vp[1], st.vp[2], st.vp[3]);
+    if (st.scissor_on) glEnable(GL_SCISSOR_TEST);
+    if (st.fb) glBindFramebuffer(GL_FRAMEBUFFER, st.fb);
 }

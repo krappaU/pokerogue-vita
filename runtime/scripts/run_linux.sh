@@ -6,5 +6,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p .cache/data
-exec docker run --rm --init ${DOCKER_ARGS:-} -v "$PWD":/w -w /w pkr-rt-linux \
+# One instance at a time: a fixed container name, replacing any previous run (stopping the docker
+# client with timeout/Ctrl-C does not stop the container).
+docker rm -f pkr-rt >/dev/null 2>&1 || true
+exec docker run --rm --init --name pkr-rt ${DOCKER_ARGS:-} -v "$PWD":/w -w /w pkr-rt-linux \
   xvfb-run -a -s "-screen 0 960x544x24" build-linux/pokerogue-rt --js js --data .cache/data "$@"

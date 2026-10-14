@@ -59,6 +59,41 @@
     locks: undefined,
   }, "navigator");
 
+  // ---------------------------------------------------------------- text entry
+  // When an enabled text <input> has focus, open the system keyboard (on Linux, a control-channel
+  // stand-in) once per focus. The result goes into the field with the same events a browser fires.
+  // Focus then moves on if the next field is a password field (username -> password -> confirm),
+  // which is how PokeRogue's login and register forms are laid out. The game may focus a field
+  // while it is still disabled (form animating in), so this is checked every frame rather than
+  // at focus time. The fields are HTML elements the runtime doesn't draw; the keyboard dialog is
+  // where the user sees the text.
+  let imeTarget = null, focusSeq = 0, handledSeq = 0;
+  const TEXT_TYPES = new Set(["text", "password", "email", "search", "tel", "url", "number", ""]);
+  rt.onInputFocus = () => { focusSeq++; };
+  rt.frameHooks.push(() => {
+    if (imeTarget) {
+      const r = N.imePoll();
+      if (!r) return;
+      const el = imeTarget;
+      imeTarget = null;
+      if (!r.ok) return;
+      el.value = r.text;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      const all = g.document.querySelectorAll("input");
+      const next = all[all.indexOf(el) + 1];
+      if (next && next.type === "password" && !next.readOnly) g.setTimeout(() => next.focus(), 0);
+      return;
+    }
+    const el = g.document.activeElement;
+    if (!el || handledSeq === focusSeq || !(el instanceof HTMLInputElement)) return;
+    if (el.readOnly || el.disabled || !TEXT_TYPES.has(el.type)) return;
+    handledSeq = focusSeq;
+    const password = el.type === "password";
+    const title = el.placeholder || (password ? "Password" : "PokeRogue");
+    if (N.imeOpen(title, el.value || "", el.maxLength > 0 ? el.maxLength : 64, password)) imeTarget = el;
+  });
+
   // ---------------------------------------------------------------- keyboard and pointer
   const down = new Set();
   rt.onInput = function (type, key, code, keyCode, x, y, id) {

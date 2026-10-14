@@ -227,3 +227,43 @@ int plat_gamepads(plat_gamepad *out, int max) {
 void plat_swap(void) { SDL_GL_SwapWindow(win); }
 
 void plat_drawable_size(int *w, int *h) { SDL_GL_GetDrawableSize(win, w, h); }
+
+// ---------------------------------------------------------------- text entry (test stand-in)
+
+static int ime_state;    // 0 none, 1 open, 2 answered, 3 cancelled
+static char ime_text[1024];
+
+bool plat_ime_open(const char *title, const char *initial, int max_len, bool password) {
+    host_log("[ime] open \"%s\" (max %d%s), initial \"%s\" - answer with: ime <text> / ime-cancel", title, max_len,
+             password ? ", password" : "", initial);
+    ime_state = 1;
+    return true;
+}
+
+void plat_ime_answer(const char *text) {
+    if (ime_state != 1) return;
+    if (text) {
+        snprintf(ime_text, sizeof ime_text, "%s", text);
+        ime_state = 2;
+    } else {
+        ime_state = 3;
+    }
+}
+
+int plat_ime_poll(char *out, size_t n) {
+    if (ime_state == 2) {
+        snprintf(out, n, "%s", ime_text);
+        ime_state = 0;
+        return 1;
+    }
+    if (ime_state == 3) {
+        ime_state = 0;
+        return -1;
+    }
+    return 0;
+}
+
+void plat_inject_pointer(plat_event_type type, float x, float y) {
+    if (n_injected >= 32) return;
+    injected[n_injected++] = (plat_event){.type = type, .x = x, .y = y};
+}

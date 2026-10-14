@@ -16,6 +16,14 @@
 
 #include "host.h"
 
+#ifdef __vita__
+#include <psp2/net/net.h>
+#include <psp2/net/netctl.h>
+#include <psp2/sysmodule.h>
+// CA bundle for HTTPS (curl's cacert.pem, shipped in the vpk).
+#define CA_FILE "app0:cacert.pem"
+#endif
+
 // Cloudflare in front of pokerogue.net rejects requests that don't look like a browser.
 #define USER_AGENT "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36"
 
@@ -54,6 +62,15 @@ static int next_id = 1;
 static char origin[256];
 
 void net_init(void) {
+#ifdef __vita__
+    sceSysmoduleLoadModule(SCE_SYSMODULE_NET);
+    static char net_mem[1024 * 1024];
+    SceNetInitParam np = {.memory = net_mem, .size = sizeof net_mem, .flags = 0};
+    int rc = sceNetInit(&np);
+    if (rc < 0) host_log("[net] sceNetInit: 0x%08x", rc);
+    rc = sceNetCtlInit();
+    if (rc < 0) host_log("[net] sceNetCtlInit: 0x%08x", rc);
+#endif
     curl_global_init(CURL_GLOBAL_DEFAULT);
     multi = curl_multi_init();
     const char *p = strstr(g_cfg.base_url, "://");
@@ -163,6 +180,9 @@ static CURL *make_easy(const char *raw_url) {
     curl_easy_setopt(e, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(e, CURLOPT_CONNECTTIMEOUT, 15L);
     curl_easy_setopt(e, CURLOPT_TIMEOUT, 120L);
+#ifdef CA_FILE
+    curl_easy_setopt(e, CURLOPT_CAINFO, CA_FILE);
+#endif
     return e;
 }
 

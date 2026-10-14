@@ -50,7 +50,7 @@ typedef struct {
     bool connected;
     const char *id;
     float axes[4];
-    float buttons[17]; // W3C "standard" gamepad layout
+    float buttons[18]; // W3C "standard" layout; 17 = touchpad click (the game's "submit")
 } plat_gamepad;
 
 bool plat_init(int w, int h);
@@ -62,6 +62,15 @@ void plat_drawable_size(int *w, int *h);
 int plat_gamepads(plat_gamepad *pads, int max);
 // Inject a synthetic key press/release (control channel).
 void plat_inject_key(const char *key, bool down);
+// Inject a synthetic pointer event at window coordinates (control channel).
+void plat_inject_pointer(plat_event_type type, float x, float y);
+
+// Text entry through the system keyboard (Vita IME dialog). plat_ime_open returns false if a dialog
+// can't be shown. plat_ime_poll returns 0 while the dialog is open, 1 when confirmed (text in out,
+// UTF-8), -1 when cancelled. On Linux the control channel's "ime <text>" / "ime-cancel" answer it.
+bool plat_ime_open(const char *title, const char *initial, int max_len, bool password);
+int plat_ime_poll(char *out, size_t n);
+void plat_ime_answer(const char *text); // Linux/control channel only (NULL = cancel)
 
 // ---------------------------------------------------------------- JS host (js_host.c)
 
@@ -91,6 +100,9 @@ void gl_register(JSContext *ctx, JSValue native);        // gl.c
 void gl_after_frame(void);
 void canvas_register(JSContext *ctx, JSValue native);    // canvas2d.c
 void fastpath_register(JSContext *ctx, JSValue native);  // fastpath.c
+
+// Bytes held by decoded-image objects: compressed files kept, and decoded pixels currently alive.
+void canvas_image_memory(size_t *encoded, size_t *decoded);
 
 // Pixel source lookup shared by gl.c (texImage2D) and canvas2d.c (drawImage).
 // Returns RGBA8 pixels (straight alpha) of an Image/Canvas/ImageData-like object, or NULL.

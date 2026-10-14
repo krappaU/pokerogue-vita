@@ -278,7 +278,7 @@ static JSValue n_gamepads(JSContext *ctx, JSValueConst this_val, int argc, JSVal
         JS_SetPropertyStr(ctx, p, "id", JS_NewString(ctx, pads[i].id ? pads[i].id : "gamepad"));
         JSValue axes = JS_NewArray(ctx), buttons = JS_NewArray(ctx);
         for (int a = 0; a < 4; a++) JS_SetPropertyUint32(ctx, axes, a, JS_NewFloat64(ctx, pads[i].axes[a]));
-        for (int b = 0; b < 17; b++) JS_SetPropertyUint32(ctx, buttons, b, JS_NewFloat64(ctx, pads[i].buttons[b]));
+        for (int b = 0; b < 18; b++) JS_SetPropertyUint32(ctx, buttons, b, JS_NewFloat64(ctx, pads[i].buttons[b]));
         JS_SetPropertyStr(ctx, p, "axes", axes);
         JS_SetPropertyStr(ctx, p, "buttons", buttons);
         JS_SetPropertyUint32(ctx, arr, i, p);
@@ -353,7 +353,46 @@ static JSValue n_utf8_encode(JSContext *ctx, JSValueConst this_val, int argc, JS
     return ab;
 }
 
+// imeOpen(title, initialText, maxLength, isPassword) -> bool
+static JSValue n_ime_open(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    const char *title = JS_ToCString(ctx, argv[0]), *init = JS_ToCString(ctx, argv[1]);
+    int32_t max_len = 0;
+    JS_ToInt32(ctx, &max_len, argv[2]);
+    bool ok = plat_ime_open(title ? title : "", init ? init : "", max_len, JS_ToBool(ctx, argv[3]));
+    JS_FreeCString(ctx, title);
+    JS_FreeCString(ctx, init);
+    return JS_NewBool(ctx, ok);
+}
+
+// imePoll() -> undefined while open, {ok: true, text} when confirmed, {ok: false} when cancelled
+static JSValue n_ime_poll(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    char text[4096];
+    int r = plat_ime_poll(text, sizeof text);
+    if (r == 0) return JS_UNDEFINED;
+    JSValue o = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, o, "ok", JS_NewBool(ctx, r > 0));
+    if (r > 0) JS_SetPropertyStr(ctx, o, "text", JS_NewString(ctx, text));
+    return o;
+}
+
+// memoryUsage() -> QuickJS's own accounting, in bytes and counts.
+static JSValue n_memory_usage(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    JSMemoryUsage m;
+    JS_ComputeMemoryUsage(JS_GetRuntime(ctx), &m);
+    JSValue o = JS_NewObject(ctx);
+#define M(f) JS_SetPropertyStr(ctx, o, #f, JS_NewFloat64(ctx, (double)m.f))
+    M(malloc_size); M(malloc_count); M(memory_used_size); M(atom_count); M(atom_size); M(str_count); M(str_size);
+    M(obj_count); M(obj_size); M(prop_count); M(prop_size); M(shape_count); M(shape_size); M(js_func_count);
+    M(js_func_size); M(js_func_code_size); M(js_func_pc2line_size); M(array_count); M(fast_array_count);
+    M(fast_array_elements); M(binary_object_count); M(binary_object_size);
+#undef M
+    return o;
+}
+
 static const JSCFunctionListEntry native_funcs[] = {
+    JS_CFUNC_DEF("memoryUsage", 0, n_memory_usage),
+    JS_CFUNC_DEF("imeOpen", 4, n_ime_open),
+    JS_CFUNC_DEF("imePoll", 0, n_ime_poll),
     JS_CFUNC_DEF("loadScript", 1, n_load_script),
     JS_CFUNC_DEF("utf8Decode", 1, n_utf8_decode),
     JS_CFUNC_DEF("utf8Encode", 1, n_utf8_encode),

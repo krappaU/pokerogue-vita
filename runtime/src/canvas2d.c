@@ -23,23 +23,54 @@ static JSClassID bitmap_class, canvas_class;
 
 // ---------------------------------------------------------------- bitmaps (decoded images)
 
+// A decoded image. After its pixels are uploaded to the GPU the decoded copy is dropped and only
+// the compressed file is kept; the rare canvas drawImage/getImageData of an image decodes it again.
+// This keeps main memory to roughly the size of the PNG files instead of all their pixels.
 typedef struct {
     int w, h;
-    uint8_t *rgba;              // straight alpha
+    uint8_t *encoded;           // the PNG/JPEG file
+    size_t encoded_len;
+    uint8_t *rgba;              // decoded pixels (straight alpha), or NULL
     plutovg_surface_t *surface; // premultiplied copy for drawImage, created on demand
 } bitmap;
+
+static size_t mem_encoded, mem_decoded;
+
+static void bitmap_drop_pixels(bitmap *b) {
+    if (b->rgba) {
+        stbi_image_free(b->rgba);
+        mem_decoded -= (size_t)b->w * b->h * 4;
+        b->rgba = NULL;
+    }
+    if (b->surface) {
+        plutovg_surface_destroy(b->surface);
+        mem_decoded -= (size_t)b->w * b->h * 4;
+        b->surface = NULL;
+    }
+}
+
+static const uint8_t *bitmap_pixels(bitmap *b) {
+    if (!b->rgba) {
+        int w, h, comp;
+        b->rgba = stbi_load_from_memory(b->encoded, (int)b->encoded_len, &w, &h, &comp, 4);
+        if (b->rgba) mem_decoded += (size_t)b->w * b->h * 4;
+    }
+    return b->rgba;
+}
 
 static void bitmap_finalizer(JSRuntime *rt, JSValue v) {
     bitmap *b = JS_GetOpaque(v, bitmap_class);
     if (!b) return;
-    stbi_image_free(b->rgba);
-    if (b->surface) plutovg_surface_destroy(b->surface);
+    bitmap_drop_pixels(b);
+    mem_encoded -= b->encoded_len;
+    free(b->encoded);
     free(b);
 }
 
 static plutovg_surface_t *bitmap_surface(bitmap *b) {
-    if (!b->surface) {
+    if (!b->surface && bitmap_pixels(b)) {
         b->surface = plutovg_surface_create(b->w, b->h);
+        mem_decoded += (size_t)b->w * b->h * 4;
         plutovg_convert_rgba_to_argb(plutovg_surface_get_data(b->surface), b->rgba, b->w, b->h,
                                      plutovg_surface_get_stride(b->surface));
     }
@@ -68,11 +99,29 @@ static JSValue n_decode_image(JSContext *ctx, JSValueConst this_val, int argc, J
     b->w = w;
     b->h = h;
     b->rgba = px;
+    b->encoded = malloc(len);
+    memcpy(b->encoded, p, len);
+    b->encoded_len = len;
+    mem_encoded += len;
+    mem_decoded += (size_t)w * h * 4;
     JSValue v = JS_NewObjectClass(ctx, bitmap_class);
     JS_SetOpaque(v, b);
     JS_DefinePropertyValueStr(ctx, v, "width", JS_NewInt32(ctx, w), JS_PROP_ENUMERABLE);
     JS_DefinePropertyValueStr(ctx, v, "height", JS_NewInt32(ctx, h), JS_PROP_ENUMERABLE);
     return v;
+}
+
+// imageMemory() -> [compressed bytes kept, decoded bytes alive]
+static JSValue n_image_memory(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    JSValue a = JS_NewArray(ctx);
+    JS_SetPropertyUint32(ctx, a, 0, JS_NewFloat64(ctx, (double)mem_encoded));
+    JS_SetPropertyUint32(ctx, a, 1, JS_NewFloat64(ctx, (double)mem_decoded));
+    return a;
+}
+
+void canvas_image_memory(size_t *encoded, size_t *decoded) {
+    *encoded = mem_encoded;
+    *decoded = mem_decoded;
 }
 
 // ---------------------------------------------------------------- fonts
@@ -438,9 +487,15 @@ const uint8_t *pixels_from_js(JSContext *ctx, JSValueConst obj, int *w, int *h, 
     }
     JS_FreeValue(ctx, inner); // the element keeps it alive
     if (b) {
+        // The GPU keeps its own copy, so hand the decoded pixels over and let the caller free them.
+        const uint8_t *px = bitmap_pixels(b);
+        if (!px) return NULL;
         *w = b->w;
         *h = b->h;
-        return b->rgba;
+        b->rgba = NULL;
+        mem_decoded -= (size_t)b->w * b->h * 4;
+        *owned = true;
+        return px;
     }
     if (c) {
         *w = c->w;
@@ -491,6 +546,7 @@ void canvas_register(JSContext *ctx, JSValue native) {
     canvas_proto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, canvas_proto, canvas_funcs, sizeof canvas_funcs / sizeof *canvas_funcs);
     JS_SetPropertyStr(ctx, native, "decodeImage", JS_NewCFunction(ctx, n_decode_image, "decodeImage", 1));
+    JS_SetPropertyStr(ctx, native, "imageMemory", JS_NewCFunction(ctx, n_image_memory, "imageMemory", 0));
     JS_SetPropertyStr(ctx, native, "registerFont", JS_NewCFunction(ctx, n_register_font, "registerFont", 5));
     JS_SetPropertyStr(ctx, native, "createCanvas2D", JS_NewCFunction(ctx, n_create_canvas, "createCanvas2D", 2));
 }
