@@ -176,3 +176,16 @@ map/filter/some, event-date checks with `new Date()` per species). Found while p
 Vita build overrode CMake's release flags without -DNDEBUG, so QuickJS's ~140 internal asserts
 (atoms, shapes, GC marking) were compiled in; the desktop build always had NDEBUG. Fixed in 0.31,
 along with a `Date` constructor without rest parameters.
+
+### Screens built on first use (runtime 0.32)
+Vita 0.31 log: title at startup 35.7 s, return to the title 29.3 s, battles 48-58 ms per frame.
+Handler setup times on desktop during a return to the title: StarterSelectUiHandler 674 ms,
+TestDialogueUiHandler (a developer tool) 422 ms, PokedexUiHandler 166 ms, settings screens ~270 ms
+in total, PokedexPageUiHandler 43 ms, EggSummaryUiHandler 31 ms. js/lazy_ui.js defers the setup of
+the starter select, Pokedex, Pokedex page, dialogue tester and egg summary handlers until a method
+is first called on them, then moves the objects they create back to their original drawing order.
+Only `instanceof` checks and UI.freeUIData's destroy() touch these handlers from outside (both
+handled). Desktop: first title frame 4.4 s -> 2.7 s, return to the title 2.6 s -> 1.4 s; starter
+select, its Pokedex page and the menu's Pokedex build on first use and look as before. Opening the
+Pokedex itself takes ~10 s of JS on desktop even when already built (PokeRogue's own work); not
+changed here.

@@ -44,6 +44,7 @@
     };
     for (const f of rt.onPhaserLoaded) f(P);
     N.loadScript("fastpath.js");
+    N.loadScript("lazy_ui.js");
     const on = g.localStorage.getItem("PKR_FASTPATH") !== "0";
     rt.fastpath.set(on);
     N.log("[phaser] patched: pre-FX disabled, fast path " + (on ? "enabled" : "disabled"));
