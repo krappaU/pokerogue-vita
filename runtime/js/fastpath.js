@@ -12,6 +12,8 @@
 // 5. NineSlice.renderWebGL: the vertex loop in native code.
 // 6. CanvasPool.create/remove: constant-time instead of scanning the whole pool.
 // 7. Display list / container membership from the objects' own fields instead of list scans.
+// 8. Utils.Array.Remove/RemoveAt and the WebGL renderer's wrapper lists: no JS shifting loop.
+// 9. AnimationManager: the sprites' animation-removed listeners in a Set instead of an array.
 //
 // Anything unusual (cropped sprites, custom pivots, masks, post pipelines, pipelines that
 // override batchSprite/batchQuad such as PokeRogue's SpritePipeline) takes Phaser's own path.
@@ -404,6 +406,94 @@
       return this;
     }
     return origContainerAdd.apply(this, arguments);
+  };
+
+  // 8. Utils.Array.Remove / RemoveAt (Container.remove, Structs.List): Phaser removes the element with
+  //    SpliceOne, a JS loop shifting the rest of the array down. Destroying a big container's
+  //    children one by one is quadratic in that loop (15% of the 50 s return to the title on the
+  //    Vita). Native splice does the same shift in C. Callers look these up on the shared Utils.Array
+  //    object at call time, so replacing them there is enough.
+  const AU = Phaser.Utils.Array, origArrRemove = AU.Remove, origRemoveAt = AU.RemoveAt;
+  AU.Remove = function (array, item, callback, context) {
+    if (Array.isArray(item)) return origArrRemove.apply(this, arguments);
+    const i = array.indexOf(item);
+    if (i === -1) return null;
+    array.splice(i, 1);
+    if (callback) callback.call(context === undefined ? array : context, item);
+    return item;
+  };
+  AU.RemoveAt = function (array, index, callback, context) {
+    if (!(index >= 0 && index < array.length)) return origRemoveAt.apply(this, arguments); // throws
+    const item = array.splice(index, 1)[0];
+    if (callback) callback.call(context === undefined ? array : context, item);
+    return item;
+  };
+
+  //    The WebGL renderer holds its own reference to Remove, and its wrapper lists are long (one
+  //    entry per texture: 2,000+), so deleting the textures of destroyed texts and canvases goes
+  //    through SpliceOne too. Those lists are only walked as a whole (context restore), so the order
+  //    doesn't matter: swap with the last entry. The framebuffer stack keeps its order.
+  const RP = Phaser.Renderer.WebGL.WebGLRenderer.prototype;
+  const unordered = (array, item) => {
+    const i = array.indexOf(item);
+    if (i === -1) return;
+    const last = array.pop();
+    if (i < array.length) array[i] = last;
+  };
+  const ordered = (array, item) => {
+    const i = array.indexOf(item);
+    if (i !== -1) array.splice(i, 1);
+  };
+  RP.deleteTexture = function (t) {
+    if (!t) return;
+    unordered(this.glTextureWrappers, t);
+    t.destroy();
+    return this;
+  };
+  RP.deleteFramebuffer = function (f) {
+    if (!f) return this;
+    ordered(this.fboStack, f);
+    unordered(this.glFramebufferWrappers, f);
+    f.destroy();
+    return this;
+  };
+  for (const [name, list] of [["deleteProgram", "glProgramWrappers"], ["deleteAttribLocation", "glAttribLocationWrappers"],
+                              ["deleteUniformLocation", "glUniformLocationWrappers"], ["deleteBuffer", "glBufferWrappers"]]) {
+    RP[name] = function (w) {
+      if (w) {
+        unordered(this[list], w);
+        w.destroy();
+      }
+      return this;
+    };
+  }
+
+  // 9. AnimationManager "remove" listeners: every Sprite's AnimationState subscribes to the global
+  //    AnimationManager's REMOVE_ANIMATION event and unsubscribes when destroyed. With 1,200+ sprites
+  //    that is one listener array, and the event emitter's removeListener rebuilds the whole array
+  //    on every removal: destroying the sprites is quadratic (25% of the return to the title).
+  //    Those subscriptions go into an insertion-ordered Set behind one real listener instead.
+  const AM = Phaser.Animations.AnimationManager.prototype;
+  const REMOVE_ANIM = Phaser.Animations.Events.REMOVE_ANIMATION;
+  const globalRemove = Phaser.Animations.AnimationState.prototype.globalRemove;
+  const origAMOn = AM.on, origAMOff = AM.off;
+  AM.on = function (event, fn, context) {
+    if (event !== REMOVE_ANIM || fn !== globalRemove || !context) return origAMOn.apply(this, arguments);
+    let states = this._pkrAnimStates;
+    if (!states) {
+      states = this._pkrAnimStates = new Set();
+      origAMOn.call(this, REMOVE_ANIM, function (key, anim) {
+        for (const st of states) st.globalRemove(key, anim);
+      });
+    }
+    states.add(context);
+    return this;
+  };
+  AM.off = AM.removeListener = function (event, fn, context) {
+    // Subscriptions made before this patch are still in the emitter's own array.
+    if (event === REMOVE_ANIM && fn === globalRemove && context && this._pkrAnimStates &&
+        this._pkrAnimStates.delete(context)) return this;
+    return origAMOff.apply(this, arguments);
   };
 
   g.__rt.fastpath = g.__fastpath = {

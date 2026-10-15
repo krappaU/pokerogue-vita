@@ -101,3 +101,19 @@ membership by scanning thousands of entries), canvas font parsing 8%. Changes: t
 (`js/i18n_cache.js`, ~46% hits on first setup, more on rebuilds), membership via Sets / the objects'
 own fields (`js/fastpath.js` 7 and the update-list part of 3), font-string parse cache. Desktop
 setup frame: ~5.5 s -> 4.9 s.
+
+### Return to the title (runtime 0.27), offline build e4e9b53
+On the Vita (0.26 log) "Save and Quit" was one 49.7 s frame, and starting the game spent the same in
+its first title frame. Profile of that frame: event-emitter `removeListener` 25%, Phaser's
+`SpliceOne` 15%, the JS `btoa`/`atob` 19% plus 5% in their regex replace (offline saves are base64
+of the whole save, ~0.5 MB), `GetValue` 3%. Causes and changes:
+- Every Sprite's AnimationState subscribes to the global AnimationManager's "remove" event (1,178
+  listeners on the title). eventemitter3 rebuilds the listener array on each removal, so destroying
+  the sprites is quadratic. Those subscriptions now live in a Set behind one listener
+  (`js/fastpath.js` 9).
+- `SpliceOne` is a JS loop shifting the array. Callers: `Utils.Array.Remove/RemoveAt` (containers,
+  lists) and the WebGL renderer deleting textures from its 2,000+ entry wrapper list. Native splice /
+  swap-with-last instead (`js/fastpath.js` 8).
+- `btoa`/`atob` in C (a 6 MB round trip takes 33 ms on desktop).
+Desktop, same save, Continue -> Save and Quit: 3.76 s -> 2.76 s for the rebuild frame. The desktop
+profile weights these less than the Vita one did; expected Vita effect ~60% of that frame.

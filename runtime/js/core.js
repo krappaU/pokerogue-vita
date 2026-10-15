@@ -284,29 +284,16 @@
       return N.utf8Decode(buf);
     }
   }
-  const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  // Native: offline saves are base64 of the whole save, too slow a character at a time in JS.
   g.btoa = (s) => {
-    s = String(s);
-    let out = "";
-    for (let i = 0; i < s.length; i += 3) {
-      const a = s.charCodeAt(i), b = s.charCodeAt(i + 1), c = s.charCodeAt(i + 2);
-      if (a > 255 || b > 255 || c > 255) throw new DOMException("Invalid character", "InvalidCharacterError");
-      const n = (a << 16) | ((b || 0) << 8) | (c || 0);
-      out += B64[(n >> 18) & 63] + B64[(n >> 12) & 63] + (i + 1 < s.length ? B64[(n >> 6) & 63] : "=") + (i + 2 < s.length ? B64[n & 63] : "=");
-    }
-    return out;
+    const r = N.btoa(String(s));
+    if (r === null) throw new DOMException("Invalid character", "InvalidCharacterError");
+    return r;
   };
   g.atob = (s) => {
-    s = String(s).replace(/[\s=]/g, "");
-    let out = "", buf = 0, bits = 0;
-    for (let i = 0; i < s.length; i++) {
-      const v = B64.indexOf(s[i]);
-      if (v < 0) throw new DOMException("Invalid character", "InvalidCharacterError");
-      buf = (buf << 6) | v;
-      bits += 6;
-      if (bits >= 8) { bits -= 8; out += String.fromCharCode((buf >> bits) & 255); }
-    }
-    return out;
+    const r = N.atob(String(s));
+    if (r === null) throw new DOMException("Invalid character", "InvalidCharacterError");
+    return r;
   };
   Object.assign(g, { TextEncoder, TextDecoder });
 

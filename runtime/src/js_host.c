@@ -273,11 +273,14 @@ static JSModuleDef *module_load(JSContext *ctx, const char *url, void *opaque) {
         return NULL;
     }
     double t1 = host_now_ms();
-    snprintf(msg, sizeof msg, "PokeRogue\n\nPreparing game code\n%s (%lu KB)\n\nThe first start takes a while.",
-             base ? base + 1 : url, (unsigned long)(len / 1024));
-    overlay_present(msg);
     char bc_path[700];
     bytecode_path(url, src, len, bc_path, sizeof bc_path);
+    struct stat st;
+    bool have_bc = stat(bc_path, &st) == 0;
+    snprintf(msg, sizeof msg, "PokeRogue\n\n%s game code\n%s (%lu KB)%s", have_bc ? "Loading" : "Preparing",
+             base ? base + 1 : url, (unsigned long)(len / 1024),
+             have_bc ? "" : "\n\nThe first start after an update takes a while.");
+    overlay_present(msg);
     JSValue fn = JS_UNDEFINED;
     bool cached = false;
     size_t blen = 0;
@@ -441,6 +444,99 @@ static JSValue n_utf8_decode(JSContext *ctx, JSValueConst this_val, int argc, JS
     return JS_NewStringLen(ctx, (const char *)p, len);
 }
 
+// btoa(string) -> string | null (null: a character above U+00FF). The JS versions built the result a
+// character at a time; offline saves are base64 of the whole save (megabytes), which took seconds.
+static JSValue n_btoa(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    static const char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t len;
+    const char *s = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!s) return JS_EXCEPTION;
+    // UTF-8 back to Latin-1 bytes (in place: never longer).
+    uint8_t *b = js_malloc(ctx, len + 1);
+    if (!b) {
+        JS_FreeCString(ctx, s);
+        return JS_EXCEPTION;
+    }
+    size_t n = 0;
+    bool ok = true;
+    for (size_t i = 0; i < len; i++) {
+        uint8_t c = (uint8_t)s[i];
+        if (c < 0x80) b[n++] = c;
+        else if ((c & 0xE0) == 0xC0 && c <= 0xC3 && i + 1 < len) b[n++] = (uint8_t)(((c & 3) << 6) | (s[++i] & 0x3F));
+        else { ok = false; break; }
+    }
+    JS_FreeCString(ctx, s);
+    if (!ok) {
+        js_free(ctx, b);
+        return JS_NULL;
+    }
+    size_t olen = (n + 2) / 3 * 4;
+    char *o = js_malloc(ctx, olen + 1);
+    if (!o) {
+        js_free(ctx, b);
+        return JS_EXCEPTION;
+    }
+    size_t j = 0;
+    for (size_t i = 0; i < n; i += 3) {
+        uint32_t v = (uint32_t)b[i] << 16 | (i + 1 < n ? (uint32_t)b[i + 1] << 8 : 0) | (i + 2 < n ? b[i + 2] : 0);
+        o[j++] = b64[v >> 18 & 63];
+        o[j++] = b64[v >> 12 & 63];
+        o[j++] = i + 1 < n ? b64[v >> 6 & 63] : '=';
+        o[j++] = i + 2 < n ? b64[v & 63] : '=';
+    }
+    js_free(ctx, b);
+    JSValue r = JS_NewStringLen(ctx, o, j);
+    js_free(ctx, o);
+    return r;
+}
+
+// atob(string) -> string | null (null: not base64). The result is a byte string (U+0000..U+00FF).
+static JSValue n_atob(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    size_t len;
+    const char *s = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!s) return JS_EXCEPTION;
+    // Bytes >= 0x80 take two bytes in UTF-8, so the output is at most 2 * 3/4 of the input.
+    char *o = js_malloc(ctx, len * 3 / 2 + 4);
+    if (!o) {
+        JS_FreeCString(ctx, s);
+        return JS_EXCEPTION;
+    }
+    size_t j = 0, nchars = 0, pad = 0;
+    uint32_t acc = 0;
+    int bits = 0;
+    bool ok = true;
+    for (size_t i = 0; i < len && ok; i++) {
+        uint8_t c = (uint8_t)s[i];
+        int v;
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\f' || c == '\r') continue;
+        if (c == '=') { pad++; continue; }
+        if (pad) { ok = false; break; } // data after padding
+        if (c >= 'A' && c <= 'Z') v = c - 'A';
+        else if (c >= 'a' && c <= 'z') v = c - 'a' + 26;
+        else if (c >= '0' && c <= '9') v = c - '0' + 52;
+        else if (c == '+') v = 62;
+        else if (c == '/') v = 63;
+        else { ok = false; break; }
+        nchars++;
+        acc = acc << 6 | (uint32_t)v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            uint8_t byte = (uint8_t)(acc >> bits);
+            if (byte < 0x80) o[j++] = (char)byte;
+            else {
+                o[j++] = (char)(0xC0 | byte >> 6);
+                o[j++] = (char)(0x80 | (byte & 0x3F));
+            }
+        }
+    }
+    JS_FreeCString(ctx, s);
+    if (ok && (nchars % 4 == 1 || pad > 2 || (pad && (nchars + pad) % 4))) ok = false;
+    JSValue r = ok ? JS_NewStringLen(ctx, o, j) : JS_NULL;
+    js_free(ctx, o);
+    return r;
+}
+
 // utf8Encode(string) -> ArrayBuffer
 static JSValue n_utf8_encode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     size_t len;
@@ -554,6 +650,8 @@ static const JSCFunctionListEntry native_funcs[] = {
     JS_CFUNC_DEF("loadScript", 1, n_load_script),
     JS_CFUNC_DEF("utf8Decode", 1, n_utf8_decode),
     JS_CFUNC_DEF("utf8Encode", 1, n_utf8_encode),
+    JS_CFUNC_DEF("btoa", 1, n_btoa),
+    JS_CFUNC_DEF("atob", 1, n_atob),
     JS_CFUNC_DEF("log", 1, n_log),
     JS_CFUNC_DEF("now", 0, n_now),
     JS_CFUNC_DEF("readFile", 1, n_read_file),
