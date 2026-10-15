@@ -219,3 +219,23 @@ for image elements runs on its own thread (core 1) and the image's `load` fires 
 Audio's per-frame hook now skips re-folding node chains when no gain, pan, rate or connection
 changed and no ramp is running. Checked on desktop (offline game to a battle turn, live site to its
 login screen) and in Vita3K (no crash); device timings pending.
+
+### Saves, stale builds and the shop (runtime 0.37, 2026-10-15)
+- **Save encryption:** the game keeps AES-encrypted copies of its saves in localStorage
+  (crypto-js, `AES.encrypt(json, key).toString()`); on the Vita each save spent 7-16 s in it
+  (27-log: `stringify`, `parse`, `_doCryptBlock` under `saveAll`), and loading a save at login
+  most of its time too. js/savecrypt.js finds crypto-js as it sets itself up and gives it native
+  `AES.encrypt`/`decrypt` (OpenSSL, src/savecrypt.c) for that call pattern, after checking both
+  directions against crypto-js. Desktop, 321 KB of JSON (scripts/probe_savecrypt.js): encrypt
+  728 -> 4.5 ms, decrypt 689 -> 2 ms.
+- **"Session out of date: existing version is greater":** the runtime sent `Origin` with every
+  request. Cloudflare keeps a separate cached copy of pokerogue.net for requests with that header,
+  and it held a July build (`index-B1LWFm2v.js`) while browsers got the current one
+  (`index-CTFFh6u_.js`); the server then refused the older client's saves. Same-origin GETs no
+  longer carry `Origin`, as in browsers.
+- **Shop items missing:** the reward items appear from a 1250 ms counter tween (divided by the game
+  speed) that reveals at most one item per update, so at ~12 fps with fast animations the last
+  ones never showed. Tweens with an onUpdate callback now advance in steps of ~17 ms on long frames.
+- **Boxes in the shop's price line:** U+00A0 between name and price; text drawing and measuring now
+  treat no-break/typographic spaces as spaces and zero-width characters as nothing, as browsers do
+  when the font lacks them.

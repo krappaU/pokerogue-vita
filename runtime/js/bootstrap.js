@@ -7,7 +7,7 @@
 (function (g) {
   "use strict";
   const N = g.__native;
-  for (const f of ["core.js", "i18n_cache.js", "dom.js", "canvas2d.js", "webgl.js", "net.js", "storage.js", "input.js", "audio.js"]) {
+  for (const f of ["core.js", "i18n_cache.js", "dom.js", "canvas2d.js", "webgl.js", "net.js", "storage.js", "input.js", "audio.js", "savecrypt.js"]) {
     N.loadScript(f);
   }
   const rt = g.__rt, doc = g.document;
@@ -25,6 +25,7 @@
   // (before any Phaser.Game exists):
   //  - pre-FX off: Phaser otherwise allocates 99 square render targets plus 3 full-screen ones up
   //    front (~180 MB of GPU memory at 1920x1080) for per-object effects PokeRogue never uses.
+  //  - tweens with an onUpdate callback advance in steps of ~17 ms on slow frames (see below).
   //  - native render fast paths (js/fastpath.js); PKR_FASTPATH=0 in localStorage turns them off.
   let phaserValue;
   function onPhaser(P) {
@@ -42,6 +43,40 @@
       rt.renderer = this;
       return init.apply(this, arguments);
     };
+    // Game code written for 60 fps sometimes acts at most once per tween update: the shop reveals
+    // one item per onUpdate of a 1250 ms counter (divided by the game speed), so at Vita frame
+    // rates the last items never appeared. On frames longer than 25 ms, tweens with an onUpdate
+    // callback take extra steps of the frame's time split up (at most 8); the others advance once
+    // by the whole frame as before. Phaser 3.90's TweenManager.step otherwise.
+    const TM = P.Tweens && P.Tweens.TweenManager && P.Tweens.TweenManager.prototype;
+    if (TM && typeof TM.step === "function" && typeof TM.getDelta === "function" && g.localStorage.getItem("PKR_TWEEN_STEPS") !== "0") {
+      const hasUpdateCb = (t) => !!(t.callbacks && t.callbacks.onUpdate);
+      TM.step = function (tick) {
+        const e = this.getDelta(tick === true);
+        if (e <= 0) return;
+        this.processing = true;
+        const list = this.tweens, done = [];
+        const n = e > 25 ? Math.min(Math.ceil(e / 16.7), 8) : 1, sub = e / n;
+        let finished = null;
+        for (let k = 0; k < n - 1; k++) {
+          for (let i = 0; i < list.length; i++) {
+            const t = list[i];
+            if (!hasUpdateCb(t) || (finished && finished.has(t))) continue;
+            if (t.update(sub)) { (finished || (finished = new Set())).add(t); done.push(t); }
+          }
+        }
+        for (let i = 0; i < list.length; i++) {
+          const t = list[i];
+          if (finished && finished.has(t)) continue;
+          if (t.update(n > 1 && hasUpdateCb(t) ? sub : e)) done.push(t);
+        }
+        for (let i = 0; i < done.length && list.length; i++) {
+          const t = done[i], j = list.indexOf(t);
+          if (j > -1 && (t.isPendingRemove() || t.isDestroyed())) { list.splice(j, 1); t.destroy(); }
+        }
+        this.processing = false;
+      };
+    }
     for (const f of rt.onPhaserLoaded) f(P);
     N.loadScript("fastpath.js");
     N.loadScript("lazy_ui.js");

@@ -530,12 +530,36 @@ CFN(c_fill) { SELF; use_fill(c); plutovg_canvas_fill_preserve(c->canvas); return
 CFN(c_stroke) { SELF; use_stroke(c); plutovg_canvas_stroke_preserve(c->canvas); return JS_UNDEFINED; }
 CFN(c_clip) { SELF; plutovg_canvas_clip_preserve(c->canvas); return JS_UNDEFINED; }
 
+// Browsers draw a space for no-break and typographic spaces the font has no glyph for, and nothing
+// for zero-width characters; the game's pixel fonts lack them (the shop puts U+00A0 between an
+// item's name and its price), and plutovg would draw the missing-glyph box. Rewrites them in place
+// (the result is never longer) and returns the new length.
+static size_t fix_spaces(char *s, size_t len) {
+    if (!memchr(s, 0xC2, len) && !memchr(s, 0xE2, len) && !memchr(s, 0xEF, len)) return len;
+    size_t o = 0;
+    for (size_t i = 0; i < len;) {
+        unsigned char a = s[i], b = i + 1 < len ? s[i + 1] : 0, c = i + 2 < len ? s[i + 2] : 0;
+        if (a == 0xC2 && b == 0xA0) { s[o++] = ' '; i += 2; continue; }         // U+00A0
+        if (a == 0xC2 && b == 0xAD) { i += 2; continue; }                       // U+00AD soft hyphen
+        if (a == 0xE2 && b == 0x80) {
+            if (c >= 0x80 && c <= 0x8A) { s[o++] = ' '; i += 3; continue; }      // U+2000-200A
+            if (c >= 0x8B && c <= 0x8D) { i += 3; continue; }                    // U+200B-200D
+            if (c == 0xAF) { s[o++] = ' '; i += 3; continue; }                   // U+202F
+        }
+        if (a == 0xE2 && b == 0x81 && c == 0xA0) { i += 3; continue; }           // U+2060
+        if (a == 0xEF && b == 0xBB && c == 0xBF) { i += 3; continue; }           // U+FEFF
+        s[o++] = s[i++];
+    }
+    return o;
+}
+
 static JSValue text_op(JSContext *ctx, JSValueConst this_val, JSValueConst *argv, bool stroke) {
     SELF;
     if (!c->face) return JS_UNDEFINED;
     size_t len;
     const char *s = JS_ToCStringLen(ctx, &len, argv[0]);
     if (!s) return JS_EXCEPTION;
+    len = fix_spaces((char *)s, len);
     if (stroke) {
         use_stroke(c);
         plutovg_canvas_stroke_text(c->canvas, s, (int)len, PLUTOVG_TEXT_ENCODING_UTF8, F(1), F(2));
@@ -558,6 +582,11 @@ CFN(c_measure_text) {
     if (c->face) {
         size_t len;
         const char *s = JS_ToCStringLen(ctx, &len, argv[0]);
+        if (!s) {
+            JS_FreeValue(ctx, a);
+            return JS_EXCEPTION;
+        }
+        len = fix_spaces((char *)s, len);
         width = plutovg_font_face_text_extents(c->face, c->font_size, s, (int)len, PLUTOVG_TEXT_ENCODING_UTF8, &ext);
         plutovg_font_face_get_metrics(c->face, c->font_size, &ascent, &descent, &gap, NULL);
         JS_FreeCString(ctx, s);

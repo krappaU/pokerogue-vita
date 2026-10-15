@@ -301,9 +301,20 @@ static size_t on_write_body(char *p, size_t size, size_t n, void *ud) {
     return on_write(p, size, n, &r->body);
 }
 
-static struct curl_slist *default_headers(struct curl_slist *h, bool has_origin, bool has_referer) {
+static bool same_origin(const char *url) {
+    size_t olen = strlen(origin);
+    return !strncmp(url, origin, olen) && (url[olen] == '/' || url[olen] == '?' || !url[olen]);
+}
+
+// Browsers send Origin with cross-origin and non-GET requests only. Same-origin GETs must not carry
+// it: Cloudflare keeps a separate cached copy of pokerogue.net for requests with an Origin header,
+// and that copy was a months-old build of the game (whose saves the server then rejects as older
+// than the account's last save).
+static struct curl_slist *default_headers(struct curl_slist *h, const char *method, const char *url,
+                                          bool has_origin, bool has_referer) {
     char line[512];
-    if (!has_origin) {
+    bool simple_get = !strcmp(method, "GET") || !strcmp(method, "HEAD");
+    if (!has_origin && !(simple_get && same_origin(url))) {
         snprintf(line, sizeof line, "Origin: %s", origin);
         h = curl_slist_append(h, line);
     }
@@ -580,7 +591,7 @@ char *net_get_sync(const char *url, size_t *len, long *status) {
     static char errbuf[CURL_ERROR_SIZE];
     errbuf[0] = 0;
     curl_easy_setopt(e, CURLOPT_ERRORBUFFER, errbuf);
-    struct curl_slist *h = default_headers(NULL, false, false);
+    struct curl_slist *h = default_headers(NULL, "GET", url, false, false);
     curl_easy_setopt(e, CURLOPT_HTTPHEADER, h);
     curl_easy_setopt(e, CURLOPT_WRITEFUNCTION, on_write);
     curl_easy_setopt(e, CURLOPT_WRITEDATA, &b);
@@ -784,7 +795,7 @@ static JSValue n_http(JSContext *ctx, JSValueConst this_val, int argc, JSValueCo
         JS_FreeValue(ctx, kv);
         JS_FreeValue(ctx, vv);
     }
-    r->headers = default_headers(r->headers, has_origin, has_referer);
+    r->headers = default_headers(r->headers, method, url, has_origin, has_referer);
     curl_easy_setopt(e, CURLOPT_HTTPHEADER, r->headers);
     curl_easy_setopt(e, CURLOPT_CUSTOMREQUEST, method);
     if (!strcmp(method, "HEAD")) curl_easy_setopt(e, CURLOPT_NOBODY, 1L);

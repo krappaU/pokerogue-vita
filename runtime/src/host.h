@@ -141,6 +141,7 @@ void canvas_register(JSContext *ctx, JSValue native);    // canvas2d.c
 void fastpath_register(JSContext *ctx, JSValue native);  // fastpath.c
 void audio_init(void);                                    // audio.c: decoder thread + output
 void audio_register(JSContext *ctx, JSValue native);      // audio.c: __native.audio*
+void savecrypt_register(JSContext *ctx, JSValue native);  // savecrypt.c: __native.aesEncrypt/aesDecrypt
 void audio_memory(size_t *pcm, size_t *mp3, int *active_voices);
 
 // Status messages drawn before the game takes over the screen (overlay.c).
