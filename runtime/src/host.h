@@ -17,6 +17,8 @@ typedef struct {
     const char *control;     // optional FIFO path for test commands (see main.c)
     int win_w, win_h;        // window / screen size
     int exit_after_frames;   // 0 = run forever
+    const char *local_dir;   // config.txt local=<dir>: play an offline build from this folder
+    bool force_online;       // config.txt online=1
     bool no_profile;         // config.txt profile=0
     bool net_trace;          // config.txt nettrace=1: log API request headers
     bool osk;                // always use the built-in keyboard (config.txt osk=1)
@@ -105,11 +107,14 @@ void prof_phase(const char *name, double ms); // time spent in one main-loop ste
 void prof_poll(JSContext *ctx); // from the JS interrupt handler
 void prof_frame(void);          // once per frame
 void net_poll(JSContext *ctx);                 // deliver finished requests
+void net_pump(void);                           // progress transfers only (from long JS runs)
 void net_stats(char *out, size_t n);           // one-line summary for the log
 void net_register(JSContext *ctx, JSValue native);
 bool host_random_bytes(void *buf, size_t n);
 // Blocking GET used by the module loader. Returns malloc'd body or NULL.
 char *net_get_sync(const char *url, size_t *len, long *status);
+#define LOCAL_ORIGIN "https://offline.invalid" // origin of the game in local mode (local=<dir>)
+bool net_is_local(const char *url);
 
 // ---------------------------------------------------------------- bindings
 
@@ -153,3 +158,4 @@ void canvas_memory(size_t *canvas_bytes, int *canvas_count, size_t *font_bytes);
 // Returns RGBA8 pixels (straight alpha) of an Image/Canvas/ImageData-like object, or NULL.
 // *owned is set when the caller must free() the returned buffer.
 const uint8_t *pixels_from_js(JSContext *ctx, JSValueConst obj, int *w, int *h, bool *owned);
+JSValue bitmap_ref(JSContext *ctx, JSValueConst obj); // Bitmap behind an image source, or undefined

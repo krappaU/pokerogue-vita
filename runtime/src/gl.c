@@ -52,6 +52,9 @@ static struct {
 #define RT_SCALE 0.5f
 static uint8_t tex_scaled[65536], fb_scaled[65536];
 
+static void tex_forget(JSContext *ctx, GLuint id);
+static void tex_use(JSContext *ctx, GLuint id);
+
 // ---------------------------------------------------------------- helpers
 
 static inline int gi(JSContext *ctx, JSValueConst v) {
@@ -354,6 +357,7 @@ FN(w_deleteTexture) {
     GLuint id = oid(A(0));
     if (id) {
         tex_account(id, 0);
+        tex_forget(ctx, id);
         if (id < 65536) tex_scaled[id] = 0;
         glDeleteTextures(1, &id);
     }
@@ -387,6 +391,7 @@ FN(w_bindBuffer) {
 FN(w_bindTexture) {
     glBindTexture(gi(ctx, A(0)), oid(A(1)));
     if (st.active_unit >= 0 && st.active_unit < 32) track(ctx, &st.bound_texture[st.active_unit], A(1));
+    tex_use(ctx, oid(A(1)));
     return JS_UNDEFINED;
 }
 FN(w_bindFramebuffer) {
@@ -497,6 +502,122 @@ static void tex_account(GLuint id, size_t bytes) {
     tex_total = tex_total - tex_bytes[id] + bytes;
     tex_bytes[id] = (uint32_t)bytes;
     if (tex_total > tex_peak) tex_peak = tex_total;
+}
+
+// ---------------------------------------------------------------- texture eviction
+// Phaser never frees a texture it has loaded, and PokeRogue loads a lot of them: on the Vita the
+// GPU memory pools fill up (then vitaGL stalls for a second per failed allocation, and uploads
+// fail). Textures uploaded from images keep a reference to their decoded-image object, whose PNG
+// data stays in memory; when texture memory is over budget, the ones not drawn for a while are
+// shrunk to 1x1 and re-uploaded from the PNG the next time they are bound or drawn with.
+#define TEX_MAX 16384 // vitaGL's texture name limit
+#define TEX_BUDGET (64u * 1024 * 1024)
+#define TEX_IDLE_FRAMES 600 // about 20 s at 30 fps
+typedef struct {
+    JSValue src;         // Bitmap the texture was uploaded from, or JS_UNDEFINED (not evictable)
+    uint32_t last_used;  // frame number
+    uint16_t w, h;
+    bool has_src, flip, premul, evicted;
+} tex_rec;
+static tex_rec texrec[TEX_MAX];
+static uint32_t gl_frame;
+static size_t evictable_bytes;
+static int n_evictions, n_restores;
+
+static void tex_forget(JSContext *ctx, GLuint id) {
+    if (!id || id >= TEX_MAX) return;
+    tex_rec *t = &texrec[id];
+    if (t->has_src) {
+        if (!t->evicted) evictable_bytes -= (size_t)t->w * t->h * 4;
+        JS_FreeValue(ctx, t->src);
+    }
+    memset(t, 0, sizeof *t);
+    t->src = JS_UNDEFINED;
+}
+
+static void tex_remember(JSContext *ctx, GLuint id, JSValueConst src, int w, int h) {
+    tex_forget(ctx, id);
+    if (!id || id >= TEX_MAX) return;
+    JSValue b = bitmap_ref(ctx, src);
+    if (JS_IsUndefined(b)) return;
+    tex_rec *t = &texrec[id];
+    t->src = b;
+    t->has_src = true;
+    t->w = (uint16_t)w, t->h = (uint16_t)h;
+    t->flip = st.flip_y, t->premul = st.premultiply;
+    t->last_used = gl_frame;
+    evictable_bytes += (size_t)w * h * 4;
+}
+
+static const uint8_t *unpack(const uint8_t *src, int w, int h, bool owned, bool *fr);
+
+// Re-uploads an evicted texture; it must be bound to the active unit.
+static void tex_restore(JSContext *ctx, GLuint id) {
+    tex_rec *t = &texrec[id];
+    int w, h;
+    bool owned, fr;
+    const uint8_t *px = pixels_from_js(ctx, t->src, &w, &h, &owned);
+    if (!px) return; // out of memory: stays evicted, tried again next time
+    bool sf = st.flip_y, sp = st.premultiply;
+    st.flip_y = t->flip, st.premultiply = t->premul;
+    const uint8_t *up = unpack(px, w, h, owned, &fr);
+    st.flip_y = sf, st.premultiply = sp;
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, up);
+    tex_account(id, (size_t)w * h * 4);
+    if (fr) free((void *)up);
+    if (owned && up != px) free((void *)px);
+    t->evicted = false;
+    evictable_bytes += (size_t)t->w * t->h * 4;
+    n_restores++;
+}
+
+static void tex_use(JSContext *ctx, GLuint id) {
+    if (!id || id >= TEX_MAX) return;
+    texrec[id].last_used = gl_frame;
+    if (texrec[id].has_src && texrec[id].evicted) tex_restore(ctx, id);
+}
+
+// Before a draw: every texture bound to a unit counts as used (Phaser skips bindTexture for a
+// texture that is still bound), and evicted ones come back.
+static void textures_for_draw(JSContext *ctx) {
+    for (int u = 0; u < 16; u++) {
+        GLuint id = oid(st.bound_texture[u]);
+        if (!id || id >= TEX_MAX) continue;
+        texrec[id].last_used = gl_frame;
+        if (texrec[id].has_src && texrec[id].evicted) {
+            glActiveTexture(GL_TEXTURE0 + u);
+            tex_restore(ctx, id);
+            glActiveTexture(GL_TEXTURE0 + st.active_unit);
+        }
+    }
+}
+
+// Once per frame: over budget -> evict the textures idle longest (oldest first, a few per frame).
+static void textures_evict(void) {
+    gl_frame++;
+    if (tex_total <= TEX_BUDGET || evictable_bytes == 0) return;
+    for (int round = 0; round < 8 && tex_total > TEX_BUDGET; round++) {
+        GLuint victim = 0;
+        uint32_t oldest = gl_frame;
+        for (GLuint id = 1; id < TEX_MAX; id++) {
+            tex_rec *t = &texrec[id];
+            if (!t->has_src || t->evicted) continue;
+            if (gl_frame - t->last_used < TEX_IDLE_FRAMES) continue;
+            if (t->last_used < oldest) oldest = t->last_used, victim = id;
+        }
+        if (!victim) return;
+        static const uint8_t clear[4] = {0, 0, 0, 0};
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, victim);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, clear);
+        tex_account(victim, 4);
+        texrec[victim].evicted = true;
+        evictable_bytes -= (size_t)texrec[victim].w * texrec[victim].h * 4;
+        n_evictions++;
+        glBindTexture(GL_TEXTURE_2D, oid(st.bound_texture[0]));
+        glActiveTexture(GL_TEXTURE0 + st.active_unit);
+    }
 }
 // textureDump(minKB) -> "id:KB ..." for live textures of at least minKB, largest first (diagnostics)
 static JSValue n_texture_dump(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -779,8 +900,13 @@ FN(w_vertexAttrib4f) {
     return JS_UNDEFINED;
 }
 
-FN(w_drawArrays) { glDrawArrays(gi(ctx, A(0)), gi(ctx, A(1)), gi(ctx, A(2))); return JS_UNDEFINED; }
+FN(w_drawArrays) {
+    textures_for_draw(ctx);
+    glDrawArrays(gi(ctx, A(0)), gi(ctx, A(1)), gi(ctx, A(2)));
+    return JS_UNDEFINED;
+}
 FN(w_drawElements) {
+    textures_for_draw(ctx);
     glDrawElements(gi(ctx, A(0)), gi(ctx, A(1)), gi(ctx, A(2)), (const void *)(intptr_t)gi(ctx, A(3)));
     return JS_UNDEFINED;
 }
@@ -829,11 +955,23 @@ FN(w_texImage2D) {
         int fmt = gi(ctx, A(3)), type = gi(ctx, A(4)), w, h;
         bool owned, fr;
         const uint8_t *px = pixels_from_js(ctx, A(5), &w, &h, &owned);
-        if (!px) return JS_ThrowTypeError(ctx, "texImage2D: unsupported source");
+        if (!px) {
+            // No pixels (usually out of memory). Throwing here would abort the game's render loop
+            // for good, so upload a transparent pixel instead.
+            static int warned;
+            if (warned++ < 5) host_log("[gl] texImage2D: no pixels from the source (out of memory?)");
+            static const uint8_t clear[4] = {0, 0, 0, 0};
+            glTexImage2D(target, level, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, clear);
+            if (level == 0) tex_account(bound_tex_id(), 4), tex_forget(ctx, bound_tex_id());
+            return JS_UNDEFINED;
+        }
         const uint8_t *up = unpack(px, w, h, owned, &fr);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
         glTexImage2D(target, level, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, up);
-        if (level == 0) tex_account(bound_tex_id(), (size_t)w * h * 4);
+        if (level == 0) {
+            tex_account(bound_tex_id(), (size_t)w * h * 4);
+            if (target == GL_TEXTURE_2D) tex_remember(ctx, bound_tex_id(), A(5), w, h);
+        }
         (void)ifmt, (void)fmt, (void)type;
         if (fr) free((void *)up);
         if (owned && up != px) free((void *)px);
@@ -844,6 +982,7 @@ FN(w_texImage2D) {
     const uint8_t *px = JS_IsNull(A(8)) || JS_IsUndefined(A(8)) ? NULL : buffer_data(ctx, A(8), &len);
     GLuint tid = bound_tex_id();
     if (tid && tid < 65536) tex_scaled[tid] = 0;
+    if (level == 0) tex_forget(ctx, tid);
     if (!px && level == 0 && tid && tid < 65536 && w == st.virt_w && h == st.virt_h && w >= 1280) {
         w = (int)(w * RT_SCALE);
         h = (int)(h * RT_SCALE);
@@ -861,6 +1000,7 @@ FN(w_texImage2D) {
 // texSubImage2D(target, level, x, y, format, type, source)
 // texSubImage2D(target, level, x, y, width, height, format, type, pixels)
 FN(w_texSubImage2D) {
+    if (gi(ctx, A(1)) == 0) tex_forget(ctx, bound_tex_id()); // contents no longer just the image
     int target = gi(ctx, A(0)), level = gi(ctx, A(1)), x = gi(ctx, A(2)), y = gi(ctx, A(3));
     if (argc == 7) {
         int w, h;
@@ -1062,11 +1202,13 @@ void gl_register(JSContext *ctx, JSValue native) {
     st.canvas = st.bound_program = st.bound_array_buffer = st.bound_element_buffer = JS_NULL;
     st.bound_framebuffer = st.bound_renderbuffer = JS_NULL;
     for (int i = 0; i < 32; i++) st.bound_texture[i] = JS_NULL;
+    for (int i = 0; i < TEX_MAX; i++) texrec[i].src = JS_UNDEFINED;
     JS_SetPropertyStr(ctx, native, "createWebGLPrototype", JS_NewCFunction(ctx, n_create_gl_proto, "createWebGLPrototype", 0));
     JS_SetPropertyStr(ctx, native, "textureDump", JS_NewCFunction(ctx, n_texture_dump, "textureDump", 1));
 }
 
 void gl_after_frame(void) {
+    textures_evict();
     // Clear the whole screen (including the letterbox bars) for the next frame, then put back the
     // GL state touched, from our own shadow copies, since Phaser caches its own view of the state.
     int w, h;

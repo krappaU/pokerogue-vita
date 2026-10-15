@@ -112,6 +112,20 @@ The game's text fields are HTML `<input>` elements over the canvas; `js/input.js
 - Compiled game code is cached in `<data>/bytecode/` (key: URL, source, QuickJS version). On the
   desktop a cache hit loads 4-6x faster than compiling.
 
+## Offline game (local mode)
+An offline build of PokeRogue in `<data>/game/` (`index.html`, `assets/`, `images/`...) is played
+instead of the live site: served under the made-up origin `https://offline.invalid`, no login,
+saves in `<data>/localStorage-offline.json`. `online=1` in `config.txt` ignores the folder;
+`local=<dir>` names another one. The build used for testing is the one Admiral-Billy's PokeRogue
+App downloads for its offline mode (`game.zip` from github.com/Admiral-Billy/pokerogue/releases,
+~530 MB, 735 MB unpacked; the `.map` files can be deleted).
+
+## Memory: texture eviction
+Phaser never frees textures. Image-backed textures not drawn for ~20 s are shrunk to 1x1 when GPU
+texture memory exceeds 64 MB, and re-uploaded from the image's PNG data when next used (`gl.c`).
+The network is also serviced from the JS interrupt handler, so downloads don't time out during
+long frames.
+
 ## The game's API and Cloudflare
 api.pokerogue.net sits behind Cloudflare. Requests without a browser-like `Origin`/`Referer`
 (`https://pokerogue.net`) get a 403 "Sorry, you have been blocked" HTML page, and many failed

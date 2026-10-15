@@ -43,7 +43,10 @@
       getOwnPropertyDescriptor(t, k) { return data.has(k) ? { enumerable: true, configurable: true, value: data.get(k) } : undefined; },
     });
   }
-  g.localStorage = makeStorage("localStorage.json");
+  // The offline game (local mode) keeps its saves in local storage: keep them apart from the
+  // online game's settings.
+  const offline = String(N.baseURL || "").startsWith("https://offline.invalid");
+  g.localStorage = makeStorage(offline ? "localStorage-offline.json" : "localStorage.json");
   g.sessionStorage = makeStorage(null);
   g.Storage = function Storage() {};
 

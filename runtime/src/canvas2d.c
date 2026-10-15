@@ -577,6 +577,17 @@ static JSValue n_create_canvas(JSContext *ctx, JSValueConst this_val, int argc, 
 
 // ---------------------------------------------------------------- pixel sources for WebGL
 
+// The decoded-image (Bitmap) object behind a texture source (Bitmap or <img>), with a new
+// reference, or JS_UNDEFINED. gl.c keeps it to re-upload evicted textures from the image data.
+JSValue bitmap_ref(JSContext *ctx, JSValueConst obj) {
+    if (JS_GetOpaque(obj, bitmap_class)) return JS_DupValue(ctx, obj);
+    if (!JS_IsObject(obj) || JS_GetOpaque(obj, canvas_class)) return JS_UNDEFINED;
+    JSValue inner = JS_GetPropertyStr(ctx, obj, "_native");
+    if (JS_GetOpaque(inner, bitmap_class)) return inner;
+    JS_FreeValue(ctx, inner);
+    return JS_UNDEFINED;
+}
+
 const uint8_t *pixels_from_js(JSContext *ctx, JSValueConst obj, int *w, int *h, bool *owned) {
     *owned = false;
     bitmap *b = JS_GetOpaque(obj, bitmap_class);

@@ -369,6 +369,7 @@ static void draw_over_game(JSContext *ctx, double js_ms) {
 static int js_interrupt(JSRuntime *rt, void *opaque) {
     (void)rt, (void)opaque;
     if (g_ctx_for_mem) prof_poll(g_ctx_for_mem);
+    net_pump();
     if (!in_frame_js || !g_cfg.interrupt_after_s || host_now_ms() - phase_t0 < g_cfg.interrupt_after_s * 1000.0)
         return 0;
     host_log("[watchdog] interrupting JS that has run for %d s in one frame", g_cfg.interrupt_after_s);
@@ -400,6 +401,24 @@ static void save_screenshot(const char *path) {
 //   osk=1                           built-in keyboard instead of the system one
 //   profile=0                       no built-in profiler (on by default; see profiler.c)
 //   nettrace=1                      log the headers of requests to the game's API
+//   local=game                      play an offline build of the game from <data>/game (no login,
+//                                   saves stay on the console); automatic if <data>/game exists
+//   online=1                        play the live site even if <data>/game exists
+// An offline build of the game in <data>/game is used automatically unless config.txt says
+// online=1 (or names another folder with local=).
+static void detect_local_game(void) {
+    if (g_cfg.local_dir || g_cfg.force_online) return;
+    static char dir[600];
+    char probe[700];
+    snprintf(dir, sizeof dir, "%s/game", g_cfg.data_dir);
+    snprintf(probe, sizeof probe, "%s/index.html", dir);
+    FILE *f = fopen(probe, "rb");
+    if (!f) return;
+    fclose(f);
+    g_cfg.local_dir = dir;
+    g_cfg.base_url = LOCAL_ORIGIN "/";
+}
+
 static void load_config_file(void) {
     char path[512];
     snprintf(path, sizeof path, "%s/config.txt", g_cfg.data_dir);
@@ -424,6 +443,17 @@ static void load_config_file(void) {
             g_cfg.hud = atoi(v) != 0;
         } else if (!strcmp(k, "osk")) {
             g_cfg.osk = atoi(v) != 0;
+        } else if (!strcmp(k, "local") && v[0]) {
+            // A folder with an offline build of the game (relative paths: inside the data folder).
+            static char dir[600];
+            if (v[0] == '/' || strchr(v, ':')) snprintf(dir, sizeof dir, "%s", v);
+            else snprintf(dir, sizeof dir, "%s/%s", g_cfg.data_dir, v);
+            size_t n = strlen(dir);
+            while (n > 1 && dir[n - 1] == '/') dir[--n] = 0;
+            g_cfg.local_dir = dir;
+            g_cfg.base_url = LOCAL_ORIGIN "/";
+        } else if (!strcmp(k, "online")) {
+            g_cfg.force_online = atoi(v) != 0;
         } else if (!strcmp(k, "nettrace")) {
             g_cfg.net_trace = atoi(v) != 0;
         } else if (!strcmp(k, "profile")) {
@@ -445,6 +475,7 @@ int main(int argc, char **argv) {
     for (int i = 1; i + 1 < argc; i++)
         if (!strcmp(argv[i], "--data")) g_cfg.data_dir = argv[i + 1];
     load_config_file();
+    detect_local_game();
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
         if (!strcmp(a, "--url") && v) g_cfg.base_url = argv[++i];
@@ -463,6 +494,18 @@ int main(int argc, char **argv) {
     snprintf(path, sizeof path, "%s/log.txt", g_cfg.data_dir);
     log_fp = fopen(path, "w");
     host_log("%s, built %s | QuickJS-ng %s | page %s", host_version_string(), __DATE__, JS_GetVersion(), g_cfg.base_url);
+    if (g_cfg.local_dir) {
+        char vp[700], ver[64] = "?";
+        snprintf(vp, sizeof vp, "%s/currentVersion.txt", g_cfg.local_dir);
+        FILE *vf = fopen(vp, "rb");
+        if (vf) {
+            size_t n = fread(ver, 1, sizeof ver - 1, vf);
+            ver[n] = 0;
+            ver[strcspn(ver, "\r\n")] = 0;
+            fclose(vf);
+        }
+        host_log("[local] offline game from %s (game version %s): no login, saves stay on this console", g_cfg.local_dir, ver);
+    }
 
     mem_report("start");
     if (!plat_init(g_cfg.win_w, g_cfg.win_h)) return 1;
@@ -476,7 +519,8 @@ int main(int argc, char **argv) {
     // Something on screen right away: loading and compiling the game's code takes a while on the Vita.
     {
         char msg[1200];
-        snprintf(msg, sizeof msg, "PokeRogue\n\nConnecting to %s", g_cfg.base_url);
+        if (g_cfg.local_dir) snprintf(msg, sizeof msg, "PokeRogue\n\nOffline game\n%s", g_cfg.local_dir);
+        else snprintf(msg, sizeof msg, "PokeRogue\n\nConnecting to %s", g_cfg.base_url);
         overlay_present(msg);
     }
 

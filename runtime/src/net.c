@@ -142,6 +142,7 @@ typedef struct req {
     bool cacheable;
     JSValue callback;
     // Served from disk cache: delivered on the next poll without touching the network.
+    int local_status; // local mode: 200 or 404 (delivered like a cache hit)
     bool from_cache;
     struct req *next;
 } req;
@@ -361,7 +362,54 @@ static CURL *make_easy(const char *raw_url) {
 // per chunk is slow on the Vita).
 static CURL *sync_easy;
 
+// ---------------------------------------------------------------- local mode
+// local=<dir> in config.txt: the game is served from a folder (a downloaded offline build) under
+// the made-up origin https://offline.invalid instead of from the network.
+
+bool net_is_local(const char *url) {
+    size_t n = strlen(LOCAL_ORIGIN);
+    return g_cfg.local_dir && !strncmp(url, LOCAL_ORIGIN, n) && (url[n] == 0 || url[n] == '/');
+}
+
+static char *local_read(const char *url, size_t *len) {
+    const char *p = url + strlen(LOCAL_ORIGIN);
+    while (*p == '/') p++;
+    char rel[1024];
+    size_t o = 0;
+    for (; *p && *p != '?' && *p != '#' && o < sizeof rel - 1; p++) {
+        if (*p == '%' && p[1] && p[2]) {
+            char hex[3] = {p[1], p[2], 0};
+            rel[o++] = (char)strtol(hex, NULL, 16);
+            p += 2;
+        } else {
+            rel[o++] = *p;
+        }
+    }
+    rel[o] = 0;
+    if (strstr(rel, "..")) return NULL;
+    char path[1600];
+    snprintf(path, sizeof path, "%s/%s", g_cfg.local_dir, rel[0] ? rel : "index.html");
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *d = malloc(sz > 0 ? (size_t)sz + 1 : 1);
+    if (d && sz > 0 && fread(d, 1, (size_t)sz, f) != (size_t)sz) {
+        free(d);
+        d = NULL;
+    }
+    fclose(f);
+    if (d) d[sz > 0 ? sz : 0] = 0, *len = sz > 0 ? (size_t)sz : 0;
+    return d;
+}
+
 char *net_get_sync(const char *url, size_t *len, long *status) {
+    if (net_is_local(url)) {
+        char *d = local_read(url, len);
+        *status = d ? 200 : 404;
+        return d;
+    }
     if (is_cacheable("GET", url)) {
         char *d = cache_read(url, len);
         if (d) {
@@ -427,6 +475,19 @@ static JSValue n_http(JSContext *ctx, JSValueConst this_val, int argc, JSValueCo
     r->cacheable = is_cacheable(method, url);
     r->next = reqs;
     reqs = r;
+
+    if (net_is_local(url)) {
+        size_t len = 0;
+        char *d = local_read(url, &len);
+        r->local_status = d ? 200 : 404;
+        r->body.data = d;
+        r->body.len = r->body.cap = len;
+        r->from_cache = true;
+        r->cacheable = false;
+        JS_FreeCString(ctx, method);
+        JS_FreeCString(ctx, url);
+        return JS_NewInt32(ctx, r->id);
+    }
 
     if (r->cacheable) {
         size_t len;
@@ -564,6 +625,20 @@ static void req_free(JSContext *ctx, req *r) {
     free(r);
 }
 
+// Moves transfers along without delivering anything to JS: called from the JS interrupt handler,
+// so that downloads don't stall (and time out) while the game spends seconds in one frame.
+void net_pump(void) {
+    static double next;
+    static bool busy;
+    double now = host_now_ms();
+    if (busy || now < next || !multi) return;
+    next = now + 50;
+    busy = true;
+    int running;
+    curl_multi_perform(multi, &running);
+    busy = false;
+}
+
 void net_poll(JSContext *ctx) {
     // Cache hits first, at most ~8 ms worth per frame: the game handles each response right away
     // (decoding images among other things), and hundreds at once would freeze the screen.
@@ -572,9 +647,14 @@ void net_poll(JSContext *ctx) {
         next = r->next;
         if (r->from_cache) {
             if (host_now_ms() - t0 > 8) break;
-            buf_add(&r->resp_headers, "HTTP/1.1 200 OK\r\nx-runtime-cache: hit\r\n\r\n", 41);
-            n_cache_hits++;
-            deliver(ctx, r, 200, NULL, NULL);
+            if (r->local_status == 404) {
+                buf_add(&r->resp_headers, "HTTP/1.1 404 Not Found\r\n\r\n", 28);
+                deliver(ctx, r, 404, NULL, NULL);
+            } else {
+                buf_add(&r->resp_headers, "HTTP/1.1 200 OK\r\nx-runtime-cache: hit\r\n\r\n", 41);
+                n_cache_hits++;
+                deliver(ctx, r, 200, NULL, NULL);
+            }
             req_free(ctx, r);
             next = reqs; // list changed; restart (cheap, few entries)
         }
