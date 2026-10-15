@@ -4,6 +4,8 @@
 
 #include <string.h>
 #include <sys/statvfs.h>
+#include <pthread.h>
+#include <time.h>
 
 #include <GLES2/gl2.h>
 #include <SDL.h>
@@ -275,3 +277,48 @@ long long plat_free_space(const char *path) {
     struct statvfs v;
     return statvfs(path, &v) == 0 ? (long long)v.f_bavail * (long long)v.f_frsize : -1;
 }
+
+// ---------------------------------------------------------------- audio
+// SDL's audio device when there is one; otherwise (headless containers) a thread that mixes at
+// the real-time pace and throws the result away, so the audio clock and "ended" events still work.
+// SDL_AUDIODRIVER=disk SDL_DISKAUDIOFILE=<file> records the mix as raw 48 kHz s16 stereo.
+
+static void (*audio_mix_fn)(int16_t *, int);
+
+static void sdl_audio_cb(void *ud, Uint8 *stream, int len) {
+    (void)ud;
+    audio_mix_fn((int16_t *)stream, len / 4);
+}
+
+static void *null_audio_thread(void *arg) {
+    int rate = (int)(intptr_t)arg;
+    static int16_t buf[1024 * 2];
+    struct timespec next;
+    clock_gettime(CLOCK_MONOTONIC, &next);
+    for (;;) {
+        audio_mix_fn(buf, 1024);
+        next.tv_nsec += (long)(1024LL * 1000000000LL / rate);
+        while (next.tv_nsec >= 1000000000L) next.tv_nsec -= 1000000000L, next.tv_sec++;
+        clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
+    }
+    return NULL;
+}
+
+bool plat_audio_start(int rate, void (*mix)(int16_t *out, int frames)) {
+    audio_mix_fn = mix;
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) == 0) {
+        SDL_AudioSpec want = {.freq = rate, .format = AUDIO_S16SYS, .channels = 2, .samples = 1024, .callback = sdl_audio_cb}, have;
+        SDL_AudioDeviceID dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+        if (dev) {
+            SDL_PauseAudioDevice(dev, 0);
+            host_log("[audio] SDL output: %s", SDL_GetCurrentAudioDriver());
+            return true;
+        }
+        host_log("[audio] SDL_OpenAudioDevice: %s", SDL_GetError());
+    }
+    pthread_t t;
+    if (pthread_create(&t, NULL, null_audio_thread, (void *)(intptr_t)rate) == 0) pthread_detach(t);
+    return false;
+}
+
+void plat_thread_setup(const char *name, int core) { (void)name, (void)core; }

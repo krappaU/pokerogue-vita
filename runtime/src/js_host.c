@@ -692,6 +692,7 @@ JSContext *host_js_init(void) {
     gl_register(ctx, native);
     canvas_register(ctx, native);
     fastpath_register(ctx, native);
+    audio_register(ctx, native);
     JS_SetPropertyStr(ctx, global, "__native", native);
     JS_FreeValue(ctx, global);
     return ctx;

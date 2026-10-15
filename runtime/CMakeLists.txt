@@ -49,7 +49,7 @@ target_include_directories(miniz PUBLIC third_party/miniz)
 target_compile_definitions(miniz PUBLIC MINIZ_NO_TIME)  # changes struct layouts: users must agree
 target_compile_options(miniz PRIVATE -w)
 
-set(RT_SRC src/main.c src/js_host.c src/net.c src/gl.c src/canvas2d.c src/fastpath.c src/overlay.c src/osk.c src/profiler.c src/launcher.c src/offline_install.c)
+set(RT_SRC src/main.c src/js_host.c src/net.c src/gl.c src/canvas2d.c src/fastpath.c src/overlay.c src/osk.c src/profiler.c src/launcher.c src/offline_install.c src/audio.c src/audio_m4a.c)
 
 if(VITA)
   # NDEBUG: without it QuickJS keeps ~140 internal assert checks, some on hot paths (atoms, shapes,
@@ -71,7 +71,7 @@ if(VITA)
     vitaGL vitashark SceShaccCgExt mathneon taihen_stub SceShaccCg_stub
     SceKernelDmacMgr_stub SceGxm_stub SceDisplay_stub SceAppMgr_stub SceCommonDialog_stub SceIme_stub
     SceCtrl_stub SceTouch_stub ScePower_stub SceSysmodule_stub SceNet_stub SceNetCtl_stub SceAppUtil_stub
-    SceLibKernel_stub SceIofilemgr_stub SceRtc_stub
+    SceLibKernel_stub SceIofilemgr_stub SceRtc_stub SceAudio_stub faad
     stdc++ pthread m)
   # vita-elf-create appends its tables after the code segment; with the default 64 KiB alignment the
   # gap before the data segment depends on code size and was once too small ("segment 1 overlaps").
@@ -100,7 +100,7 @@ else()
   pkg_check_modules(GLES REQUIRED glesv2)
   pkg_check_modules(SSL REQUIRED openssl)
   target_include_directories(pokerogue-rt PRIVATE ${SDL2_INCLUDE_DIRS} ${CURL_INCLUDE_DIRS} ${GLES_INCLUDE_DIRS} ${SSL_INCLUDE_DIRS})
-  target_link_libraries(pokerogue-rt quickjs plutovg miniz ${SDL2_LIBRARIES} ${CURL_LIBRARIES} ${GLES_LIBRARIES} ${SSL_LIBRARIES} m pthread)
+  target_link_libraries(pokerogue-rt quickjs plutovg miniz ${SDL2_LIBRARIES} faad ${CURL_LIBRARIES} ${GLES_LIBRARIES} ${SSL_LIBRARIES} m pthread)
 endif()
 
 target_compile_definitions(pokerogue-rt PRIVATE PKR_VERSION="${PKR_VERSION}" PKR_COMMIT="${PKR_COMMIT}")

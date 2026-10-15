@@ -261,6 +261,11 @@ void mem_breakdown(const char *stage) {
     size_t tex, tex_peak;
     int n_tex;
     gl_texture_memory(&tex, &tex_peak, &n_tex);
+    size_t a_pcm, a_mp3;
+    int a_voices;
+    audio_memory(&a_pcm, &a_mp3, &a_voices);
+    host_log("[mem] %s: audio %.1f MB decoded + %.1f MB streamed music, %d playing", stage, a_pcm / 1048576.0,
+             a_mp3 / 1048576.0, a_voices);
     host_log("[mem] %s: heap in use %.0f MB | JS %.0f MB | canvases %.1f MB (%d) | fonts %.1f MB | images %.1f MB "
              "files + %.1f MB decoded | GPU textures %.1f MB (%d), peak %.1f MB",
              stage, (unsigned)mi.uordblks / 1048576.0, js, canv / 1048576.0, n_canv, fonts / 1048576.0,
@@ -435,6 +440,7 @@ static void save_screenshot(const char *path) {
 //   interrupt=20                    stop JS that runs N s in one frame, logging where (debugging)
 //   hud=1                           start with the debug line on (toggle: SELECT while holding L+R)
 //   osk=1                           built-in keyboard instead of the system one
+//   audio=0                         no sound
 //   busy=2500                       show a "Loading" screen once one frame's JS has run this long (0: never)
 //   profile=0                       no built-in profiler (on by default; see profiler.c)
 //   nettrace=1                      log the headers of requests to the game's API
@@ -520,6 +526,8 @@ static void load_config_file(void) {
             g_cfg.net_trace = atoi(v) != 0;
         } else if (!strcmp(k, "profile")) {
             g_cfg.no_profile = atoi(v) == 0;
+        } else if (!strcmp(k, "audio")) {
+            g_cfg.no_audio = atoi(v) == 0;
         } else if (!strcmp(k, "busy")) {
             g_cfg.busy_after_ms = atoi(v);
         }
@@ -565,6 +573,7 @@ int main(int argc, char **argv) {
 
     net_init();
     mem_report("after network init");
+    if (!g_cfg.no_audio) audio_init();
 
     // Online or offline: the start screen, unless config.txt decided. It can also download the
     // offline game.

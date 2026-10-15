@@ -165,3 +165,21 @@ of API requests. Don't test logins in a loop from a server: Cloudflare starts bl
 ## Measuring the real game
 See [phase0/measure/README.md](../phase0/measure/README.md): headless Chrome running a local dev
 build of PokeRogue, with hooks that count what Phaser draws each frame.
+
+## Sound
+`js/audio.js` implements the part of the Web Audio API that Phaser's WebAudioSoundManager uses, on
+top of `src/audio.c`:
+- `decodeAudioData` hands the bytes to a decoder thread: WAV to 16-bit PCM, M4A/AAC (the cries,
+  some battle sounds) via minimp4 + faad2 (`src/audio_m4a.c`), short MP3s decoded whole. Music
+  (MP3s over 384 KB) stays compressed and is decoded while it plays, with its own decoder per
+  playing voice (seeking for the game's loop points uses minimp3's frame index).
+- The mixer (48 kHz stereo, 32 voices, linear-interpolation resampling) runs on the platform's
+  audio thread: `sceAudioOut` on CPU core 1 on the Vita, SDL on the desktop (or a silent thread
+  when there is no audio device; `SDL_AUDIODRIVER=disk SDL_DISKAUDIOFILE=<file>` records the mix).
+- Source start times are on the mixer's sample clock (`AudioContext.currentTime`), so Phaser's
+  scheduled loop starts are sample-accurate. Gain and panner node chains are folded into a
+  left/right gain per voice once per frame (only changes are sent).
+- `audio=0` in config.txt turns sound off (the game then gets a silent Web Audio).
+Desktop measurements (2026-10-15, offline build e4e9b53): JS time per frame and JS heap are the
+same with and without sound; native memory for audio ~9 MB of decoded effects and cries plus the
+current music track compressed (1-3 MB).

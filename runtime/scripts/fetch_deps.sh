@@ -32,3 +32,14 @@ if [ ! -f third_party/miniz/miniz.c ]; then
   curl -sfL https://github.com/richgel999/miniz/releases/download/3.1.2/miniz-3.1.2.zip -o third_party/miniz/miniz.zip
   (cd third_party/miniz && unzip -oq miniz.zip miniz.c miniz.h && rm miniz.zip)
 fi
+
+# Audio decoders: minimp3 (MP3) and minimp4 (MP4/M4A demuxing) by lieff, CC0 / public domain.
+# AAC (the game's .m4a cries) is decoded with faad2 (GPL-2.0-or-later): VitaSDK's package on the
+# Vita, Debian's libfaad-dev on the desktop build.
+MINIMP3=ea99364f61c14656440e8d77e9c233ccf3124633
+MINIMP4=2a3014a7753cfcba4442adeb469431967238fe6a
+mkdir -p third_party/minimp3
+for f in minimp3.h minimp3_ex.h; do
+  [ -f "third_party/minimp3/$f" ] || curl -sfL "https://raw.githubusercontent.com/lieff/minimp3/$MINIMP3/$f" -o "third_party/minimp3/$f"
+done
+[ -f third_party/minimp3/minimp4.h ] || curl -sfL "https://raw.githubusercontent.com/lieff/minimp4/$MINIMP4/minimp4.h" -o third_party/minimp3/minimp4.h

@@ -20,6 +20,7 @@ typedef struct {
     const char *local_dir;   // config.txt local=<dir>: play an offline build from this folder
     bool force_online;       // config.txt online=1
     bool no_profile;         // config.txt profile=0
+    bool no_audio;           // config.txt audio=0: no sound (the game gets a silent Web Audio)
     int busy_after_ms;       // config.txt busy=<ms>: loading screen during long frames (0: never)
     bool net_trace;          // config.txt nettrace=1: log API request headers
     bool osk;                // always use the built-in keyboard (config.txt osk=1)
@@ -64,6 +65,9 @@ typedef struct {
 } plat_gamepad;
 
 bool plat_init(int w, int h);
+// Starts the audio output thread: it calls mix(out, frames) for interleaved 16-bit stereo at `rate`.
+bool plat_audio_start(int rate, void (*mix)(int16_t *out, int frames));
+void plat_thread_setup(const char *name, int core); // from inside a worker thread: name it, pin it (Vita)
 void plat_keep_awake(void);                 // reset the console's idle/auto-sleep timer
 long long plat_free_space(const char *path); // free bytes on the storage holding path, -1 if unknown
 bool offline_install(void);                 // offline_install.c: download + unpack <data>/game
@@ -132,6 +136,9 @@ void gl_restore_state(void); // after drawing over the game mid-frame
 void gl_texture_memory(size_t *bytes, size_t *peak, int *count);
 void canvas_register(JSContext *ctx, JSValue native);    // canvas2d.c
 void fastpath_register(JSContext *ctx, JSValue native);  // fastpath.c
+void audio_init(void);                                    // audio.c: decoder thread + output
+void audio_register(JSContext *ctx, JSValue native);      // audio.c: __native.audio*
+void audio_memory(size_t *pcm, size_t *mp3, int *active_voices);
 
 // Status messages drawn before the game takes over the screen (overlay.c).
 void overlay_set(const char *msg);

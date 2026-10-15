@@ -7,6 +7,8 @@
 #include <string.h>
 
 #include <psp2/apputil.h>
+#include <psp2/audioout.h>
+#include <psp2/kernel/threadmgr.h>
 #include <psp2/common_dialog.h>
 #include <psp2/ctrl.h>
 #include <psp2/ime_dialog.h>
@@ -315,4 +317,46 @@ long long plat_free_space(const char *path) {
     memset(&info, 0, sizeof info);
     if (sceIoDevctl(dev, 0x3001, NULL, 0, &info, sizeof info) < 0) return -1;
     return (long long)info.free_size;
+}
+
+// ---------------------------------------------------------------- audio
+
+#define AUDIO_GRAIN 1024 // frames per output block (~21 ms at 48 kHz)
+static void (*audio_mix_fn)(int16_t *, int);
+static int audio_port = -1;
+
+static int audio_thread(SceSize args, void *argp) {
+    (void)args, (void)argp;
+    static int16_t buf[2][AUDIO_GRAIN * 2];
+    int i = 0;
+    for (;;) {
+        audio_mix_fn(buf[i], AUDIO_GRAIN);
+        sceAudioOutOutput(audio_port, buf[i]); // blocks until the previous block has been taken
+        i ^= 1;
+    }
+    return 0;
+}
+
+bool plat_audio_start(int rate, void (*mix)(int16_t *out, int frames)) {
+    audio_mix_fn = mix;
+    audio_port = sceAudioOutOpenPort(SCE_AUDIO_OUT_PORT_TYPE_MAIN, AUDIO_GRAIN, rate, SCE_AUDIO_OUT_MODE_STEREO);
+    if (audio_port < 0) {
+        host_log("[audio] sceAudioOutOpenPort: 0x%08x", audio_port);
+        return false;
+    }
+    int vol[2] = {SCE_AUDIO_VOLUME_0DB, SCE_AUDIO_VOLUME_0DB};
+    sceAudioOutSetVolume(audio_port, SCE_AUDIO_VOLUME_FLAG_L_CH | SCE_AUDIO_VOLUME_FLAG_R_CH, vol);
+    // Core 1, high priority: the game's JS runs on core 0.
+    SceUID t = sceKernelCreateThread("pkr_audio_out", audio_thread, 0x10000100 - 20, 0x20000, 0, SCE_KERNEL_CPU_MASK_USER_1, NULL);
+    if (t < 0 || sceKernelStartThread(t, 0, NULL) < 0) {
+        host_log("[audio] could not start the output thread: 0x%08x", t);
+        return false;
+    }
+    return true;
+}
+
+void plat_thread_setup(const char *name, int core) {
+    (void)name;
+    int mask = core == 1 ? SCE_KERNEL_CPU_MASK_USER_1 : core == 2 ? SCE_KERNEL_CPU_MASK_USER_2 : SCE_KERNEL_CPU_MASK_USER_0;
+    sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), mask);
 }
