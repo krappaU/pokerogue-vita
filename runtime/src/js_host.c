@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // QuickJS-ng host: runtime setup, ES module loading over HTTP, and the __native helper object.
 
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <time.h>
 
 #include "host.h"
 
@@ -192,6 +195,69 @@ static char *module_normalize(JSContext *ctx, const char *base, const char *name
     return js_strdup(ctx, out);
 }
 
+// ---------------------------------------------------------------- compiled-code cache
+// Compiling the game's ~6 MB of JS takes ~25 s on the Vita. The compiled bytecode is kept in
+// <data>/bytecode/, keyed by a hash of the URL, the source and the engine version, so a game
+// update (new source) or a runtime update with a different QuickJS just compiles afresh.
+// Entries older than 14 days are deleted at startup.
+#define BYTECODE_SALT "pkr-bytecode-1"
+
+static uint64_t fnv64(uint64_t h, const void *data, size_t n) {
+    const uint8_t *p = data;
+    for (size_t i = 0; i < n; i++) h = (h ^ p[i]) * 1099511628211ull;
+    return h;
+}
+
+static void bytecode_path(const char *url, const char *src, size_t len, char *out, size_t n) {
+    uint64_t h = 14695981039346656037ull;
+    const char *v = JS_GetVersion();
+    h = fnv64(h, BYTECODE_SALT, strlen(BYTECODE_SALT));
+    h = fnv64(h, v, strlen(v));
+    h = fnv64(h, url, strlen(url) + 1);
+    h = fnv64(h, src, len);
+    snprintf(out, n, "%s/bytecode/%016llx.qbc", g_cfg.data_dir, (unsigned long long)h);
+}
+
+static void bytecode_cleanup(void) {
+    char dir[600];
+    snprintf(dir, sizeof dir, "%s/bytecode", g_cfg.data_dir);
+    DIR *d = opendir(dir);
+    if (!d) return;
+    time_t now = time(NULL);
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (!strstr(e->d_name, ".qbc")) continue;
+        char path[900];
+        snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+        struct stat st;
+        if (stat(path, &st) == 0 && now - st.st_mtime > 14 * 24 * 3600) remove(path);
+    }
+    closedir(d);
+}
+
+static void bytecode_save(JSContext *ctx, JSValueConst fn, const char *path) {
+    size_t blen = 0;
+    uint8_t *bc = JS_WriteObject(ctx, &blen, fn, JS_WRITE_OBJ_BYTECODE);
+    if (!bc) {
+        JS_FreeValue(ctx, JS_GetException(ctx));
+        return;
+    }
+    char dir[600], tmp[720];
+    snprintf(dir, sizeof dir, "%s/bytecode", g_cfg.data_dir);
+#ifdef __vita__
+    mkdir(dir, 0777);
+#else
+    mkdir(dir, 0755);
+#endif
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    FILE *f = fopen(tmp, "wb");
+    bool ok = f && fwrite(bc, 1, blen, f) == blen;
+    if (f) ok &= fclose(f) == 0;
+    if (ok) ok = rename(tmp, path) == 0;
+    if (!ok) remove(tmp);
+    js_free(ctx, bc);
+}
+
 static JSModuleDef *module_load(JSContext *ctx, const char *url, void *opaque) {
     size_t len = 0;
     long status = 0;
@@ -210,15 +276,37 @@ static JSModuleDef *module_load(JSContext *ctx, const char *url, void *opaque) {
     snprintf(msg, sizeof msg, "PokeRogue\n\nPreparing game code\n%s (%lu KB)\n\nThe first start takes a while.",
              base ? base + 1 : url, (unsigned long)(len / 1024));
     overlay_present(msg);
-    JSValue fn = JS_Eval(ctx, src, len, url, JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+    char bc_path[700];
+    bytecode_path(url, src, len, bc_path, sizeof bc_path);
+    JSValue fn = JS_UNDEFINED;
+    bool cached = false;
+    size_t blen = 0;
+    char *bc = read_file(bc_path, &blen);
+    if (bc) {
+        fn = JS_ReadObject(ctx, (const uint8_t *)bc, blen, JS_READ_OBJ_BYTECODE);
+        free(bc);
+        if (JS_IsException(fn) || JS_VALUE_GET_TAG(fn) != JS_TAG_MODULE) {
+            host_log("[module] cached code for %s unusable; compiling", url);
+            if (JS_IsException(fn)) JS_FreeValue(ctx, JS_GetException(ctx));
+            else JS_FreeValue(ctx, fn);
+            fn = JS_UNDEFINED;
+            remove(bc_path);
+        } else {
+            cached = true;
+        }
+    }
+    if (!cached) {
+        fn = JS_Eval(ctx, src, len, url, JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+        if (!JS_IsException(fn)) bytecode_save(ctx, fn, bc_path);
+    }
     free(src);
     if (JS_IsException(fn)) return NULL;
     JSModuleDef *m = JS_VALUE_GET_PTR(fn);
     JSValue meta = JS_GetImportMeta(ctx, m);
     JS_SetPropertyStr(ctx, meta, "url", JS_NewString(ctx, url));
     JS_FreeValue(ctx, meta);
-    host_log("[module] %s (%lu KB) fetched %.0f ms, compiled %.0f ms", url, (unsigned long)(len / 1024), t1 - t0,
-             host_now_ms() - t1);
+    host_log("[module] %s (%lu KB) fetched %.0f ms, %s %.0f ms", url, (unsigned long)(len / 1024), t1 - t0,
+             cached ? "loaded compiled code in" : "compiled", host_now_ms() - t1);
     if (len > 256 * 1024) mem_breakdown("after compiling");
     JS_FreeValue(ctx, fn);
     return m;
@@ -440,6 +528,7 @@ static const JSCFunctionListEntry native_funcs[] = {
 void host_js_set_interrupt(JSInterruptHandler *cb) { JS_SetInterruptHandler(rt, cb, NULL); }
 
 JSContext *host_js_init(void) {
+    bytecode_cleanup();
     rt = JS_NewRuntime();
     JS_SetMaxStackSize(rt, 4 * 1024 * 1024);
     JS_UpdateStackTop(rt);

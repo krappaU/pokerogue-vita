@@ -302,8 +302,10 @@ static volatile double phase_t0;
 static volatile bool in_frame_js;
 
 static void set_phase(const char *name) {
+    double now = host_now_ms();
+    prof_phase(loop_phase, now - phase_t0);
     loop_phase = name;
-    phase_t0 = host_now_ms();
+    phase_t0 = now;
 }
 
 static void *watchdog(void *arg) {
@@ -358,6 +360,7 @@ static void draw_over_game(JSContext *ctx, double js_ms) {
 
 static int js_interrupt(JSRuntime *rt, void *opaque) {
     (void)rt, (void)opaque;
+    if (g_ctx_for_mem) prof_poll(g_ctx_for_mem);
     if (!in_frame_js || !g_cfg.interrupt_after_s || host_now_ms() - phase_t0 < g_cfg.interrupt_after_s * 1000.0)
         return 0;
     host_log("[watchdog] interrupting JS that has run for %d s in one frame", g_cfg.interrupt_after_s);
@@ -387,6 +390,7 @@ static void save_screenshot(const char *path) {
 //   interrupt=20                    stop JS that runs N s in one frame, logging where (debugging)
 //   hud=1                           start with the debug line on (toggle: SELECT while holding L+R)
 //   osk=1                           built-in keyboard instead of the system one
+//   profile=0                       no built-in profiler (on by default; see profiler.c)
 static void load_config_file(void) {
     char path[512];
     snprintf(path, sizeof path, "%s/config.txt", g_cfg.data_dir);
@@ -411,6 +415,8 @@ static void load_config_file(void) {
             g_cfg.hud = atoi(v) != 0;
         } else if (!strcmp(k, "osk")) {
             g_cfg.osk = atoi(v) != 0;
+        } else if (!strcmp(k, "profile")) {
+            g_cfg.no_profile = atoi(v) == 0;
         }
     }
     fclose(f);
@@ -465,6 +471,7 @@ int main(int argc, char **argv) {
 
     host_js_set_interrupt(js_interrupt);
     set_phase("loading the game code");
+    if (!g_cfg.no_profile) prof_init();
     {
         pthread_t wd;
         pthread_attr_t attr;
@@ -532,6 +539,7 @@ int main(int argc, char **argv) {
         double js_ms = host_now_ms() - t_js;
         if (js_ms > 1000) host_log("[perf] slow frame: %.0f ms of JS", js_ms);
         perf_add(js_ms);
+        prof_frame();
 
         set_phase("drawing");
         if (!overlay_draw()) draw_over_game(ctx, js_ms);
@@ -548,6 +556,7 @@ int main(int argc, char **argv) {
 
 #ifndef __vita__
         // Pace to 60 Hz (Xvfb has no vsync; on the Vita, vglSwapBuffers waits for vblank).
+        set_phase("idle (frame pacing)");
         next += frame_ms;
         double now_ms = host_now_ms();
         if (next > now_ms) {

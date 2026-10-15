@@ -17,6 +17,7 @@ typedef struct {
     const char *control;     // optional FIFO path for test commands (see main.c)
     int win_w, win_h;        // window / screen size
     int exit_after_frames;   // 0 = run forever
+    bool no_profile;         // config.txt profile=0
     bool osk;                // always use the built-in keyboard (config.txt osk=1)
     bool hud;                // debug line over the game (config.txt hud=1; SELECT while holding L+R)
     int interrupt_after_s;   // 0 = never interrupt long-running JS (config.txt interrupt=N)
@@ -96,6 +97,12 @@ void net_init(void);
 void net_shutdown(void);
 void host_js_set_interrupt(JSInterruptHandler *cb);
 void mem_report(const char *stage); // largest malloc + system free memory, to the log
+
+// Built-in sampling profiler (profiler.c): reports to the log every 30 s and to <data>/profile.txt.
+void prof_init(void);
+void prof_phase(const char *name, double ms); // time spent in one main-loop step
+void prof_poll(JSContext *ctx); // from the JS interrupt handler
+void prof_frame(void);          // once per frame
 void net_poll(JSContext *ctx);                 // deliver finished requests
 void net_stats(char *out, size_t n);           // one-line summary for the log
 void net_register(JSContext *ctx, JSValue native);

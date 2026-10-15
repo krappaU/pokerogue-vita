@@ -77,3 +77,19 @@ Candidates, by expected gain:
 
 Measuring the real game on the real Vita (Phase 2) comes before investing in these, since the 16.6x
 multiplier was derived from a different workload.
+
+## On the real Vita (2026-10-15, runtime 0.17-0.20, PokeRogue live build of that day)
+- Title/login screen: **~55 ms of JS per frame (16-17 fps)**, matching the estimate above.
+- Startup: ~40 s of fetching and compiling the game code (~25 s compiling), then one ~79 s frame in
+  which the game builds its UI (over 1,100 text objects).
+
+### First optimizations (runtime 0.21), desktop measurements
+| change | effect |
+|---|---|
+| Update list visits only sprites with a playing animation (1,166 sprites, none animating on the title) | update phase 1.32 -> 0.30 ms per frame |
+| Text objects only measure on change; drawing and upload happen when rendered | fewer redraws/uploads, hidden texts never drawn |
+| NineSlice vertex loop in native code | nine-slice was ~36% of the title screen's render time |
+| CanvasPool create/remove constant-time | removed the top setup hotspot (pool scan) |
+| Compiled-code cache | second start: game code loads 4-6x faster than compiling |
+Title screen JS per frame on desktop: 3.7 ms -> 2.2 ms. Battle render (~6.7 ms on desktop) is now
+the largest cost; the native display-list renderer (item 1 above) is the next step.

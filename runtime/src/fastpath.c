@@ -6,6 +6,7 @@
 // Utils.getTintAppendFloatAlpha and MultiPipeline.batchQuad. Matrices are float32 like Phaser's.
 
 #include <math.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -126,6 +127,42 @@ static JSValue js_batch_sprite(JSContext *ctx, JSValueConst this_val, int argc, 
     return JS_UNDEFINED;
 }
 
+// batchVerts(vertexData: ArrayBuffer, offset (float index), matrix: Float32Array(6),
+//   vertices: [{vx, vy, u, v}], roundPixels, unit, tintEffect, tint) -> vertices written
+// The vertex loop of Phaser 3.90's NineSliceWebGLRenderer: TransformMatrix.getXRound/getYRound
+// per vertex (float64 math, Math.round), one shared tint.
+static JSValue js_batch_verts(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    static JSAtom a_vx, a_vy, a_u, a_v;
+    if (!a_vx) a_vx = JS_NewAtom(ctx, "vx"), a_vy = JS_NewAtom(ctx, "vy"), a_u = JS_NewAtom(ctx, "u"), a_v = JS_NewAtom(ctx, "v");
+    size_t size;
+    uint8_t *vb = JS_GetArrayBuffer(ctx, &size, argv[0]);
+    float *m = f32(ctx, argv[2]);
+    int64_t n = 0;
+    if (!vb || !m || JS_GetLength(ctx, argv[3], &n) < 0) return JS_ThrowTypeError(ctx, "batchVerts: bad arguments");
+    int64_t off = (int64_t)num(ctx, argv[1]);
+    if (off < 0 || (size_t)(off + n * 7) * 4 > size) return JS_ThrowRangeError(ctx, "batchVerts: vertex buffer too small");
+    bool round = JS_ToBool(ctx, argv[4]);
+    float unit = (float)num(ctx, argv[5]), effect = (float)num(ctx, argv[6]);
+    uint32_t t = (uint32_t)(int64_t)num(ctx, argv[7]);
+    double a = m[0], b = m[1], c = m[2], d = m[3], e = m[4], f = m[5];
+    float *vf = (float *)vb + off;
+    uint32_t *vu = (uint32_t *)vb + off;
+    for (int64_t i = 0; i < n; i++) {
+        JSValue v = JS_GetPropertyInt64(ctx, argv[3], i);
+        JSValue jx = JS_GetProperty(ctx, v, a_vx), jy = JS_GetProperty(ctx, v, a_vy);
+        JSValue ju = JS_GetProperty(ctx, v, a_u), jv = JS_GetProperty(ctx, v, a_v);
+        double vx = num(ctx, jx), vy = num(ctx, jy);
+        double x = vx * a + vy * c + e, y = vx * b + vy * d + f;
+        if (round) x = floor(x + 0.5), y = floor(y + 0.5);
+        vf[0] = (float)x, vf[1] = (float)y, vf[2] = (float)num(ctx, ju), vf[3] = (float)num(ctx, jv);
+        vf[4] = unit, vf[5] = effect, vu[6] = t;
+        vf += 7, vu += 7;
+        JS_FreeValue(ctx, jx), JS_FreeValue(ctx, jy), JS_FreeValue(ctx, ju), JS_FreeValue(ctx, jv), JS_FreeValue(ctx, v);
+    }
+    return JS_NewInt64(ctx, n);
+}
+
 void fastpath_register(JSContext *ctx, JSValue native) {
     JS_SetPropertyStr(ctx, native, "batchSprite", JS_NewCFunction(ctx, js_batch_sprite, "batchSprite", 30));
+    JS_SetPropertyStr(ctx, native, "batchVerts", JS_NewCFunction(ctx, js_batch_verts, "batchVerts", 8));
 }

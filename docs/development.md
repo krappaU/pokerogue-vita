@@ -99,6 +99,17 @@ type, circle delete, triangle space, square capitals, START done, SELECT back, o
 `osk=1` in `<data>/config.txt` forces it (on the desktop runtime too: arrows, Enter, Backspace,
 Escape, typed characters). The rear touchpad is unused: resting fingers held "submit" down.
 
+## Profiling
+- The built-in profiler (`runtime/src/profiler.c`) samples the JS call stack while the debug line
+  is on (SELECT while holding L+R, or `hud=1` in `<data>/config.txt`). Every 30 s the log gets the
+  busiest functions and how the main loop's time splits (game JS, swap/GPU wait, drawing...);
+  `<data>/profile.txt` gets all stacks in collapsed form for flame graph tools. In Vita3K, sampling
+  during normal play caused one-second stalls, hence the opt-in.
+- `scripts/probe_phases.js` (update vs render time per frame), `probe_selfprof.js` (per-function
+  self time on desktop; its wrappers inflate the totals) and `probe_textcost.js` complement it.
+- Compiled game code is cached in `<data>/bytecode/` (key: URL, source, QuickJS version). On the
+  desktop a cache hit loads 4-6x faster than compiling.
+
 ## Debugging on the Vita and in Vita3K
 - `PREFILL_FROM=.cache/data ./scripts/run_vita3k.sh 300` copies the desktop runtime's HTTP cache
   into the emulator, so the game loads without going through Vita3K's network emulation.

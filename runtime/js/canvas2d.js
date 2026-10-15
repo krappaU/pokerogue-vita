@@ -247,11 +247,13 @@
       return [x, y];
     }
     fillText(text, x, y) {
+      if (this._n.measureOnly) return;
       text = String(text);
       const [tx, ty] = this._textPos(text, x, y);
       this._withShadow(() => this._n.fillText(text, tx, ty), false);
     }
     strokeText(text, x, y) {
+      if (this._n.measureOnly) return;
       text = String(text);
       const [tx, ty] = this._textPos(text, x, y);
       this._withShadow(() => this._n.strokeText(text, tx, ty), true);

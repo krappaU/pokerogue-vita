@@ -278,18 +278,33 @@ static inline double nd(JSContext *ctx, JSValueConst v) {
     c2d *c = JS_GetOpaque(this_val, canvas_class);      \
     if (!c) return JS_ThrowTypeError(ctx, "not a Canvas2D"); \
     if (c->released) c2d_alloc(c, c->w, c->h);
+// For calls that don't touch pixels: no (re-)allocation of a released canvas.
+#define SELF_NOALLOC                                    \
+    c2d *c = JS_GetOpaque(this_val, canvas_class);      \
+    if (!c) return JS_ThrowTypeError(ctx, "not a Canvas2D");
 #define F(i) ((float)nd(ctx, argv[i]))
 
 CFN(c_resize) {
-    SELF;
+    SELF_NOALLOC;
     // Like browsers, setting width/height wipes the canvas, so earlier read-backs no longer pin its
-    // pixels (Phaser's canvas pool hands measured canvases on to text objects).
+    // pixels (Phaser's canvas pool hands measured canvases on to text objects). The pixels are
+    // allocated on the next drawing call: text objects get resized while only being measured.
     c->keep = false;
-    c2d_alloc(c, (int)nd(ctx, argv[0]), (int)nd(ctx, argv[1]));
+    int w = (int)nd(ctx, argv[0]), h = (int)nd(ctx, argv[1]);
+    if (c->surface) {
+        mem_canvas -= (size_t)c->w * c->h * 4;
+        plutovg_canvas_destroy(c->canvas);
+        plutovg_surface_destroy(c->surface);
+        c->canvas = NULL;
+        c->surface = NULL;
+    }
+    c->w = w > 0 ? w : 1;
+    c->h = h > 0 ? h : 1;
+    c->released = true;
     return JS_UNDEFINED;
 }
-CFN(c_width) { SELF; return JS_NewInt32(ctx, c->w); }
-CFN(c_height) { SELF; return JS_NewInt32(ctx, c->h); }
+CFN(c_width) { SELF_NOALLOC; return JS_NewInt32(ctx, c->w); }
+CFN(c_height) { SELF_NOALLOC; return JS_NewInt32(ctx, c->h); }
 CFN(c_save) { SELF; plutovg_canvas_save(c->canvas); return JS_UNDEFINED; }
 CFN(c_restore) { SELF; plutovg_canvas_restore(c->canvas); return JS_UNDEFINED; }
 
@@ -319,12 +334,12 @@ CFN(c_get_transform) {
 }
 
 CFN(c_set_fill) {
-    SELF;
+    SELF_NOALLOC;
     for (int i = 0; i < 4; i++) c->fill[i] = F(i);
     return JS_UNDEFINED;
 }
 CFN(c_set_stroke) {
-    SELF;
+    SELF_NOALLOC;
     for (int i = 0; i < 4; i++) c->stroke[i] = F(i);
     return JS_UNDEFINED;
 }
@@ -337,7 +352,7 @@ CFN(c_set_miter_limit) { SELF; plutovg_canvas_set_miter_limit(c->canvas, F(0)); 
 
 // setFont(family, sizePx, bold, italic) -> bool (false: family not registered, a fallback is used)
 CFN(c_set_font) {
-    SELF;
+    SELF_NOALLOC;
     const char *fam = JS_ToCString(ctx, argv[0]);
     bool bold = JS_ToBool(ctx, argv[2]), italic = JS_ToBool(ctx, argv[3]);
     plutovg_font_face_t *face = fam ? find_font(fam, bold, italic) : NULL;
@@ -346,7 +361,7 @@ CFN(c_set_font) {
     if (!face && n_fonts) face = fonts[0].face;
     c->face = face;
     c->font_size = F(1);
-    if (face) plutovg_canvas_set_font(c->canvas, face, c->font_size);
+    if (face && c->canvas) plutovg_canvas_set_font(c->canvas, face, c->font_size);
     return JS_NewBool(ctx, found);
 }
 
@@ -403,7 +418,7 @@ CFN(c_stroke_text) { return text_op(ctx, this_val, argv, true); }
 
 // measureText(str) -> [width, ascent, descent, left, right]
 CFN(c_measure_text) {
-    SELF;
+    SELF_NOALLOC;
     JSValue a = JS_NewArray(ctx);
     float width = 0, ascent = 0, descent = 0, gap = 0;
     plutovg_rect_t ext = {0};

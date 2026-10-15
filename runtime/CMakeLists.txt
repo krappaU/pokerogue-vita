@@ -44,7 +44,7 @@ endif()
 set(PKR_SFO_VERSION "${_major}.${_minor}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS VERSION)
 
-set(RT_SRC src/main.c src/js_host.c src/net.c src/gl.c src/canvas2d.c src/fastpath.c src/overlay.c src/osk.c)
+set(RT_SRC src/main.c src/js_host.c src/net.c src/gl.c src/canvas2d.c src/fastpath.c src/overlay.c src/osk.c src/profiler.c)
 
 if(VITA)
   set(CMAKE_C_FLAGS_RELEASE "-O2 -marm -mcpu=cortex-a9 -mfpu=neon")

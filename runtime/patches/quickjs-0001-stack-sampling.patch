@@ -1,0 +1,66 @@
+diff --git a/quickjs.c b/quickjs.c
+index 6ca030b..dad7e98 100644
+--- a/quickjs.c
++++ b/quickjs.c
+@@ -63510,6 +63510,48 @@ static JSValue js_new_callsite(JSContext *ctx, JSCallSiteData *csd) {
+     return obj;
+ }
+ 
++/* Patched (pokerogue-vita): sampling profiler support. Writes the current JS call stack in
++   "collapsed stack" form, outermost frame first, frames separated by ';', each frame as
++   name@file:line:col of the function's definition. Returns the number of frames written.
++   Safe to call from the interrupt handler. */
++int JS_SampleStack(JSContext *ctx, char *buf, size_t size)
++{
++    JSRuntime *rt = ctx->rt;
++    JSStackFrame *sf;
++    JSStackFrame *frames[64];
++    int n = 0, i;
++    size_t len = 0;
++    for (sf = rt->current_stack_frame; sf != NULL && n < 64; sf = sf->prev_frame)
++        frames[n++] = sf;
++    if (size)
++        buf[0] = '\0';
++    for (i = n - 1; i >= 0 && len + 1 < size; i--) {
++        JSObject *p;
++        const char *name, *file = NULL, *base;
++        int line = 0, col = 0;
++        sf = frames[i];
++        if (JS_VALUE_GET_TAG(sf->cur_func) != JS_TAG_OBJECT)
++            continue;
++        p = JS_VALUE_GET_OBJ(sf->cur_func);
++        name = get_func_name(ctx, sf->cur_func);
++        if (js_class_has_bytecode(p->class_id)) {
++            JSFunctionBytecode *b = p->u.func.function_bytecode;
++            file = JS_AtomToCString(ctx, b->filename);
++            line = b->line_num;
++            col = b->col_num;
++        }
++        base = file ? strrchr(file, '/') : NULL;
++        base = base ? base + 1 : file;
++        len += snprintf(buf + len, size - len, "%s%s@%s:%d:%d", len ? ";" : "",
++                        name && name[0] ? name : "(anon)", base ? base : "native", line, col);
++        if (len >= size)
++            len = size - 1;
++        JS_FreeCString(ctx, name);
++        JS_FreeCString(ctx, file);
++    }
++    return n;
++}
++
+ static void js_new_callsite_data(JSContext *ctx, JSCallSiteData *csd, JSStackFrame *sf)
+ {
+     const char *func_name_str;
+diff --git a/quickjs.h b/quickjs.h
+index b5e5576..8edf282 100644
+--- a/quickjs.h
++++ b/quickjs.h
+@@ -1185,6 +1185,8 @@ JS_EXTERN void JS_SetHostPromiseRejectionTracker(JSRuntime *rt, JSHostPromiseRej
+ 
+ /* return != 0 if the JS code needs to be interrupted */
+ typedef int JSInterruptHandler(JSRuntime *rt, void *opaque);
++/* pokerogue-vita: current JS call stack in collapsed form (see quickjs.c) */
++JS_EXTERN int JS_SampleStack(JSContext *ctx, char *buf, size_t size);
+ JS_EXTERN void JS_SetInterruptHandler(JSRuntime *rt, JSInterruptHandler *cb, void *opaque);
+ /* if can_block is true, Atomics.wait() can be used */
+ JS_EXTERN void JS_SetCanBlock(JSRuntime *rt, bool can_block);
