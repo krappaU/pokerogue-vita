@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
-# Install and run build-vita/pokerogue.vpk in the Vita3K emulator (headless), save a screenshot every
+# Install and run build-vita/pokerogue-<VERSION>.vpk in the Vita3K emulator (headless), save a screenshot every
 # 15 s to .cache/vita3k-shots/, and print the app's log. Crash/compatibility checks only: emulator
 # speed says nothing about the real Vita.
 # Needs your own libshacccg.suprx in .cache/private/ (never commit or share it).
@@ -28,7 +28,7 @@ docker run --rm --init --name pkr-vita3k ${DOCKER_ARGS:-} -e XDG_RUNTIME_DIR=/tm
   -v "$PWD/build-vita":/vpk -v "$PWD/.cache/vita3k-shots":/shots pkrb-vita3k bash -c "
     Xvfb :7 -screen 0 1280x800x24 >/dev/null 2>&1 &
     export DISPLAY=:7; sleep 2
-    (cd /v && timeout $SECONDS_TO_RUN squashfs-root/AppRun --frontend sdl -B OpenGL /vpk/pokerogue.vpk > /shots/vita3k.log 2>&1) &
+    (cd /v && timeout $SECONDS_TO_RUN squashfs-root/AppRun --frontend sdl -B OpenGL /vpk/pokerogue-$(cat VERSION).vpk > /shots/vita3k.log 2>&1) &
     EMU=\$!
     for i in \$(seq 15 15 $SECONDS_TO_RUN); do sleep 15; xwd -root -silent | convert xwd:- /shots/t\$i.png 2>/dev/null; done
     wait \$EMU" || true

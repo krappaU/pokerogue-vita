@@ -17,6 +17,7 @@ typedef struct {
     const char *control;     // optional FIFO path for test commands (see main.c)
     int win_w, win_h;        // window / screen size
     int exit_after_frames;   // 0 = run forever
+    bool hud;                // debug line over the game (config.txt hud=1; SELECT while holding L+R)
     int interrupt_after_s;   // 0 = never interrupt long-running JS (config.txt interrupt=N)
 } host_config;
 
@@ -37,6 +38,7 @@ typedef enum {
     PEV_POINTER_MOVE,
     PEV_POINTER_UP,
     PEV_QUIT,
+    PEV_TOGGLE_HUD, // debug line on/off
 } plat_event_type;
 
 typedef struct {
@@ -112,6 +114,9 @@ void overlay_set(const char *msg);
 void overlay_present(const char *msg); // draw + swap immediately (main thread is about to block)
 bool overlay_draw(void);
 void overlay_disable(void);
+bool overlay_active(void);
+void overlay_hud_draw(const char *text); // debug line over the game (top-right)
+const char *host_version_string(void);  // "PokeRogue Vita 0.18 (abc1234)"
 
 // Bytes held by decoded-image objects: compressed files kept, and decoded pixels currently alive.
 void canvas_image_memory(size_t *encoded, size_t *decoded);

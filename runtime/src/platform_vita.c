@@ -108,6 +108,8 @@ bool plat_init(int w, int h) {
 
 void plat_shutdown(void) {}
 
+#define HUD_COMBO (SCE_CTRL_LTRIGGER | SCE_CTRL_RTRIGGER)
+
 bool plat_poll_event(plat_event *ev) {
     if (n_injected) {
         *ev = injected[0];
@@ -124,6 +126,17 @@ bool plat_poll_event(plat_event *ev) {
             ev->type = PEV_QUIT;
             return true;
         }
+        // SELECT pressed while holding L + R: debug line on/off.
+        static bool select_was_down;
+        bool select_down = pad.buttons & SCE_CTRL_SELECT;
+        bool lr = (pad.buttons & HUD_COMBO) == HUD_COMBO;
+        if (select_down && !select_was_down && lr) {
+            select_was_down = true;
+            memset(ev, 0, sizeof *ev);
+            ev->type = PEV_TOGGLE_HUD;
+            return true;
+        }
+        select_was_down = select_down;
     }
     if (phase == 1) {
         phase = 2;
@@ -171,6 +184,7 @@ int plat_gamepads(plat_gamepad *out, int max) {
         SCE_CTRL_L2, SCE_CTRL_R2, SCE_CTRL_SELECT, SCE_CTRL_START, SCE_CTRL_L3, SCE_CTRL_R3,
         SCE_CTRL_UP, SCE_CTRL_DOWN, SCE_CTRL_LEFT, SCE_CTRL_RIGHT, SCE_CTRL_PSBUTTON,
     };
+    if ((b & HUD_COMBO) == HUD_COMBO) b &= ~SCE_CTRL_SELECT; // SELECT belongs to the debug toggle then
     for (int i = 0; i < 17; i++) p->buttons[i] = (b & map[i]) ? 1.0f : 0.0f;
     // The rear touchpad stands in for the DualShock touchpad click, which the game uses as "submit"
     // (open the login form, send it).

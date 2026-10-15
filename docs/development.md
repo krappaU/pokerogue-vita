@@ -79,6 +79,18 @@ vitaGL needs it to compile shaders at runtime.
   they're uploaded to the GPU, and allocates full-screen render targets at half size. The `[mem]`
   lines in the log break memory use down; `eval __native.textureDump(100)` lists big textures.
 
+## Versions
+`runtime/VERSION` holds the version ("0.18"). Bump it for every build handed out for testing. It
+sets the .vpk name (`build-vita/pokerogue-0.18.vpk`) and the LiveArea version (00.18), and the
+app shows it with the git commit (`scripts/build_id.sh`; "-modified" means uncommitted changes) in
+the first log line and in the corner of the startup and error screens. Commit before building a
+test build so the commit id identifies the code.
+
+In the game, SELECT while holding L + R toggles a debug line in the top-right corner: version,
+frame rate, JS time per frame and heap use (`hud=1` in `<data>/config.txt` starts with it on; `hud`
+on the control channel toggles it). While it is on, Phaser is told to restore its GL state after
+the line is drawn, which costs about a millisecond per frame.
+
 ## Debugging on the Vita and in Vita3K
 - `PREFILL_FROM=.cache/data ./scripts/run_vita3k.sh 300` copies the desktop runtime's HTTP cache
   into the emulator, so the game loads without going through Vita3K's network emulation.

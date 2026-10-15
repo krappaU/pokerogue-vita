@@ -35,11 +35,21 @@
       if (this.game && this.game.config) this.game.config.disablePreFX = true;
       return boot.apply(this, arguments);
     };
+    // The renderer, so the host can tell it when GL state changed behind its back (debug line).
+    const WR = P.Renderer.WebGL.WebGLRenderer.prototype, init = WR.init;
+    WR.init = function () {
+      rt.renderer = this;
+      return init.apply(this, arguments);
+    };
     N.loadScript("fastpath.js");
     const on = g.localStorage.getItem("PKR_FASTPATH") !== "0";
     rt.fastpath.set(on);
     N.log("[phaser] patched: pre-FX disabled, fast path " + (on ? "enabled" : "disabled"));
   }
+  // Phaser caches GL state (bound program, textures, buffers, blending). Around native drawing over
+  // its frame, flush and suspend it, then have it set everything up again.
+  rt.beforeExternalGL = () => { const r = rt.renderer; if (r && r.pipelines) r.pipelines.clear(); };
+  rt.afterExternalGL = () => { const r = rt.renderer; if (r && r.pipelines) r.pipelines.rebind(); };
   Object.defineProperty(g, "Phaser", {
     configurable: true,
     enumerable: true,

@@ -187,6 +187,8 @@ static void control_line(JSContext *ctx, char *line, bool *quit) {
         plat_ime_answer(arg ? arg : "");
     } else if (!strcmp(line, "ime-cancel")) {
         plat_ime_answer(NULL);
+    } else if (!strcmp(line, "hud")) {
+        g_cfg.hud = !g_cfg.hud;
     } else if (!strcmp(line, "quit")) {
         *quit = true;
     } else if (line[0]) {
@@ -224,6 +226,17 @@ static void control_poll(JSContext *ctx, bool *quit) {
     }
     fclose(f);
 }
+
+// ---------------------------------------------------------------- version
+
+#ifndef PKR_VERSION
+#define PKR_VERSION "dev"
+#endif
+#ifndef PKR_COMMIT
+#define PKR_COMMIT "unknown"
+#endif
+
+const char *host_version_string(void) { return "PokeRogue Vita " PKR_VERSION " (" PKR_COMMIT ")"; }
 
 // ---------------------------------------------------------------- frame stats
 
@@ -314,6 +327,28 @@ static void *watchdog(void *arg) {
     return NULL;
 }
 
+// Debug line over the game: version, frame rate, JS time per frame, heap use. Refreshed twice a
+// second. Phaser caches GL state, so it is told to set its state up again afterwards.
+static void draw_hud(JSContext *ctx, double js_ms) {
+    static char text[200];
+    static double t0, js_sum;
+    static int frames;
+    double now = host_now_ms();
+    if (t0 == 0) t0 = now;
+    frames++;
+    js_sum += js_ms;
+    if (now - t0 >= 500 || !text[0]) {
+        struct mallinfo mi = mallinfo();
+        double secs = (now - t0) / 1000.0;
+        snprintf(text, sizeof text, "v%s %s | %.0f fps | JS %.1f ms | %.0f MB", PKR_VERSION, PKR_COMMIT,
+                 secs > 0 ? frames / secs : 0, frames ? js_sum / frames : 0, (unsigned)mi.uordblks / 1048576.0);
+        t0 = now, js_sum = 0, frames = 0;
+    }
+    host_call_rt(ctx, "beforeExternalGL", 0, NULL);
+    overlay_hud_draw(text);
+    host_call_rt(ctx, "afterExternalGL", 0, NULL);
+}
+
 static int js_interrupt(JSRuntime *rt, void *opaque) {
     (void)rt, (void)opaque;
     if (!in_frame_js || !g_cfg.interrupt_after_s || host_now_ms() - phase_t0 < g_cfg.interrupt_after_s * 1000.0)
@@ -343,6 +378,7 @@ static void save_screenshot(const char *path) {
 //   url=http://192.168.1.10:8000/   load the game from another server (testing)
 //   frames=600                      quit after N frames
 //   interrupt=20                    stop JS that runs N s in one frame, logging where (debugging)
+//   hud=1                           start with the debug line on (toggle: SELECT while holding L+R)
 static void load_config_file(void) {
     char path[512];
     snprintf(path, sizeof path, "%s/config.txt", g_cfg.data_dir);
@@ -363,6 +399,8 @@ static void load_config_file(void) {
             g_cfg.exit_after_frames = atoi(v);
         } else if (!strcmp(k, "interrupt")) {
             g_cfg.interrupt_after_s = atoi(v);
+        } else if (!strcmp(k, "hud")) {
+            g_cfg.hud = atoi(v) != 0;
         }
     }
     fclose(f);
@@ -397,7 +435,7 @@ int main(int argc, char **argv) {
     char path[512];
     snprintf(path, sizeof path, "%s/log.txt", g_cfg.data_dir);
     log_fp = fopen(path, "w");
-    host_log("PokeRogue runtime (QuickJS-ng %s), page %s", JS_GetVersion(), g_cfg.base_url);
+    host_log("%s, built %s | QuickJS-ng %s | page %s", host_version_string(), __DATE__, JS_GetVersion(), g_cfg.base_url);
 
     mem_report("start");
     if (!plat_init(g_cfg.win_w, g_cfg.win_h)) return 1;
@@ -442,6 +480,10 @@ int main(int argc, char **argv) {
                 quit = true;
                 continue;
             }
+            if (ev.type == PEV_TOGGLE_HUD) {
+                g_cfg.hud = !g_cfg.hud;
+                continue;
+            }
             static const char *names[] = {"keydown", "keyup", "pointerdown", "pointermove", "pointerup"};
             JSValue args[7] = {
                 JS_NewString(ctx, names[ev.type]),
@@ -477,7 +519,7 @@ int main(int argc, char **argv) {
         perf_add(js_ms);
 
         set_phase("drawing");
-        overlay_draw();
+        if (!overlay_draw() && g_cfg.hud) draw_hud(ctx, js_ms);
         if (pending_shot[0]) {
             save_screenshot(pending_shot);
             pending_shot[0] = 0;
