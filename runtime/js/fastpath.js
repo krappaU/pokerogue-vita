@@ -496,13 +496,31 @@
     return origAMOff.apply(this, arguments);
   };
 
+  // 10. Container.renderWebGL in native code (src/fastpath.c renderContainer): the whole container
+  //     tree is walked in C, plain sprites batched there; everything else calls back into JS.
+  //     localStorage PKR_NATIVE_RENDER=0 keeps the JS version (fastContainerRender above).
+  const nrc = g.__native.renderContainer;
+  let useNative = false;
+  try { useNative = !!nrc && g.localStorage.getItem("PKR_NATIVE_RENDER") !== "0"; } catch (e) { useNative = !!nrc; }
+  if (useNative) {
+    const WP = Phaser.Renderer.WebGL.WebGLPipeline.prototype;
+    g.__native.renderSetup({
+      imageRender, spriteRender, containerRender: nrc, mpBatchSprite: fastBatchSprite, mpBatchQuad: origQuad,
+      goWillRender: Phaser.GameObjects.GameObject.prototype.willRender, containerWillRender: Container.willRender,
+      wpOnBind: WP.onBind, wpOnBatch: WP.onBatch, wpSetGameObject: WP.setGameObject,
+      camAddToRenderList: Phaser.Cameras.Scene2D.BaseCamera.prototype.addToRenderList, textRender,
+    });
+  }
+  const containerRender = useNative ? nrc : fastContainerRender;
+  g.__rt.jsContainerRender = fastContainerRender; // for checking the native one (scripts/probe_verify_render.js)
+
   g.__rt.fastpath = g.__fastpath = {
     available: typeof nbs === "function",
     set(on) {
       on = !!(on && nbs);
       enabled = on;
       MP.batchSprite = on ? fastBatchSprite : origSprite;
-      Container.renderWebGL = on ? fastContainerRender : origContainerRender;
+      Container.renderWebGL = on ? containerRender : origContainerRender;
     },
   };
 })(globalThis);

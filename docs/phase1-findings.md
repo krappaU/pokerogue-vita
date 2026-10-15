@@ -132,3 +132,20 @@ shadow copies in gl.c afterwards.
 - A full QuickJS cycle collection takes ~220 ms on desktop with the game's heap (~80 MB of JS
   objects), probably ~3 s on the Vita. It only runs after the JS heap grows by half; none occurred in
   desktop battles. The perf log line now reports frames that contained one.
+
+### Native container renderer (runtime 0.29), desktop, offline build e4e9b53
+Container.prototype.renderWebGL is now a C function (src/fastpath.c renderContainer): it walks the
+container tree, does Phaser's per-child bookkeeping and batches plain Images/Sprites and Texts itself
+(texture batching, flushes and the vertex writes), calling back into JS for anything else and for
+pipelines with their own onBind/onBatch. Checked with scripts/probe_verify_render.js (native and JS
+frames alternate; every flushed vertex batch compared): identical on the title, the save-slot
+screen, starter select and a battle. Render time per frame (scripts/probe_render_time.js):
+| screen | JS container renderer | native |
+|---|---|---|
+| battle (command menu) | 3.46 ms | 2.86 ms |
+| starter select | 7.34 ms | 5.19 ms |
+| save slots | 2.35 ms | 1.92 ms |
+What remains in battle is mostly PokeRogue's own pipelines (FieldSpritePipeline/SpritePipeline
+onBind/onBatch: per-object uniform arrays and a flush per object) and its icon tween.
+QuickJS-ng 0.17 already pools small allocations in its own arenas, so a custom allocator for the
+JS runtime (tried) changes nothing.
