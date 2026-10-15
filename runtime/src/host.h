@@ -94,6 +94,7 @@ void url_resolve(const char *base, const char *url, char *out, size_t n);
 void net_init(void);
 void net_shutdown(void);
 void host_js_set_interrupt(JSInterruptHandler *cb);
+void mem_report(const char *stage); // largest malloc + system free memory, to the log
 void net_poll(JSContext *ctx);                 // deliver finished requests
 void net_stats(char *out, size_t n);           // one-line summary for the log
 void net_register(JSContext *ctx, JSValue native);

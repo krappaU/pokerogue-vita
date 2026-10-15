@@ -98,7 +98,7 @@ static void mkdirs(const char *path) {
 // ---------------------------------------------------------------- memory diagnostics
 
 // Logs free system memory (Vita) and the largest block malloc can hand out right now.
-static void mem_report(const char *stage) {
+void mem_report(const char *stage) {
     static const int sizes_mb[] = {256, 192, 160, 128, 96, 64, 48, 32, 16, 8, 4, 2, 1};
     int largest = 0;
     for (size_t i = 0; i < sizeof sizes_mb / sizeof *sizes_mb; i++) {

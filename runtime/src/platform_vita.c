@@ -79,11 +79,12 @@ bool plat_init(int w, int h) {
     }
     // Full float precision: the game samples big texture atlases where half floats misplace pixels.
     vglSetupRuntimeShaderCompiler(SHARK_OPT_FAST, SHARK_ENABLE, SHARK_DISABLE, SHARK_ENABLE);
-    // Explicit GPU memory pools: 96 MB video RAM (CDRAM) first, then 48 MB of main RAM, 16 MB physically
-    // contiguous RAM, 4 MB for system dialogs (the on-screen keyboard). Explicit sizes also avoid
-    // vitaGL's free-memory query, which the Vita3K emulator does not implement.
+    // Explicit GPU memory pools: 88 MB video RAM (CDRAM) first, then 48 MB of main RAM, 16 MB physically
+    // contiguous RAM, 4 MB for system dialogs. Explicit sizes also avoid vitaGL's free-memory query,
+    // which the Vita3K emulator does not implement. Some CDRAM stays free: with none left, the system
+    // keyboard failed to open (sceImeDialogInit 0x800204c4).
     // Note: the return value only says whether vitaGL fell back to another resolution.
-    if (vglInitWithCustomSizes(0, SCREEN_W, SCREEN_H, 48 * 1024 * 1024, 96 * 1024 * 1024, 16 * 1024 * 1024,
+    if (vglInitWithCustomSizes(0, SCREEN_W, SCREEN_H, 48 * 1024 * 1024, 88 * 1024 * 1024, 16 * 1024 * 1024,
                                4 * 1024 * 1024, SCE_GXM_MULTISAMPLE_NONE))
         host_log("vitaGL: requested resolution unavailable, using a fallback");
     vglWaitVblankStart(GL_TRUE);
@@ -202,9 +203,9 @@ void plat_swap(void) { vglSwapBuffers(ime_active ? GL_TRUE : GL_FALSE); }
 
 // ---------------------------------------------------------------- text entry (system keyboard)
 
-static uint16_t ime_title[SCE_IME_DIALOG_MAX_TITLE_LENGTH + 1];
-static uint16_t ime_initial[SCE_IME_DIALOG_MAX_TEXT_LENGTH + 1];
-static uint16_t ime_buf[SCE_IME_DIALOG_MAX_TEXT_LENGTH + 1];
+static uint16_t ime_title[SCE_IME_DIALOG_MAX_TITLE_LENGTH + 1] __attribute__((aligned(16)));
+static uint16_t ime_initial[SCE_IME_DIALOG_MAX_TEXT_LENGTH + 1] __attribute__((aligned(16)));
+static uint16_t ime_buf[SCE_IME_DIALOG_MAX_TEXT_LENGTH + 1] __attribute__((aligned(16)));
 
 static void utf8_to_utf16(const char *in, uint16_t *out, size_t max) {
     size_t o = 0;
@@ -241,28 +242,42 @@ static void utf16_to_utf8(const uint16_t *in, char *out, size_t n) {
 
 bool plat_ime_open(const char *title, const char *initial, int max_len, bool password) {
     if (ime_active) return false;
+    // A dialog left over in the finished state blocks a new one.
+    if (sceImeDialogGetStatus() != SCE_COMMON_DIALOG_STATUS_NONE) sceImeDialogTerm();
     utf8_to_utf16(title, ime_title, SCE_IME_DIALOG_MAX_TITLE_LENGTH + 1);
     utf8_to_utf16(initial, ime_initial, SCE_IME_DIALOG_MAX_TEXT_LENGTH + 1);
     memset(ime_buf, 0, sizeof ime_buf);
-    SceImeDialogParam param;
-    sceImeDialogParamInit(&param);
-    param.supportedLanguages = 0; // the console's own keyboard languages
-    param.languagesForced = SCE_FALSE;
-    param.type = password ? SCE_IME_TYPE_BASIC_LATIN : SCE_IME_TYPE_DEFAULT;
-    param.option = 0;
-    param.textBoxMode = password ? SCE_IME_DIALOG_TEXTBOX_MODE_PASSWORD : SCE_IME_DIALOG_TEXTBOX_MODE_DEFAULT;
-    param.title = ime_title;
-    param.maxTextLength = max_len > 0 && max_len < SCE_IME_DIALOG_MAX_TEXT_LENGTH ? max_len : SCE_IME_DIALOG_MAX_TEXT_LENGTH;
-    param.initialText = ime_initial;
-    param.inputTextBuffer = ime_buf;
-    int rc = sceImeDialogInit(&param);
-    if (rc < 0) {
-        host_log("[ime] sceImeDialogInit: 0x%08x", rc);
-        return false;
+    // Two attempts: our settings, then the plain ones most homebrew uses. Every failure is logged
+    // with the free memory, so a log tells which one the console accepts.
+    for (int attempt = 0; attempt < 2; attempt++) {
+        SceImeDialogParam param;
+        sceImeDialogParamInit(&param);
+        param.supportedLanguages = 0; // the console's own keyboard languages
+        param.languagesForced = SCE_FALSE;
+        param.option = 0;
+        param.title = ime_title;
+        param.initialText = ime_initial;
+        param.inputTextBuffer = ime_buf;
+        if (attempt == 0) {
+            param.type = password ? SCE_IME_TYPE_BASIC_LATIN : SCE_IME_TYPE_DEFAULT;
+            param.textBoxMode = password ? SCE_IME_DIALOG_TEXTBOX_MODE_PASSWORD : SCE_IME_DIALOG_TEXTBOX_MODE_DEFAULT;
+            param.maxTextLength = max_len > 0 && max_len < SCE_IME_DIALOG_MAX_TEXT_LENGTH ? max_len : SCE_IME_DIALOG_MAX_TEXT_LENGTH;
+        } else {
+            param.type = SCE_IME_TYPE_DEFAULT;
+            param.textBoxMode = SCE_IME_DIALOG_TEXTBOX_MODE_WITH_CLEAR;
+            param.maxTextLength = SCE_IME_DIALOG_MAX_TEXT_LENGTH;
+        }
+        int rc = sceImeDialogInit(&param);
+        if (rc >= 0) {
+            if (attempt) host_log("[ime] opened with the fallback settings");
+            ime_active = true;
+            mute_pad = true;
+            return true;
+        }
+        host_log("[ime] sceImeDialogInit (attempt %d): 0x%08x", attempt + 1, rc);
     }
-    ime_active = true;
-    mute_pad = true;
-    return true;
+    mem_report("keyboard failed to open");
+    return false;
 }
 
 int plat_ime_poll(char *out, size_t n) {
