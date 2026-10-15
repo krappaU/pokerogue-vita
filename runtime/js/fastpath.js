@@ -14,6 +14,9 @@
 // 7. Display list / container membership from the objects' own fields instead of list scans.
 // 8. Utils.Array.Remove/RemoveAt and the WebGL renderer's wrapper lists: no JS shifting loop.
 // 9. AnimationManager: the sprites' animation-removed listeners in a Set instead of an array.
+// 10. Container.renderWebGL in C (src/fastpath.c).
+// 11. TextStyle.setStyle without Phaser's generic GetValue lookups; font metrics remembered.
+// 12. Utils.String.UUID (a texture name for every Text) made in C.
 //
 // Anything unusual (cropped sprites, custom pivots, masks, post pipelines, pipelines that
 // override batchSprite/batchQuad such as PokeRogue's SpritePipeline) takes Phaser's own path.
@@ -231,8 +234,6 @@
   const IDENTITY = [1, 0, 0, 1, 0, 0];
   const noop = () => undefined;
   // Stand-in for a canvas's native object while a text is only measured: font, measuring and
-  // size calls go through; drawing and state calls do nothing.
-  // Stand-in for a canvas's native object while a text is only measured: font, measuring and
   // size calls go through; drawing and state calls do nothing. One shared prototype.
   let stubProto = null;
   function measureStub(real) {
@@ -248,24 +249,60 @@
     return stub;
   }
   const stubs = new WeakMap(); // native canvas object -> its measuring stand-in
-  function lazyUpdateText() {
-    const ctx = this.context;
-    if (!enabled || !this.renderer || !this.renderer.gl || !ctx || !ctx._n) return origUpdateText.call(this);
-    const real = ctx._n, tex = this.frame && this.frame.source && this.frame.source.glTexture;
-    const r = this.renderer, origC2T = r.canvasToTexture;
+  const textStats = { updates: 0, measures: 0, draws: 0 };
+  g.__rt.textStats = () => Object.assign({}, textStats);
+  function measureNow(t) {
+    textStats.measures++;
+    t._pkrMeasureDirty = false;
+    const ctx = t.context;
+    const real = ctx._n, tex = t.frame && t.frame.source && t.frame.source.glTexture;
+    const r = t.renderer, origC2T = r.canvasToTexture;
     let stub = stubs.get(real);
     if (!stub) stubs.set(real, (stub = measureStub(real)));
     ctx._n = stub;
     // The upload at the end of updateText: keep the current texture (a new text gets one now).
     if (tex) r.canvasToTexture = () => tex;
-    try { origUpdateText.call(this); } finally { ctx._n = real; if (tex) delete r.canvasToTexture; }
+    try { origUpdateText.call(t); } finally { ctx._n = real; if (tex) delete r.canvasToTexture; }
     if (r.canvasToTexture !== origC2T) r.canvasToTexture = origC2T;
+  }
+  // Measuring is deferred too: the game typically changes a new text four times in a row
+  // (constructor, setPadding, setShadow, setLineSpacing) and reads its size at most once.
+  // A change only marks the text; its size properties are accessors that measure on first read
+  // (width, height and the display origin, which updateText derives from them).
+  let lazySize = false;
+  {
+    const keys = ["width", "height", "_displayOriginX", "_displayOriginY"];
+    const descs = keys.map((k) => Object.getOwnPropertyDescriptor(TP, k));
+    if (descs.every((d) => d && "value" in d && d.writable)) {
+      keys.forEach((k, i) => {
+        const store = "_pkr_" + k;
+        TP[store] = descs[i].value;
+        Object.defineProperty(TP, k, {
+          configurable: true, enumerable: true,
+          get() { if (this._pkrMeasureDirty) measureNow(this); return this[store]; },
+          set(v) { this[store] = v; },
+        });
+      });
+      lazySize = true;
+    }
+  }
+  function lazyUpdateText() {
+    const ctx = this.context;
+    if (!enabled || !this.renderer || !this.renderer.gl || !ctx || !ctx._n) {
+      this._pkrMeasureDirty = false;
+      return origUpdateText.call(this);
+    }
+    textStats.updates++;
     this._pkrTextDirty = true;
+    if (lazySize && g.__rt.lazyMeasure !== false) this._pkrMeasureDirty = true;
+    else measureNow(this);
     return this;
   }
   function textRender(renderer, src) {
     if (src._pkrTextDirty) {
       src._pkrTextDirty = false;
+      src._pkrMeasureDirty = false;
+      textStats.draws++;
       origUpdateText.call(src);
     }
     return origTextRender.apply(this, arguments);
@@ -399,11 +436,26 @@
   const CP2 = Phaser.GameObjects.Container.prototype, origContainerAdd = CP2.add;
   CP2.add = function (child) {
     // Exclusive containers set child.parentContainer; a child that isn't ours isn't in the list.
-    if (enabled && this.exclusive && child && !Array.isArray(child) && child.parentContainer !== this &&
-        !(this.maxSize > 0 && this.list.length >= this.maxSize)) {
-      this.list.push(child);
-      this.addHandler(child);
-      return this;
+    if (enabled && this.exclusive && child && !(this.maxSize > 0)) {
+      if (!Array.isArray(child)) {
+        if (child.parentContainer !== this) {
+          this.list.push(child);
+          this.addHandler(child);
+          return this;
+        }
+      } else {
+        // Phaser's Add drops (and splices out of the caller's array) children already in the
+        // list; only take the shortcut when there are none.
+        let fresh = true;
+        for (let i = 0; i < child.length; i++) if (!child[i] || child[i].parentContainer === this) { fresh = false; break; }
+        if (fresh) {
+          for (let i = 0; i < child.length; i++) {
+            this.list.push(child[i]);
+            this.addHandler(child[i]);
+          }
+          return this;
+        }
+      }
     }
     return origContainerAdd.apply(this, arguments);
   };
@@ -513,6 +565,108 @@
   }
   const containerRender = useNative ? nrc : fastContainerRender;
   g.__rt.jsContainerRender = fastContainerRender; // for checking the native one (scripts/probe_verify_render.js)
+
+  // 11. TextStyle.setStyle: every Text builds a TextStyle, which reads 26 settings through
+  //     GetAdvancedValue -> GetValue (two generic calls each, dotted paths split every time) and
+  //     measures the font's ascent/descent on a pooled canvas. Same logic with the paths
+  //     pre-split, and the metrics remembered per font (they depend only on the font string and
+  //     the test string; cleared when a font finishes loading).
+  const TSP = Phaser.GameObjects.TextStyle && Phaser.GameObjects.TextStyle.prototype;
+  // Setting -> path in the style config, as in Phaser 3.90's TextStyle propertyMap. The defaults
+  // are read from a TextStyle built by Phaser's own code (so they match this build exactly).
+  const STYLE_PATHS = {
+    fontFamily: "fontFamily", fontSize: "fontSize", fontStyle: "fontStyle", backgroundColor: "backgroundColor",
+    color: "color", stroke: "stroke", strokeThickness: "strokeThickness", shadowOffsetX: "shadow.offsetX",
+    shadowOffsetY: "shadow.offsetY", shadowColor: "shadow.color", shadowBlur: "shadow.blur", shadowStroke: "shadow.stroke",
+    shadowFill: "shadow.fill", align: "align", maxLines: "maxLines", fixedWidth: "fixedWidth", fixedHeight: "fixedHeight",
+    resolution: "resolution", rtl: "rtl", testString: "testString", baselineX: "baselineX", baselineY: "baselineY",
+    wordWrapWidth: "wordWrap.width", wordWrapCallback: "wordWrap.callback", wordWrapCallbackScope: "wordWrap.callbackScope",
+    wordWrapUseAdvanced: "wordWrap.useAdvancedWrap",
+  };
+  let STYLE_MAP = null;
+  if (TSP && typeof TSP.toJSON === "function") {
+    try {
+      const probe = new Phaser.GameObjects.TextStyle({}, {});
+      const keys = Object.keys(probe.toJSON()).filter((k) => k !== "metrics");
+      if (keys.length === Object.keys(STYLE_PATHS).length && keys.every((k, i) => Object.keys(STYLE_PATHS)[i] === k)) {
+        STYLE_MAP = keys.map((k) => {
+          const path = STYLE_PATHS[k];
+          return { k, path, parts: path.includes(".") ? path.split(".") : null, def: probe[k],
+                   raw: k === "wordWrapCallback" || k === "wordWrapCallbackScope" };
+        });
+      }
+    } catch (e) { STYLE_MAP = null; }
+  }
+  // Phaser's GetValue(source, path, def) for a dotted or plain path.
+  function getValue(e, path, parts, def) {
+    if (!e || typeof e === "number") return def;
+    if (e.hasOwnProperty(path)) return e[path];
+    if (!parts) return def;
+    let a = e;
+    for (let i = 0; i < parts.length; i++) {
+      if (a && a.hasOwnProperty(parts[i])) a = a[parts[i]];
+      else return def;
+    }
+    return a;
+  }
+  const RND = Phaser.Math.RND;
+  // Phaser's GetAdvancedValue.
+  function getAdvanced(e, path, parts, def) {
+    const a = getValue(e, path, parts, null);
+    if (a === null) return def;
+    if (Array.isArray(a)) return RND.pick(a);
+    if (typeof a === "object") {
+      if (a.hasOwnProperty("randInt")) return RND.integerInRange(a.randInt[0], a.randInt[1]);
+      if (a.hasOwnProperty("randFloat")) return RND.realInRange(a.randFloat[0], a.randFloat[1]);
+    } else if (typeof a === "function") return a(path);
+    return a;
+  }
+  const metricsCache = new Map();
+  let metricsGen = -1;
+  // MeasureText(style) is internal to Phaser; TextStyle.update(true) runs it (and then the parent's
+  // updateText, switched off here).
+  function measureFont(style) {
+    if (metricsGen !== (g.__rt.fontGeneration | 0)) { metricsCache.clear(); metricsGen = g.__rt.fontGeneration | 0; }
+    const key = style._font + "\u0001" + style.testString;
+    const hit = metricsCache.get(key);
+    if (hit) return { ascent: hit.ascent, descent: hit.descent, fontSize: hit.fontSize };
+    const p = style.parent, own = Object.prototype.hasOwnProperty.call(p, "updateText"), saved = p.updateText;
+    p.updateText = noop;
+    try { style.update(true); } finally { if (own) p.updateText = saved; else delete p.updateText; }
+    const m = style.metrics;
+    metricsCache.set(key, { ascent: m.ascent, descent: m.descent, fontSize: m.fontSize });
+    return m;
+  }
+  if (STYLE_MAP && typeof TSP.update === "function" && typeof TSP.setFont === "function") {
+    const origSetStyle = TSP.setStyle;
+    TSP.setStyle = function (e, t, n) {
+      if (!enabled) return origSetStyle.apply(this, arguments);
+      if (t === undefined) t = true;
+      if (n === undefined) n = false;
+      for (let i = 0; i < STYLE_MAP.length; i++) {
+        const s = STYLE_MAP[i], c = n ? s.def : this[s.k];
+        if (s.raw) this[s.k] = getValue(e, s.path, s.parts, c);
+        else if (e && s.k === "fontSize" && typeof e.fontSize === "number") this[s.k] = e.fontSize.toString() + "px";
+        else this[s.k] = getAdvanced(e, s.path, s.parts, c);
+      }
+      const font = getValue(e, "font", null, null);
+      if (font !== null) this.setFont(font, false);
+      this._font = [this.fontStyle, this.fontSize, this.fontFamily].join(" ").trim();
+      const fill = getValue(e, "fill", null, null);
+      if (fill !== null) this.color = fill;
+      const d = getValue(e, "metrics", null, false);
+      if (d) this.metrics = { ascent: getValue(d, "ascent", null, 0), descent: getValue(d, "descent", null, 0), fontSize: getValue(d, "fontSize", null, 0) };
+      else if (t || !this.metrics) this.metrics = measureFont(this);
+      return t ? this.parent.updateText() : this.parent;
+    };
+    g.__rt.origSetStyle = origSetStyle; // for scripts/probe_textstyle.js
+  }
+
+  // 12. UUID: see replaceWrap in src/fastpath.c. Only if Phaser's UUID still uses that template.
+  if (g.__native.replaceWrap && /xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx/.test(String(Phaser.Utils.String.UUID))) {
+    const wrapped = g.__native.replaceWrap(String.prototype.replace);
+    Object.defineProperty(String.prototype, "replace", { value: wrapped, writable: true, configurable: true, enumerable: false });
+  }
 
   g.__rt.fastpath = g.__fastpath = {
     available: typeof nbs === "function",

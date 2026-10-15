@@ -26,6 +26,7 @@ static const char *glo_names[] = {"WebGLBuffer", "WebGLTexture", "WebGLProgram",
 
 typedef struct {
     GLint loc;
+    bool projection; // Phaser's uProjectionMatrix (see uniform_matrix)
 } uloc;
 
 // Context state that WebGL exposes but GLES does not track the same way.
@@ -822,13 +823,17 @@ FN(w_getAttribLocation) {
 FN(w_getUniformLocation) {
     const char *name = JS_ToCString(ctx, A(1));
     GLint l = name ? glGetUniformLocation(oid(A(0)), name) : -1;
-    JS_FreeCString(ctx, name);
     // Only -1 means "no such uniform": vitaGL's locations are negated pointers, often negative.
-    if (l == -1) return JS_NULL;
+    if (l == -1) {
+        JS_FreeCString(ctx, name);
+        return JS_NULL;
+    }
     JSValue v = JS_NewObjectClass(ctx, uloc_class);
     uloc *u = malloc(sizeof *u);
     u->loc = l;
+    u->projection = !strcmp(name, "uProjectionMatrix");
     JS_SetOpaque(v, u);
+    JS_FreeCString(ctx, name);
     return v;
 }
 
@@ -902,6 +907,18 @@ static JSValue uniform_matrix(JSContext *ctx, JSValueConst *argv, int argc, int 
     const GLfloat *p = float_data(ctx, A(2), &n, &tmp);
     GLint l = lid(A(0));
     int count = n / (dim * dim);
+    // The game is drawn at half its resolution, so sprite edges often fall exactly on screen
+    // pixel centres; the Vita's GPU then samples the texel just outside a sprite's atlas frame
+    // (1-pixel stripes of the neighbouring frame along top/left edges). Moving the whole picture
+    // by 1/16 pixel keeps pixel centres off those edges.
+    uloc *u = JS_GetOpaque(A(0), uloc_class);
+    GLfloat biased[16];
+    if (p && dim == 4 && count == 1 && u && u->projection) {
+        memcpy(biased, p, sizeof biased);
+        biased[12] += 2.0f / 16 / 960;
+        biased[13] -= 2.0f / 16 / 544;
+        p = biased;
+    }
     if (p && count > 0) {
         if (dim == 2) glUniformMatrix2fv(l, count, GL_FALSE, p);
         else if (dim == 3) glUniformMatrix3fv(l, count, GL_FALSE, p);

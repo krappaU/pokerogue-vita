@@ -149,3 +149,21 @@ What remains in battle is mostly PokeRogue's own pipelines (FieldSpritePipeline/
 onBind/onBatch: per-object uniform arrays and a flush per object) and its icon tween.
 QuickJS-ng 0.17 already pools small allocations in its own arenas, so a custom allocator for the
 JS runtime (tried) changes nothing.
+
+### Screen rebuilds, text creation (runtime 0.30), desktop, offline build e4e9b53
+Vita 0.29 log: title at startup 42.3 s, entering starter select 21.9 s, return to the title 35.9 s.
+Profile of the return to the title: the game rebuilds every UI screen, and 62% of it is the
+starter-select and Pokedex screens (one container with texts and icons per species). Creating a
+Text was 34% of the whole rebuild: TextStyle.setStyle 15% (GetValue/GetAdvancedValue), measuring
+16% (the game changes each new text about four times: constructor, setPadding, setShadow,
+setLineSpacing), a random UUID per text 3%. Changes:
+- Text sizes are measured on first read instead of on every change (width/height/display origin
+  are accessors); startup made 7,874 text changes but only 1,552 measurements.
+- TextStyle.setStyle with pre-split paths and font metrics remembered per font (defaults read from
+  a TextStyle built by Phaser; scripts/probe_textstyle.js: 1,632 real configs, all identical).
+- Utils.String.UUID's replace call answered in C (4 us instead of 41 us).
+- Container.add with arrays of new children skips Phaser's indexOf checks.
+Creating 400 game-style texts: 330 ms -> 84-98 ms.
+Starter-select icons showed 1-pixel stripes of neighbouring atlas frames on the Vita (not on
+desktop): sprite edges fall exactly on pixel centres at half resolution. The projection matrix is
+shifted by 1/16 pixel (gl.c uniform_matrix).

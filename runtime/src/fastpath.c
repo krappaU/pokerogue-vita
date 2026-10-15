@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include <time.h>
 
 #include "quickjs.h"
 
@@ -688,9 +689,77 @@ static JSValue js_render_setup(JSContext *ctx, JSValueConst this_val, int argc, 
     return JS_UNDEFINED;
 }
 
+// ---------------------------------------------------------------- UUID
+// Phaser names every Text's canvas texture with Utils.String.UUID():
+//   'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => random hex digit)
+// 32 JS callbacks per text (~40 us on desktop, ~0.5 ms on the Vita; 1,500+ texts per screen
+// rebuild). replaceWrap(originalReplace) returns a String.prototype.replace that makes that one
+// call directly (after checking the callback answers like Phaser's) and passes every other call
+// to the original.
+static JSValue orig_replace; // set by replaceWrap before js_replace can run
+static bool have_orig_replace;
+static const char uuid_template[] = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx";
+
+static uint32_t uuid_rand(void) {
+    static uint64_t x;
+    if (!x) x = 0x9E3779B97F4A7C15ull ^ (uint64_t)(uintptr_t)&x ^ (uint64_t)time(NULL);
+    x ^= x << 13, x ^= x >> 7, x ^= x << 17;
+    return (uint32_t)(x >> 32);
+}
+
+static JSValue js_replace(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    if (argc == 2 && JS_IsString(this_val) && JS_IsObject(argv[0]) && JS_IsFunction(ctx, argv[1])) {
+        JSValue lenv = JS_GetPropertyStr(ctx, this_val, "length");
+        bool cand = JS_VALUE_GET_TAG(lenv) == JS_TAG_INT && JS_VALUE_GET_INT(lenv) == 36;
+        JS_FreeValue(ctx, lenv);
+        if (cand) {
+            const char *str = JS_ToCString(ctx, this_val);
+            cand = str && !strcmp(str, uuid_template);
+            JS_FreeCString(ctx, str);
+        }
+        if (cand) {
+            JSValue src = JS_GetPropertyStr(ctx, argv[0], "source"), fl = JS_GetPropertyStr(ctx, argv[0], "flags");
+            const char *ss = JS_ToCString(ctx, src), *fs = JS_ToCString(ctx, fl);
+            cand = ss && fs && !strcmp(ss, "[xy]") && !strcmp(fs, "g");
+            JS_FreeCString(ctx, ss), JS_FreeCString(ctx, fs), JS_FreeValue(ctx, src), JS_FreeValue(ctx, fl);
+        }
+        // The callback must behave like Phaser's: 'x' -> one hex digit, 'y' -> one of 8 9 a b.
+        for (int k = 0; cand && k < 2; k++) {
+            JSValue arg = JS_NewString(ctx, k ? "y" : "x");
+            JSValue r = JS_Call(ctx, argv[1], JS_UNDEFINED, 1, (JSValueConst *)&arg);
+            JS_FreeValue(ctx, arg);
+            if (JS_IsException(r)) return r;
+            const char *rs = JS_ToCString(ctx, r);
+            cand = rs && strlen(rs) == 1 && (k ? strchr("89ab", rs[0]) != NULL : strchr("0123456789abcdef", rs[0]) != NULL);
+            JS_FreeCString(ctx, rs);
+            JS_FreeValue(ctx, r);
+        }
+        if (cand) {
+            static const char hex[] = "0123456789abcdef";
+            char out[37];
+            for (int i = 0; i < 36; i++) {
+                char c = uuid_template[i];
+                int t = (int)(uuid_rand() & 15);
+                out[i] = c == 'x' ? hex[t] : c == 'y' ? hex[(t & 3) | 8] : c;
+            }
+            return JS_NewStringLen(ctx, out, 36);
+        }
+    }
+    return JS_Call(ctx, orig_replace, this_val, argc, argv);
+}
+
+static JSValue js_replace_wrap(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    if (argc < 1 || !JS_IsFunction(ctx, argv[0])) return JS_ThrowTypeError(ctx, "replaceWrap: need a function");
+    if (have_orig_replace) JS_FreeValue(ctx, orig_replace);
+    orig_replace = JS_DupValue(ctx, argv[0]);
+    have_orig_replace = true;
+    return JS_NewCFunction(ctx, js_replace, "replace", 2);
+}
+
 void fastpath_register(JSContext *ctx, JSValue native) {
     JS_SetPropertyStr(ctx, native, "batchSprite", JS_NewCFunction(ctx, js_batch_sprite, "batchSprite", 30));
     JS_SetPropertyStr(ctx, native, "batchVerts", JS_NewCFunction(ctx, js_batch_verts, "batchVerts", 8));
     JS_SetPropertyStr(ctx, native, "renderContainer", JS_NewCFunction(ctx, js_render_container, "renderContainer", 4));
     JS_SetPropertyStr(ctx, native, "renderSetup", JS_NewCFunction(ctx, js_render_setup, "renderSetup", 1));
+    JS_SetPropertyStr(ctx, native, "replaceWrap", JS_NewCFunction(ctx, js_replace_wrap, "replaceWrap", 1));
 }

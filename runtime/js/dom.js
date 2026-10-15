@@ -645,6 +645,7 @@
         const bold = /bold|[6-9]00/.test(this.weight), italic = this.style === "italic";
         if (!N.registerFont(this.family, ab, bold, italic, coversLatin(this.unicodeRange))) throw new Error("bad font data");
         this.status = "loaded";
+        rt.fontGeneration = (rt.fontGeneration | 0) + 1; // invalidates cached text metrics (fastpath.js)
         N.log("[font] loaded " + this.family);
         return this;
       }).catch((e) => { this.status = "error"; N.log("[font] failed " + this.family + ": " + e); throw e; });
