@@ -11,6 +11,7 @@
     N.loadScript(f);
   }
   const rt = g.__rt, doc = g.document;
+  rt.onPhaserLoaded = rt.onPhaserLoaded || []; // shim code that needs Phaser registers here
 
   // Debugging aid: <data>/debug.js, if present, runs before the game loads (e.g. to install hooks).
   // g.__shaderHook(source), if a debug script defines it, can rewrite shader sources.
@@ -41,6 +42,7 @@
       rt.renderer = this;
       return init.apply(this, arguments);
     };
+    for (const f of rt.onPhaserLoaded) f(P);
     N.loadScript("fastpath.js");
     const on = g.localStorage.getItem("PKR_FASTPATH") !== "0";
     rt.fastpath.set(on);

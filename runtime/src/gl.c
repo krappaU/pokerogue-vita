@@ -175,6 +175,15 @@ static void fb_map(float *s, float *ox, float *oy) {
     *oy = (fh - st.virt_h * *s) * 0.5f;
 }
 
+// Game canvas coordinates -> screen pixels (top-left origin), as the game is drawn on screen.
+void gl_game_to_screen(float gx, float gy, float *sx, float *sy, float *scale) {
+    float s, ox, oy;
+    fb_map(&s, &ox, &oy);
+    *sx = ox + gx * s;
+    *sy = oy + gy * s;
+    *scale = s;
+}
+
 static void refresh_virtual_size(JSContext *ctx) {
     if (!JS_IsObject(st.canvas)) return;
     JSValue w = JS_GetPropertyStr(ctx, st.canvas, "width"), h = JS_GetPropertyStr(ctx, st.canvas, "height");

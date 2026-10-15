@@ -246,3 +246,22 @@ void overlay_image_draw(const uint8_t *rgba, int iw, int ih, bool changed, int *
     draw_box(&img, *ox, *oy, w, h);
     end_draw();
 }
+
+// Draws an RGBA image stretched over a screen rectangle (text of the game's input fields).
+// Each `slot` keeps its own texture; `changed` re-uploads the pixels.
+void overlay_rgba_at(int slot, const uint8_t *rgba, int iw, int ih, bool changed, float x, float y, float w, float h) {
+    static GLuint tex[8];
+    if (slot < 0 || slot >= 8) return;
+    int sw, sh;
+    begin_draw(&sw, &sh);
+    if (changed || !tex[slot]) upload(&tex[slot], rgba, iw, ih);
+    float x0 = 2.0f * x / sw - 1, x1 = 2.0f * (x + w) / sw - 1;
+    float y0 = 1 - 2.0f * y / sh, y1 = 1 - 2.0f * (y + h) / sh;
+    float quad[] = {x0, y1, 0, 1, x1, y1, 1, 1, x0, y0, 0, 0, x1, y0, 1, 0};
+    glBindTexture(GL_TEXTURE_2D, tex[slot]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof quad, quad, GL_STREAM_DRAW);
+    glVertexAttribPointer(a_pos, 2, GL_FLOAT, GL_FALSE, 16, (void *)0);
+    glVertexAttribPointer(a_uv, 2, GL_FLOAT, GL_FALSE, 16, (void *)8);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    end_draw();
+}

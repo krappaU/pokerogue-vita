@@ -358,8 +358,9 @@ static void draw_hud(JSContext *ctx, double js_ms) {
 
 // Native drawing over the game's frame: the built-in keyboard and the debug line.
 static void draw_over_game(JSContext *ctx, double js_ms) {
-    if (!osk_active() && !g_cfg.hud) return;
+    if (!osk_active() && !g_cfg.hud && !fields_draw_pending()) return;
     host_call_rt(ctx, "beforeExternalGL", 0, NULL);
+    fields_draw();
     osk_draw();
     if (g_cfg.hud) draw_hud(ctx, js_ms);
     host_call_rt(ctx, "afterExternalGL", 0, NULL);
@@ -398,6 +399,7 @@ static void save_screenshot(const char *path) {
 //   hud=1                           start with the debug line on (toggle: SELECT while holding L+R)
 //   osk=1                           built-in keyboard instead of the system one
 //   profile=0                       no built-in profiler (on by default; see profiler.c)
+//   nettrace=1                      log the headers of requests to the game's API
 static void load_config_file(void) {
     char path[512];
     snprintf(path, sizeof path, "%s/config.txt", g_cfg.data_dir);
@@ -422,6 +424,8 @@ static void load_config_file(void) {
             g_cfg.hud = atoi(v) != 0;
         } else if (!strcmp(k, "osk")) {
             g_cfg.osk = atoi(v) != 0;
+        } else if (!strcmp(k, "nettrace")) {
+            g_cfg.net_trace = atoi(v) != 0;
         } else if (!strcmp(k, "profile")) {
             g_cfg.no_profile = atoi(v) == 0;
         }

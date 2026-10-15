@@ -168,6 +168,12 @@ void net_init(void) {
 #endif
     curl_global_init(CURL_GLOBAL_DEFAULT);
     multi = curl_multi_init();
+    // The page's origin ("https://pokerogue.net"): sent as Origin/Referer like a browser would (the
+    // API's firewall blocks requests without them) and used to decide what goes in the disk cache.
+    const char *p = strstr(g_cfg.base_url, "://");
+    p = p ? strchr(p + 3, '/') : NULL;
+    snprintf(origin, sizeof origin, "%.*s", (int)(p ? p - g_cfg.base_url : (long)strlen(g_cfg.base_url)),
+             g_cfg.base_url);
     // PKR_CA_FILE (Linux) tests the same in-memory path the Vita uses.
     const char *ca = getenv("PKR_CA_FILE");
 #ifdef CA_FILE
@@ -302,7 +308,31 @@ static void encode_url(const char *in, char *out, size_t n) {
     out[o] = 0;
 }
 
+// nettrace=1 in config.txt: log the headers of requests to the game's API (not assets), with
+// cookie and authorization values shortened.
+static int trace_cb(CURL *h, curl_infotype type, char *data, size_t size, void *ud) {
+    (void)h, (void)ud;
+    if (type != CURLINFO_HEADER_OUT) return 0;
+    static char block[4096];
+    size_t n = size < sizeof block - 1 ? size : sizeof block - 1;
+    memcpy(block, data, n);
+    block[n] = 0;
+    if (strstr(block, "/assets/") || strstr(block, "/images/") || strstr(block, "/audio/")) return 0;
+    char *save = NULL;
+    for (char *l = strtok_r(block, "\r\n", &save); l; l = strtok_r(NULL, "\r\n", &save)) {
+        char *colon = strchr(l, ':');
+        if (colon && (!strncasecmp(l, "cookie", 6) || !strncasecmp(l, "authorization", 13)) && strlen(colon) > 12)
+            strcpy(colon + 10, "...");
+        host_log("[nettrace] %s", l);
+    }
+    return 0;
+}
+
 static void apply_common_opts(CURL *e) {
+    if (g_cfg.net_trace) {
+        curl_easy_setopt(e, CURLOPT_DEBUGFUNCTION, trace_cb);
+        curl_easy_setopt(e, CURLOPT_VERBOSE, 1L);
+    }
     curl_easy_setopt(e, CURLOPT_USERAGENT, USER_AGENT);
     curl_easy_setopt(e, CURLOPT_FOLLOWLOCATION, 1L);
     // gzip only: zstd (which Cloudflare prefers) needs megabytes of buffer per download, too much for

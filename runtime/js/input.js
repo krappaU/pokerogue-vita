@@ -96,6 +96,70 @@
     if (N.imeOpen(title, el.value || "", el.maxLength > 0 ? el.maxLength : 64, password)) imeTarget = el;
   });
 
+  // ---------------------------------------------------------------- drawing the text fields
+  // The game's text fields are <input> elements placed over the canvas (Phaser DOMElements); a
+  // browser draws them, this runtime doesn't. So each visible field's text is drawn here with the
+  // field's own font and colour (passwords as asterisks) and handed to the native layer, which
+  // draws it over the game. A field counts as visible if Phaser rendered its element this frame.
+  let frameNo = 0, lastSig = "", inputs = [];
+  const fieldCanvases = [];
+  (rt.onPhaserLoaded || (rt.onPhaserLoaded = [])).push((P) => {
+    const DE = P.GameObjects.DOMElement && P.GameObjects.DOMElement.prototype;
+    if (!DE || !DE.renderWebGL) return;
+    const render = DE.renderWebGL;
+    DE.renderWebGL = function (renderer, src) { if (src) src._pkrSeen = frameNo; return render.apply(this, arguments); };
+  });
+  function drawField(fc, text, font, color, w, h) {
+    const cv = fc.canvas;
+    cv.width = Math.ceil(w);
+    cv.height = Math.ceil(h);
+    const ctx = cv.getContext("2d");
+    ctx.font = font;
+    ctx.fillStyle = color;
+    ctx.textBaseline = "middle";
+    const tw = ctx.measureText(text).width;
+    ctx.fillText(text, tw > w - 4 ? w - 2 - tw : 2, h / 2); // long text: show its end, like a browser
+    return ctx.getImageData(0, 0, cv.width, cv.height);
+  }
+  function updateFields() {
+    if (frameNo % 30 === 1) inputs = Array.from(g.document.querySelectorAll("input"));
+    const out = [];
+    let sig = "";
+    for (const el of inputs) {
+      if (!el.value || out.length >= 8) continue;
+      const go = el.phaser, st = el.style;
+      if (!go || go._pkrSeen === undefined || frameNo - go._pkrSeen > 1) continue;
+      if (st.display === "none" || st.visibility === "hidden" || parseFloat(st.opacity) === 0) continue;
+      const m = /matrix\(([^)]*)\)/.exec(st.transform || "");
+      const w = parseFloat(st.width) || 0, h = parseFloat(st.height) || 0;
+      if (!m || !w || !h) continue;
+      const [a, , , d, e, f] = m[1].split(",").map(Number);
+      const text = el.type === "password" ? "*".repeat(el.value.length) : el.value;
+      // The game sets a unitless font-size ("64"), which browsers read as pixels here.
+      const fs = parseFloat(st.fontSize) || parseFloat((/font-size:\s*([0-9.]+)/.exec(st.cssText || "") || [])[1]) || h * 0.55;
+      const font = fs + "px " + (st.fontFamily || "sans-serif");
+      const color = st.color || "#000";
+      const key = text + "|" + font + "|" + color + "|" + w + "x" + h;
+      const i = out.length;
+      const fc = fieldCanvases[i] || (fieldCanvases[i] = { key: null, canvas: g.document.createElement("canvas") });
+      const item = { x: e, y: f, w: w * a, h: h * d };
+      if (fc.key !== key) {
+        fc.key = key;
+        const img = drawField(fc, text, font, color, w, h);
+        item.pix = img.data.buffer;
+        item.pw = img.width;
+        item.ph = img.height;
+      }
+      sig += key + "@" + item.x + "," + item.y + "," + item.w + ";";
+      out.push(item);
+    }
+    if (sig !== lastSig) {
+      lastSig = sig;
+      N.setFieldOverlays(out);
+    }
+  }
+  rt.frameHooks.push(() => { frameNo++; updateFields(); });
+
   // ---------------------------------------------------------------- keyboard and pointer
   const down = new Set();
   rt.onInput = function (type, key, code, keyCode, x, y, id) {

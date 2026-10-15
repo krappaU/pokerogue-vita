@@ -473,6 +473,38 @@ static JSValue n_ime_poll(JSContext *ctx, JSValueConst this_val, int argc, JSVal
     return o;
 }
 
+// setFieldOverlays([{x, y, w, h, pix?: ArrayBuffer, pw, ph}]): text of the game's input fields to
+// draw over the game (game canvas coordinates; pix only when the text changed).
+static JSValue n_set_field_overlays(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    int64_t n = 0;
+    if (JS_GetLength(ctx, argv[0], &n) < 0) return JS_EXCEPTION;
+    for (int64_t i = 0; i < n && i < 8; i++) {
+        JSValue o = JS_GetPropertyInt64(ctx, argv[0], i);
+        double v[4] = {0};
+        static const char *names[4] = {"x", "y", "w", "h"};
+        for (int k = 0; k < 4; k++) {
+            JSValue jv = JS_GetPropertyStr(ctx, o, names[k]);
+            JS_ToFloat64(ctx, &v[k], jv);
+            JS_FreeValue(ctx, jv);
+        }
+        JSValue pix = JS_GetPropertyStr(ctx, o, "pix");
+        int32_t pw = 0, ph = 0;
+        JSValue jw = JS_GetPropertyStr(ctx, o, "pw"), jh = JS_GetPropertyStr(ctx, o, "ph");
+        JS_ToInt32(ctx, &pw, jw), JS_ToInt32(ctx, &ph, jh);
+        size_t len = 0;
+        uint8_t *p = NULL;
+        if (!JS_IsUndefined(pix) && !JS_IsNull(pix)) {
+            p = JS_GetArrayBuffer(ctx, &len, pix);
+            if (!p) JS_FreeValue(ctx, JS_GetException(ctx)); // not an ArrayBuffer
+            else if (len < (size_t)pw * ph * 4) p = NULL;
+        }
+        field_update((int)i, p, pw, ph, (float)v[0], (float)v[1], (float)v[2], (float)v[3]);
+        JS_FreeValue(ctx, jw), JS_FreeValue(ctx, jh), JS_FreeValue(ctx, pix), JS_FreeValue(ctx, o);
+    }
+    fields_set((int)n);
+    return JS_UNDEFINED;
+}
+
 // memoryUsage() -> QuickJS's own accounting, in bytes and counts.
 static JSValue n_memory_usage(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     JSMemoryUsage m;
@@ -513,6 +545,7 @@ static const JSCFunctionListEntry native_funcs[] = {
     JS_CFUNC_DEF("memoryUsage", 0, n_memory_usage),
     JS_CFUNC_DEF("imeOpen", 4, n_ime_open),
     JS_CFUNC_DEF("imePoll", 0, n_ime_poll),
+    JS_CFUNC_DEF("setFieldOverlays", 1, n_set_field_overlays),
     JS_CFUNC_DEF("loadScript", 1, n_load_script),
     JS_CFUNC_DEF("utf8Decode", 1, n_utf8_decode),
     JS_CFUNC_DEF("utf8Encode", 1, n_utf8_encode),

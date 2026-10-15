@@ -98,6 +98,8 @@ the app uses its own keyboard (`runtime/src/osk.c`), drawn over the game: D-pad/
 type, circle delete, triangle space, square capitals, START done, SELECT back, or touch the keys.
 `osk=1` in `<data>/config.txt` forces it (on the desktop runtime too: arrows, Enter, Backspace,
 Escape, typed characters). The rear touchpad is unused: resting fingers held "submit" down.
+The game's text fields are HTML `<input>` elements over the canvas; `js/input.js` draws their text
+(the field's font and colour, passwords as asterisks) and the native layer puts it over the game.
 
 ## Profiling
 - The built-in profiler (`runtime/src/profiler.c`) samples the JS call stack while the debug line
@@ -109,6 +111,12 @@ Escape, typed characters). The rear touchpad is unused: resting fingers held "su
   self time on desktop; its wrappers inflate the totals) and `probe_textcost.js` complement it.
 - Compiled game code is cached in `<data>/bytecode/` (key: URL, source, QuickJS version). On the
   desktop a cache hit loads 4-6x faster than compiling.
+
+## The game's API and Cloudflare
+api.pokerogue.net sits behind Cloudflare. Requests without a browser-like `Origin`/`Referer`
+(`https://pokerogue.net`) get a 403 "Sorry, you have been blocked" HTML page, and many failed
+logins in a short time get 429 (error 1015). `nettrace=1` in `<data>/config.txt` logs the headers
+of API requests. Don't test logins in a loop from a server: Cloudflare starts blocking its address.
 
 ## Debugging on the Vita and in Vita3K
 - `PREFILL_FROM=.cache/data ./scripts/run_vita3k.sh 300` copies the desktop runtime's HTTP cache

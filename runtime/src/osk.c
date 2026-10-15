@@ -86,10 +86,13 @@ bool osk_mutes_pad(void) { return osk_active() || mute_until_release; }
 
 // ---------------------------------------------------------------- editing
 
+static bool swallow_keyup; // the key that closed the keyboard: its release isn't the game's
+
 static void close_kb(int r) {
     result = r;
     open_ = false;
     mute_until_release = true;
+    swallow_keyup = true;
 }
 
 static void type_char(char c) {
@@ -139,7 +142,13 @@ static void move(int dr, int dc) {
 // ---------------------------------------------------------------- input
 
 bool osk_event(const plat_event *ev) {
-    if (!osk_active()) return false;
+    if (!osk_active()) {
+        if (swallow_keyup && ev->type == PEV_KEY_UP) {
+            swallow_keyup = false;
+            return true;
+        }
+        return false;
+    }
     if (ev->type == PEV_POINTER_DOWN) {
         int x = (int)ev->x - img_x - MARGIN, y = (int)ev->y - img_y - TOP;
         if (x >= 0 && y >= 0 && x < COLS * KEY_W && y < ROWS * KEY_H) {
@@ -259,4 +268,49 @@ bool osk_draw(void) {
     if (dirty) render(), dirty = false;
     overlay_image_draw(img, IMG_W, IMG_H, changed, &img_x, &img_y);
     return true;
+}
+
+// ---------------------------------------------------------------- the game's input fields
+// The game's text fields are HTML <input> elements over the canvas, which this runtime doesn't
+// draw. js/input.js renders each visible field's text with the game's font and hands the pixels
+// and position (game canvas coordinates) here, to be drawn over the game.
+
+typedef struct {
+    uint8_t *rgba;
+    int w, h;
+    bool changed;
+    float x, y, dw, dh;
+} field_overlay;
+
+#define MAX_FIELDS 8
+static field_overlay fields[MAX_FIELDS];
+static int n_fields;
+
+void fields_set(int n) { n_fields = n < MAX_FIELDS ? n : MAX_FIELDS; }
+
+void field_update(int i, const uint8_t *rgba, int w, int h, float x, float y, float dw, float dh) {
+    if (i < 0 || i >= MAX_FIELDS) return;
+    field_overlay *f = &fields[i];
+    if (rgba && w > 0 && h > 0) {
+        uint8_t *copy = realloc(f->rgba, (size_t)w * h * 4);
+        if (copy) {
+            memcpy(copy, rgba, (size_t)w * h * 4);
+            f->rgba = copy, f->w = w, f->h = h, f->changed = true;
+        }
+    }
+    f->x = x, f->y = y, f->dw = dw, f->dh = dh;
+}
+
+bool fields_draw_pending(void) { return n_fields > 0; }
+
+bool fields_draw(void) {
+    for (int i = 0; i < n_fields; i++) {
+        field_overlay *f = &fields[i];
+        if (!f->rgba) continue;
+        float sx, sy, s;
+        gl_game_to_screen(f->x, f->y, &sx, &sy, &s);
+        overlay_rgba_at(i, f->rgba, f->w, f->h, f->changed, sx, sy, f->dw * s, f->dh * s);
+        f->changed = false;
+    }
+    return n_fields > 0;
 }
