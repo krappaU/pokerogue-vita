@@ -70,6 +70,7 @@ static void bitmap_finalizer(JSRuntime *rt, JSValue v) {
 static plutovg_surface_t *bitmap_surface(bitmap *b) {
     if (!b->surface && bitmap_pixels(b)) {
         b->surface = plutovg_surface_create(b->w, b->h);
+        if (!b->surface) return NULL; // out of memory: drawImage reports an unsupported source
         mem_decoded += (size_t)b->w * b->h * 4;
         plutovg_convert_rgba_to_argb(plutovg_surface_get_data(b->surface), b->rgba, b->w, b->h,
                                      plutovg_surface_get_stride(b->surface));
@@ -239,7 +240,9 @@ static int n_canvas;
 static bool release_canvases = true;
 static int n_released, n_keep_getimage, n_keep_draw, n_keep_put, n_keep_source, n_uploads;
 
-static void c2d_alloc(c2d *c, int w, int h) {
+// Allocates the canvas's pixels. On failure (out of memory) the canvas stays without pixels
+// ("released") and drawing calls on it do nothing.
+static bool c2d_alloc(c2d *c, int w, int h) {
     c->released = false;
     if (c->canvas) plutovg_canvas_destroy(c->canvas);
     if (c->surface) {
@@ -248,12 +251,20 @@ static void c2d_alloc(c2d *c, int w, int h) {
     } else if (!c->w) {
         n_canvas++; // first allocation (not a re-allocation after release)
     }
+    c->canvas = NULL;
     c->w = w > 0 ? w : 1;
     c->h = h > 0 ? h : 1;
     c->surface = plutovg_surface_create(c->w, c->h);
+    if (!c->surface) {
+        static int warned;
+        if (warned++ < 5) host_log("[canvas] out of memory for a %dx%d canvas", c->w, c->h);
+        c->released = true;
+        return false;
+    }
     mem_canvas += (size_t)c->w * c->h * 4;
     c->canvas = plutovg_canvas_create(c->surface);
     if (c->face) plutovg_canvas_set_font(c->canvas, c->face, c->font_size);
+    return true;
 }
 
 static void canvas_finalizer(JSRuntime *rt, JSValue v) {
@@ -277,7 +288,7 @@ static inline double nd(JSContext *ctx, JSValueConst v) {
 #define SELF                                            \
     c2d *c = JS_GetOpaque(this_val, canvas_class);      \
     if (!c) return JS_ThrowTypeError(ctx, "not a Canvas2D"); \
-    if (c->released) c2d_alloc(c, c->w, c->h);
+    if (c->released && !c2d_alloc(c, c->w, c->h)) return JS_UNDEFINED;
 // For calls that don't touch pixels: no (re-)allocation of a released canvas.
 #define SELF_NOALLOC                                    \
     c2d *c = JS_GetOpaque(this_val, canvas_class);      \
@@ -446,7 +457,7 @@ CFN(c_draw_image) {
     else if (sc) {
         if (!sc->keep) n_keep_source++;
         sc->keep = true; // read back as an image source: keep its pixels from now on
-        if (sc->released) c2d_alloc(sc, sc->w, sc->h);
+        if (sc->released && !c2d_alloc(sc, sc->w, sc->h)) return JS_UNDEFINED;
         src = sc->surface;
     }
     if (!src) return JS_ThrowTypeError(ctx, "drawImage: unsupported source");

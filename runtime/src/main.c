@@ -262,6 +262,13 @@ void mem_breakdown(const char *stage) {
              "files + %.1f MB decoded | GPU textures %.1f MB (%d), peak %.1f MB",
              stage, (unsigned)mi.uordblks / 1048576.0, js, canv / 1048576.0, n_canv, fonts / 1048576.0,
              img_enc / 1048576.0, img_dec / 1048576.0, tex / 1048576.0, n_tex, tex_peak / 1048576.0);
+#ifdef __vita__
+    // vitaGL's GPU memory pools (textures, buffers); when they're full it falls back to the heap.
+    host_log("[mem] %s: GPU pools free: video %.1f of %.0f MB, RAM %.1f of %.0f MB, contiguous %.1f of %.0f MB", stage,
+             vglMemFree(VGL_MEM_VRAM) / 1048576.0, vglMemTotal(VGL_MEM_VRAM) / 1048576.0,
+             vglMemFree(VGL_MEM_RAM) / 1048576.0, vglMemTotal(VGL_MEM_RAM) / 1048576.0,
+             vglMemFree(VGL_MEM_PHYCONT) / 1048576.0, vglMemTotal(VGL_MEM_PHYCONT) / 1048576.0);
+#endif
 }
 
 #define PERF_WINDOW 300

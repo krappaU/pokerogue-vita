@@ -59,12 +59,26 @@ static unsigned hash(const char *s) {
     return h;
 }
 
+// Stack strings live in one fixed buffer, reset after each report: the heap is often nearly full
+// on the Vita, and graphics allocations that fail there stall the game for a second.
+#define ARENA_SIZE (256 * 1024)
+static char arena[ARENA_SIZE];
+static size_t arena_used;
+
+static char *arena_strdup(const char *s) {
+    size_t n = strlen(s) + 1;
+    if (arena_used + n > ARENA_SIZE) return NULL;
+    char *p = arena + arena_used;
+    memcpy(p, s, n);
+    arena_used += n;
+    return p;
+}
+
 static void count_stack(const char *key) {
     unsigned h = hash(key) % MAX_STACKS;
     for (int probe = 0; probe < MAX_STACKS; probe++, h = (h + 1) % MAX_STACKS) {
         if (!stacks[h].key) {
-            if (n_stacks >= MAX_STACKS * 3 / 4) { n_dropped++; return; }
-            stacks[h].key = strdup(key);
+            if (n_stacks >= MAX_STACKS * 3 / 4 || !(stacks[h].key = arena_strdup(key))) { n_dropped++; return; }
             stacks[h].count = 1;
             n_stacks++;
             return;
@@ -169,10 +183,8 @@ void prof_frame(void) {
     if (now - last_report < REPORT_MS) return;
     last_report = now;
     report();
-    for (int i = 0; i < MAX_STACKS; i++) {
-        free(stacks[i].key);
-        stacks[i].key = NULL;
-    }
+    for (int i = 0; i < MAX_STACKS; i++) stacks[i].key = NULL;
+    arena_used = 0;
     n_stacks = 0, n_samples = 0, n_dropped = 0, phase_total = 0;
     for (int i = 0; i < MAX_PHASES; i++) phase_ms[i] = 0;
 }

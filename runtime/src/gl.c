@@ -308,7 +308,39 @@ FN(w_createRenderbuffer) { GLuint id; glGenRenderbuffers(1, &id); return new_obj
 FN(w_createProgram) { return new_obj(ctx, glCreateProgram(), GLO_PROGRAM); }
 FN(w_createShader) { return new_obj(ctx, glCreateShader(gi(ctx, A(0))), GLO_SHADER); }
 
-FN(w_deleteBuffer) { GLuint id = oid(A(0)); if (id) glDeleteBuffers(1, &id); return JS_UNDEFINED; }
+// Per-buffer state for w_bufferSubData (below). vitaGL's buffer names are pointers, so a small
+// open-addressing table rather than an array indexed by name.
+typedef struct { GLuint id; uint32_t size; uint16_t usage; bool orphaned, partial; } buf_info;
+#define BUF_SLOTS 1024
+static buf_info bufs[BUF_SLOTS];
+
+static buf_info *buffer_info(GLuint id, bool create) {
+    if (!id) return NULL;
+    unsigned h = (unsigned)(id * 2654435761u) % BUF_SLOTS;
+    for (int i = 0; i < BUF_SLOTS; i++, h = (h + 1) % BUF_SLOTS) {
+        if (bufs[h].id == id) return &bufs[h];
+        if (bufs[h].id == 0) {
+            if (!create) return NULL;
+            memset(&bufs[h], 0, sizeof bufs[h]);
+            bufs[h].id = id;
+            return &bufs[h];
+        }
+    }
+    return NULL;
+}
+
+FN(w_deleteBuffer) {
+    GLuint id = oid(A(0));
+    if (id) {
+        buf_info *b = buffer_info(id, false);
+        if (b) { // keep the probe chain intact: mark as a dead entry with an impossible name
+            memset(b, 0, sizeof *b);
+            b->id = (GLuint)-1;
+        }
+        glDeleteBuffers(1, &id);
+    }
+    return JS_UNDEFINED;
+}
 FN(w_deleteTexture) {
     GLuint id = oid(A(0));
     if (id) {
@@ -364,22 +396,49 @@ FN(w_bindRenderbuffer) {
 }
 
 // bufferData(target, size | data, usage)
+// Vertex buffer updates. Phaser re-uploads its batch from offset 0 with bufferSubData each time
+// it flushes, 10-20 times a frame, into one ~688 KB buffer. While the GPU may still read the old
+// contents, vitaGL allocates a whole new copy of the buffer for every such update and frees the
+// old ones a few frames later: tens of MB of GPU memory in flight, and when that runs out vitaGL
+// sleeps a second before retrying. So an update from offset 0 is turned into bufferData with just
+// the bytes given (the buffer keeps its declared size here, and goes back to it if it is ever
+// updated elsewhere than at offset 0).
+static GLuint bound_buffer(int target) {
+    return oid(target == GL_ARRAY_BUFFER ? st.bound_array_buffer : st.bound_element_buffer);
+}
+
 FN(w_bufferData) {
     int target = gi(ctx, A(0)), usage = gi(ctx, A(2));
-    if (JS_IsNumber(A(1))) {
-        glBufferData(target, gi(ctx, A(1)), NULL, usage);
-    } else {
-        size_t len = 0;
-        void *p = buffer_data(ctx, A(1), &len);
-        glBufferData(target, len, p, usage);
-    }
+    size_t len = 0;
+    void *p = NULL;
+    if (JS_IsNumber(A(1))) len = (size_t)gi(ctx, A(1));
+    else p = buffer_data(ctx, A(1), &len);
+    glBufferData(target, len, p, usage);
+    GLuint id = bound_buffer(target);
+    buf_info *b = buffer_info(id, true);
+    if (b) b->size = (uint32_t)len, b->usage = (uint16_t)usage, b->orphaned = false;
     return JS_UNDEFINED;
 }
 
 FN(w_bufferSubData) {
+    int target = gi(ctx, A(0)), offset = gi(ctx, A(1));
     size_t len = 0;
     void *p = buffer_data(ctx, A(2), &len);
-    if (p) glBufferSubData(gi(ctx, A(0)), gi(ctx, A(1)), len, p);
+    if (!p) return JS_UNDEFINED;
+    buf_info *b = buffer_info(bound_buffer(target), false);
+    if (b && b->size) {
+        if (offset == 0 && !b->partial && len <= b->size) {
+            glBufferData(target, len, p, b->usage);
+            b->orphaned = true;
+            return JS_UNDEFINED;
+        }
+        if (offset != 0) b->partial = true;
+        if (b->orphaned) { // back to the declared size before a partial update
+            glBufferData(target, b->size, NULL, b->usage);
+            b->orphaned = false;
+        }
+    }
+    glBufferSubData(target, offset, len, p);
     return JS_UNDEFINED;
 }
 
