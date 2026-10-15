@@ -61,7 +61,7 @@ static unsigned hash(const char *s) {
 
 // Stack strings live in one fixed buffer, reset after each report: the heap is often nearly full
 // on the Vita, and graphics allocations that fail there stall the game for a second.
-#define ARENA_SIZE (256 * 1024)
+#define ARENA_SIZE (1024 * 1024)
 static char arena[ARENA_SIZE];
 static size_t arena_used;
 
@@ -87,6 +87,24 @@ static void count_stack(const char *key) {
     }
 }
 
+// "name@preload-helper-CoW3Hs31.js:64:120" -> "name@preload-helper:64:120": the build hash makes
+// stacks long (and they're stored for each distinct stack).
+static void shorten(char *s) {
+    char *w = s;
+    for (char *r = s; *r;) {
+        if (*r == '-') {
+            char *e = r + 1;
+            while ((*e >= 'a' && *e <= 'z') || (*e >= 'A' && *e <= 'Z') || (*e >= '0' && *e <= '9') || *e == '_' || *e == '-') e++;
+            if (e - r - 1 == 8 && !strncmp(e, ".js:", 4)) { // "-XXXXXXXX.js:"
+                r = e + 3;
+                continue;
+            }
+        }
+        *w++ = *r++;
+    }
+    *w = 0;
+}
+
 // Called from the JS interrupt handler.
 void prof_poll(JSContext *ctx) {
     if (!started) return;
@@ -95,6 +113,7 @@ void prof_poll(JSContext *ctx) {
     if (!g_cfg.hud) return;
     static char buf[4096];
     if (JS_SampleStack(ctx, buf, sizeof buf) > 0 && buf[0]) {
+        shorten(buf);
         count_stack(buf);
         n_samples++;
     }

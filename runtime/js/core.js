@@ -60,6 +60,21 @@
     count() {}, countReset() {},
   };
 
+  // ---------------------------------------------------------------- the time
+  // The console's clock can be hours off; once a server has told the real time (net.c), "now"
+  // is corrected by the difference. Dates built from explicit values are unchanged.
+  const RealDate = Date;
+  const nowMs = () => RealDate.now() + N.clockOffset();
+  function PDate(...a) {
+    if (!new.target) return new RealDate(nowMs()).toString(); // Date() called as a function
+    return a.length ? new RealDate(...a) : new RealDate(nowMs());
+  }
+  Object.setPrototypeOf(PDate, RealDate);
+  PDate.prototype = RealDate.prototype;
+  Object.defineProperty(RealDate.prototype, "constructor", { value: PDate, writable: true, configurable: true });
+  PDate.now = nowMs;
+  g.Date = PDate;
+
   // ---------------------------------------------------------------- timers and frames
   let timerSeq = 1;
   const pending = new Map(); // id -> {at, fn, args, interval}

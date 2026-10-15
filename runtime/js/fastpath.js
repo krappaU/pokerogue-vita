@@ -11,6 +11,7 @@
 // 4. Text.updateText: measure on every change, draw and upload only when rendered (see below).
 // 5. NineSlice.renderWebGL: the vertex loop in native code.
 // 6. CanvasPool.create/remove: constant-time instead of scanning the whole pool.
+// 7. Display list / container membership from the objects' own fields instead of list scans.
 //
 // Anything unusual (cropped sprites, custom pivots, masks, post pipelines, pipelines that
 // override batchSprite/batchQuad such as PokeRogue's SpritePipeline) takes Phaser's own path.
@@ -149,7 +150,46 @@
   const PQ = Phaser.Structs.ProcessQueue.prototype, origPQUpdate = PQ.update;
   PQ.update = function () {
     if (this._toProcess !== 0) this._pkrVersion = (this._pkrVersion | 0) + 1;
-    return origPQUpdate.call(this);
+    const r = origPQUpdate.call(this);
+    if (this._pkrPending && this._pending.length === 0) this._pkrPending.clear(); // update() empties it in place
+    return r;
+  };
+  // Membership in the update list's queues by Set instead of indexOf: every sprite added to a scene
+  // checks both its pending and active arrays (thousands long during UI setup).
+  function pendingSet(q) {
+    if (!q._pkrPending || q._pkrPendingArr !== q._pending) {
+      q._pkrPending = new Set(q._pending);
+      q._pkrPendingArr = q._pending;
+    }
+    return q._pkrPending;
+  }
+  function activeSet(q) {
+    if (!q._pkrActive || q._pkrActiveArr !== q._active || q._pkrActiveVer !== (q._pkrVersion | 0)) {
+      q._pkrActive = new Set(q._active);
+      q._pkrActiveArr = q._active;
+      q._pkrActiveVer = q._pkrVersion | 0;
+    }
+    return q._pkrActive;
+  }
+  PQ.isPending = function (item) { return this._toProcess > 0 && pendingSet(this).has(item); };
+  PQ.isActive = function (item) { return activeSet(this).has(item); };
+  PQ.add = function (item) {
+    if ((this.checkQueue && this.isActive(item) && !this.isDestroying(item)) || this.isPending(item)) return item;
+    this._pending.push(item);
+    pendingSet(this).add(item);
+    this._toProcess++;
+    return item;
+  };
+  PQ.remove = function (item) {
+    if (this.isPending(item)) {
+      const t = this._pending, i = t.lastIndexOf(item);
+      if (i !== -1) t.splice(i, 1);
+      pendingSet(this).delete(item);
+    } else if (this.isActive(item)) {
+      this._destroy.push(item);
+      this._toProcess++;
+    }
+    return item;
   };
   const UL = Phaser.GameObjects.UpdateList.prototype;
   const origSceneUpdate = UL.sceneUpdate;
@@ -190,16 +230,19 @@
   const noop = () => undefined;
   // Stand-in for a canvas's native object while a text is only measured: font, measuring and
   // size calls go through; drawing and state calls do nothing.
+  // Stand-in for a canvas's native object while a text is only measured: font, measuring and
+  // size calls go through; drawing and state calls do nothing. One shared prototype.
+  let stubProto = null;
   function measureStub(real) {
-    const stub = { measureOnly: true, getTransform: () => IDENTITY };
-    for (const k of ["setFont", "measureText", "width", "height", "setFill", "setStroke", "resize"]) stub[k] = real[k].bind(real);
-    let proto = real;
-    const names = new Set();
-    while (proto && proto !== Object.prototype) {
-      for (const k of Object.getOwnPropertyNames(proto)) names.add(k);
-      proto = Object.getPrototypeOf(proto);
+    if (!stubProto) {
+      stubProto = { measureOnly: true, getTransform: () => IDENTITY };
+      for (let p = Object.getPrototypeOf(real); p && p !== Object.prototype; p = Object.getPrototypeOf(p))
+        for (const k of Object.getOwnPropertyNames(p)) if (!(k in stubProto) && typeof real[k] === "function") stubProto[k] = noop;
+      for (const k of ["setFont", "measureText", "width", "height", "setFill", "setStroke", "resize"])
+        stubProto[k] = function () { return this.real[k].apply(this.real, arguments); };
     }
-    for (const k of names) if (!(k in stub) && typeof real[k] === "function") stub[k] = noop;
+    const stub = Object.create(stubProto);
+    stub.real = real;
     return stub;
   }
   const stubs = new WeakMap(); // native canvas object -> its measuring stand-in
@@ -318,6 +361,49 @@
     byCanvas.clear();
     byParent.clear();
     return origFreeAll.apply(this, arguments);
+  };
+
+  // 7. Display list and container membership: Phaser checks membership by scanning the scene's
+  //    display list (thousands of objects in PokeRogue) when an object is added or moved into a
+  //    container, and removes with indexOf plus a JS shifting loop: quadratic during UI setup
+  //    (indexOf was 11% of the setup frame). An object's displayList / parentContainer field
+  //    already says where it is, so the scene's DisplayList and exclusive Containers use that.
+  const DL = Phaser.GameObjects.DisplayList.prototype;
+  const origExists = DL.exists, origDLAdd = DL.add, origDLRemove = DL.remove;
+  DL.exists = function (child) {
+    if (!enabled || !child || typeof child !== "object" || Array.isArray(child)) return origExists.call(this, child);
+    if (child.displayList === this) return true;
+    this._pkrFresh = child; // not here: the add() that usually follows can skip its own scan
+    return false;
+  };
+  DL.add = function (child, skipCallback) {
+    if (this._pkrFresh === child && child && !Array.isArray(child)) {
+      this._pkrFresh = null;
+      this.list.push(child);
+      if (!skipCallback && this.addCallback) this.addCallback.call(this, child);
+      return child;
+    }
+    this._pkrFresh = null;
+    return origDLAdd.apply(this, arguments);
+  };
+  DL.remove = function (child, skipCallback) {
+    if (!enabled || !child || Array.isArray(child)) return origDLRemove.apply(this, arguments);
+    const i = this.list.lastIndexOf(child); // recently added objects are near the end
+    if (i === -1) return null;
+    this.list.splice(i, 1);
+    if (!skipCallback && this.removeCallback) this.removeCallback.call(this, child);
+    return child;
+  };
+  const CP2 = Phaser.GameObjects.Container.prototype, origContainerAdd = CP2.add;
+  CP2.add = function (child) {
+    // Exclusive containers set child.parentContainer; a child that isn't ours isn't in the list.
+    if (enabled && this.exclusive && child && !Array.isArray(child) && child.parentContainer !== this &&
+        !(this.maxSize > 0 && this.list.length >= this.maxSize)) {
+      this.list.push(child);
+      this.addHandler(child);
+      return this;
+    }
+    return origContainerAdd.apply(this, arguments);
   };
 
   g.__rt.fastpath = g.__fastpath = {

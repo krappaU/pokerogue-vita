@@ -93,3 +93,11 @@ multiplier was derived from a different workload.
 | Compiled-code cache | second start: game code loads 4-6x faster than compiling |
 Title screen JS per frame on desktop: 3.7 ms -> 2.2 ms. Battle render (~6.7 ms on desktop) is now
 the largest cost; the native display-list renderer (item 1 above) is the next step.
+
+### Screen building (runtime 0.26), desktop profile of the setup frame (offline build e4e9b53)
+On the Vita (0.25 log) the setup frame took 57 s and returning to the title 68 s. Profile:
+i18next `translate` 35%, `indexOf` 11% self (Phaser's update list and display list checking
+membership by scanning thousands of entries), canvas font parsing 8%. Changes: translation cache
+(`js/i18n_cache.js`, ~46% hits on first setup, more on rebuilds), membership via Sets / the objects'
+own fields (`js/fastpath.js` 7 and the update-list part of 3), font-string parse cache. Desktop
+setup frame: ~5.5 s -> 4.9 s.

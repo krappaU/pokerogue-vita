@@ -50,8 +50,19 @@
   class CanvasGradient { constructor() { this._color = null; } addColorStop(o, c) { if (!this._color) this._color = parseColor(c); } }
   class CanvasPattern { constructor() { this._color = [0, 0, 0, 0]; } setTransform() {} }
 
-  // "italic bold 16px/1.2 'emerald', sans-serif"
+  // "italic bold 16px/1.2 'emerald', sans-serif". Results are cached: Phaser sets the same font
+  // strings over and over (parsing was 8% of the game's UI setup). Treat results as read-only.
+  const fontCache = new Map();
   function parseFont(f) {
+    let r = fontCache.get(f);
+    if (r === undefined) {
+      r = parseFontUncached(f);
+      if (fontCache.size > 500) fontCache.clear();
+      fontCache.set(f, r);
+    }
+    return r;
+  }
+  function parseFontUncached(f) {
     const m = /^\s*(.*?)\s*([\d.]+)(px|pt|em|rem)(?:\s*\/\s*[\w.%]+)?\s+(.+)$/.exec(f);
     if (!m) return null;
     const pre = m[1].toLowerCase();
@@ -146,7 +157,11 @@
     get miterLimit() { return this._s.miterLimit; }
     set miterLimit(v) { this._s.miterLimit = +v; this._n.setMiterLimit(+v); }
     get font() { return this._s.font; }
-    set font(v) { if (parseFont(String(v))) { this._s.font = String(v); this._applyFont(); } }
+    set font(v) {
+      v = String(v);
+      if (v === this._s.font) return; // already applied
+      if (parseFont(v)) { this._s.font = v; this._applyFont(); }
+    }
     get textAlign() { return this._s.textAlign; }
     set textAlign(v) { this._s.textAlign = v; }
     get textBaseline() { return this._s.textBaseline; }

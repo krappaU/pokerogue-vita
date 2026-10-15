@@ -111,7 +111,8 @@ void prof_poll(JSContext *ctx); // from the JS interrupt handler
 void prof_frame(void);          // once per frame
 void net_poll(JSContext *ctx);                 // deliver finished requests
 void net_pump(void);                           // progress transfers only (from long JS runs)
-void net_set_origin(const char *page_url);     // the page origin sent as Origin/Referer
+void net_set_origin(const char *page_url);
+double net_clock_offset_ms(void);              // server time - console clock (0 if unknown/close)     // the page origin sent as Origin/Referer
 bool net_download_file(const char *url, const char *path, bool (*progress)(long long done, long long total, void *ud),
                        void *ud, char *err, size_t errn);
 void net_stats(char *out, size_t n);           // one-line summary for the log

@@ -505,6 +505,10 @@ static JSValue n_set_field_overlays(JSContext *ctx, JSValueConst this_val, int a
     return JS_UNDEFINED;
 }
 
+static JSValue n_clock_offset(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    return JS_NewFloat64(ctx, net_clock_offset_ms());
+}
+
 // memoryUsage() -> QuickJS's own accounting, in bytes and counts.
 static JSValue n_memory_usage(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     JSMemoryUsage m;
@@ -546,6 +550,7 @@ static const JSCFunctionListEntry native_funcs[] = {
     JS_CFUNC_DEF("imeOpen", 4, n_ime_open),
     JS_CFUNC_DEF("imePoll", 0, n_ime_poll),
     JS_CFUNC_DEF("setFieldOverlays", 1, n_set_field_overlays),
+    JS_CFUNC_DEF("clockOffset", 0, n_clock_offset),
     JS_CFUNC_DEF("loadScript", 1, n_load_script),
     JS_CFUNC_DEF("utf8Decode", 1, n_utf8_decode),
     JS_CFUNC_DEF("utf8Encode", 1, n_utf8_encode),

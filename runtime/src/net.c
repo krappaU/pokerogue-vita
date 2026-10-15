@@ -6,6 +6,8 @@
 // busters from the game's manifest) are cached on disk, which is what makes later boots fast.
 // The page itself, the manifest and all API calls always go to the network.
 
+#include <math.h>
+#include <sys/time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -686,6 +688,48 @@ static void *ab_realloc(JSRuntime *rt, void *opaque, void *ptr, size_t size) {
     return realloc(ptr, size);
 }
 
+// ---------------------------------------------------------------- server time
+// The console's clock can be hours off (wrong time zone setting). The game stamps saves with
+// Date.now() and prefers a local save copy whose stamp is newer than the server's, so a clock that
+// runs ahead could let an old local copy win over newer progress. The first response from a server
+// tells the real time (its Date header); js/core.js corrects Date by the difference.
+static double clock_offset_ms;
+static bool clock_known;
+
+static void note_server_date(const char *hdrs) {
+    if (clock_known) return;
+    const char *p = NULL;
+    for (const char *q = hdrs; *q; q++)
+        if (q[0] == '\n' && (q[1] == 'd' || q[1] == 'D') && !strncasecmp(q + 1, "date:", 5)) {
+            p = q + 6;
+            break;
+        }
+    if (!p) return;
+    while (*p == ' ') p++;
+    int d, y, H, M, S;
+    char mon[4] = "";
+    if (sscanf(p, "%*3s, %d %3s %d %d:%d:%d", &d, mon, &y, &H, &M, &S) != 6) return; // "Thu, 15 Oct 2026 07:21:40 GMT"
+    static const char months[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+    const char *f = strstr(months, mon);
+    if (!f || strlen(mon) != 3) return;
+    int m = (int)(f - months) / 3 + 1;
+    // Days since 1970-01-01 (H. Hinnant's days_from_civil).
+    y -= m <= 2;
+    long era = (y >= 0 ? y : y - 399) / 400;
+    long yoe = y - era * 400, doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy, days = era * 146097 + doe - 719468;
+    double server_ms = ((double)days * 86400 + H * 3600 + M * 60 + S) * 1000.0 + 500;
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    double off = server_ms - (tv.tv_sec * 1000.0 + tv.tv_usec / 1000.0);
+    clock_known = true;
+    if (fabs(off) < 30000) return; // within the header's precision: the clock is fine
+    clock_offset_ms = off;
+    host_log("[clock] the console's clock is off by %.2f hours; the game uses the server's time", off / 3600000.0);
+}
+
+double net_clock_offset_ms(void) { return clock_offset_ms; }
+
 static void deliver(JSContext *ctx, req *r, long status, const char *error, const char *final_url) {
     n_done++;
     n_bytes += r->body.len;
@@ -693,6 +737,7 @@ static void deliver(JSContext *ctx, req *r, long status, const char *error, cons
         host_log("[net] large response: %s (%lu KB)", r->url, (unsigned long)(r->body.len / 1024));
     // Keep only the last response's headers (redirects produce several blocks).
     const char *hdrs = r->resp_headers.data ? r->resp_headers.data : "";
+    if (!r->from_cache && status > 0) note_server_date(hdrs);
     const char *last = hdrs, *p = hdrs;
     while ((p = strstr(p, "\r\nHTTP/"))) last = p += 2;
     JSValue args[5];
