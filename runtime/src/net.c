@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 
 #include <curl/curl.h>
+#include "miniz.h"
 #include <openssl/err.h>
 #include <openssl/pem.h>
 #include <openssl/rand.h>
@@ -439,6 +440,42 @@ bool net_is_local(const char *url) {
     return g_cfg.local_dir && !strncmp(url, LOCAL_ORIGIN, n) && (url[n] == 0 || url[n] == '/');
 }
 
+// The offline game can also be a zip (as downloaded): files are read straight out of it. Unpacking
+// its 34,000 files took hours on the Vita's memory card.
+static mz_zip_archive local_zip;
+static int local_zip_state; // 0 not opened, 1 open, -1 failed
+
+static bool local_is_zip(void) {
+    size_t n = strlen(g_cfg.local_dir);
+    return n > 4 && !strcmp(g_cfg.local_dir + n - 4, ".zip");
+}
+
+static char *zip_read(const char *name, size_t *len) {
+    if (local_zip_state == 0) {
+        memset(&local_zip, 0, sizeof local_zip);
+        local_zip_state = mz_zip_reader_init_file(&local_zip, g_cfg.local_dir, 0) ? 1 : -1;
+        if (local_zip_state < 0) host_log("[local] can't open %s as a zip", g_cfg.local_dir);
+        else host_log("[local] %s: %u files", g_cfg.local_dir, (unsigned)mz_zip_reader_get_num_files(&local_zip));
+    }
+    if (local_zip_state < 0) return NULL;
+    int idx = mz_zip_reader_locate_file(&local_zip, name, NULL, 0);
+    if (idx < 0) return NULL;
+    size_t size = 0;
+    char *d = mz_zip_reader_extract_to_heap(&local_zip, (mz_uint)idx, &size, 0);
+    if (!d) {
+        host_log("[local] can't read %s from the zip (out of memory?)", name);
+        return NULL;
+    }
+    char *t = realloc(d, size + 1); // callers get a NUL-terminated buffer
+    if (!t) {
+        free(d);
+        return NULL;
+    }
+    t[size] = 0;
+    *len = size;
+    return t;
+}
+
 static char *local_read(const char *url, size_t *len) {
     const char *p = url + strlen(LOCAL_ORIGIN);
     while (*p == '/') p++;
@@ -455,6 +492,7 @@ static char *local_read(const char *url, size_t *len) {
     }
     rel[o] = 0;
     if (strstr(rel, "..")) return NULL;
+    if (local_is_zip()) return zip_read(rel[0] ? rel : "index.html", len);
     char path[1600];
     snprintf(path, sizeof path, "%s/%s", g_cfg.local_dir, rel[0] ? rel : "index.html");
     FILE *f = fopen(path, "rb");

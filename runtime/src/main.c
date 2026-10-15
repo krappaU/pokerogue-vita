@@ -410,13 +410,20 @@ static void save_screenshot(const char *path) {
 // decides: online=1, or local=<dir>).
 static char offline_dir[600], offline_version[64] = "?";
 static bool offline_installed(void) {
-    snprintf(offline_dir, sizeof offline_dir, "%s/game", g_cfg.data_dir);
+    // An unpacked folder (copied by hand) or the downloaded zip.
     char probe[700];
+    snprintf(offline_dir, sizeof offline_dir, "%s/game", g_cfg.data_dir);
     snprintf(probe, sizeof probe, "%s/index.html", offline_dir);
     FILE *f = fopen(probe, "rb");
-    if (!f) return false;
-    fclose(f);
-    snprintf(probe, sizeof probe, "%s/currentVersion.txt", offline_dir);
+    if (f) {
+        fclose(f);
+        snprintf(probe, sizeof probe, "%s/currentVersion.txt", offline_dir);
+    } else {
+        snprintf(offline_dir, sizeof offline_dir, "%s/game.zip", g_cfg.data_dir);
+        if (!(f = fopen(offline_dir, "rb"))) return false;
+        fclose(f);
+        snprintf(probe, sizeof probe, "%s/game.zip.version", g_cfg.data_dir);
+    }
     if ((f = fopen(probe, "rb"))) {
         size_t n = fread(offline_version, 1, sizeof offline_version - 1, f);
         offline_version[n] = 0;
@@ -539,7 +546,7 @@ int main(int argc, char **argv) {
     net_set_origin(g_cfg.base_url);
     if (g_cfg.local_dir) {
         char vp[700], ver[64] = "?";
-        snprintf(vp, sizeof vp, "%s/currentVersion.txt", g_cfg.local_dir);
+        snprintf(vp, sizeof vp, strstr(g_cfg.local_dir, ".zip") ? "%s.version" : "%s/currentVersion.txt", g_cfg.local_dir);
         FILE *vf = fopen(vp, "rb");
         if (vf) {
             size_t n = fread(ver, 1, sizeof ver - 1, vf);

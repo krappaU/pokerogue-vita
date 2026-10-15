@@ -58,8 +58,8 @@ static void render(int sel, bool offline_ok, const char *offline_version) {
             text(BOX_X + 16, y + 60, line2, 1, tc);
         } else {
             text(BOX_X + 16, y + 14, "Download offline game", 2, tc);
-            text(BOX_X + 16, y + 44, "About 530 MB to the memory card (needs ~1.3 GB free),", 1, tc);
-            text(BOX_X + 16, y + 60, "then: no login, no downloads while playing, local saves.", 1, tc);
+            text(BOX_X + 16, y + 44, "About 530 MB to the memory card, played straight", 1, tc);
+            text(BOX_X + 16, y + 60, "from the download: no login, no downloads in game.", 1, tc);
         }
     }
     text(BOX_X, H - 46, "D-pad and X (or touch) to choose. Your choice is remembered.", 1, dim);

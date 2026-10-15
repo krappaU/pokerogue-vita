@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Downloads and unpacks the offline game into <data>/game, from the start screen.
+// Downloads the offline game to <data>/game.zip, from the start screen.
 //
 // The build is the one Admiral-Billy's PokeRogue App uses for its offline mode: game.zip from the
-// latest release of github.com/Admiral-Billy/pokerogue (about 530 MB; 735 MB unpacked). The zip is
-// downloaded to <data>/game.zip.part (an interrupted download resumes), unpacked into
-// <data>/game.tmp (source maps skipped), which is then renamed to <data>/game, and deleted.
+// latest release of github.com/Admiral-Billy/pokerogue (about 530 MB). It is downloaded to
+// <data>/game.zip.part (an interrupted download resumes) and renamed when complete. The game is
+// played straight from the zip (net.c): unpacking its 34,000 files took hours on the Vita.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,7 +13,6 @@
 #include <time.h>
 
 #include "host.h"
-#include "miniz.h"
 
 #define RELEASE_API "https://api.github.com/repos/Admiral-Billy/pokerogue/releases/latest"
 #define ASSET_NAME "game.zip"
@@ -110,124 +109,7 @@ static long long json_num(const char *from, const char *key) {
     return atoll(p);
 }
 
-static void mkdirs(const char *path) {
-    char tmp[1024];
-    snprintf(tmp, sizeof tmp, "%s", path);
-    for (char *p = tmp + 1; *p; p++) {
-        if (*p != '/') continue;
-        *p = 0;
-        if (p[-1] != ':') mkdir(tmp, 0777);
-        *p = '/';
-    }
-    mkdir(tmp, 0777);
-}
-
-static void remove_tree(const char *path); // below
-
-static size_t write_cb(void *opaque, mz_uint64 ofs, const void *buf, size_t n) {
-    (void)ofs;
-    return fwrite(buf, 1, n, (FILE *)opaque);
-}
-
-static bool unpack(const char *zip_path, const char *dest, char *err, size_t errn) {
-    mz_zip_archive zip;
-    memset(&zip, 0, sizeof zip);
-    if (!mz_zip_reader_init_file(&zip, zip_path, 0)) {
-        snprintf(err, errn, "the downloaded file isn't a valid zip (%s)", mz_zip_get_error_string(mz_zip_get_last_error(&zip)));
-        return false;
-    }
-    int n = (int)mz_zip_reader_get_num_files(&zip);
-    long long total = 0, done = 0;
-    for (int i = 0; i < n; i++) {
-        mz_zip_archive_file_stat st;
-        if (mz_zip_reader_file_stat(&zip, i, &st)) total += (long long)st.m_uncomp_size;
-    }
-    progress_ui ui = {.t0 = host_now_ms(), .what = "Unpacking the offline game"};
-    mkdirs(dest);
-    bool ok = true;
-    for (int i = 0; i < n && ok; i++) {
-        mz_zip_archive_file_stat st;
-        if (!mz_zip_reader_file_stat(&zip, i, &st)) continue;
-        const char *name = st.m_filename;
-        size_t len = strlen(name);
-        if (strstr(name, "..") || name[0] == '/' || strchr(name, ':')) continue; // stay inside dest
-        char out[1024];
-        snprintf(out, sizeof out, "%s/%s", dest, name);
-        if (st.m_is_directory) {
-            mkdirs(out);
-            continue;
-        }
-        done += (long long)st.m_uncomp_size;
-        if (len > 4 && !strcmp(name + len - 4, ".map")) continue; // source maps: not needed
-        char *slash = strrchr(out, '/');
-        if (slash) {
-            *slash = 0;
-            mkdirs(out);
-            *slash = '/';
-        }
-        FILE *f = fopen(out, "wb");
-        if (!f) {
-            snprintf(err, errn, "can't write %s (memory card full?)", out);
-            ok = false;
-            break;
-        }
-        bool wrote = mz_zip_reader_extract_to_callback(&zip, i, write_cb, f, 0);
-        if (fclose(f) != 0) wrote = false;
-        if (!wrote) {
-            snprintf(err, errn, "unpacking %s failed (memory card full?)", name);
-            ok = false;
-            break;
-        }
-        if (!show_progress(done, total, &ui)) {
-            snprintf(err, errn, "cancelled");
-            ok = false;
-        }
-    }
-    mz_zip_reader_end(&zip);
-    return ok;
-}
-
-#ifdef __vita__
-#include <psp2/io/dirent.h>
-#include <psp2/io/fcntl.h>
-#include <psp2/io/stat.h>
-static void remove_tree(const char *path) {
-    SceUID d = sceIoDopen(path);
-    if (d >= 0) {
-        SceIoDirent e;
-        while (sceIoDread(d, &e) > 0) {
-            if (!strcmp(e.d_name, ".") || !strcmp(e.d_name, "..")) continue;
-            char p[1024];
-            snprintf(p, sizeof p, "%s/%s", path, e.d_name);
-            if (SCE_S_ISDIR(e.d_stat.st_mode)) remove_tree(p);
-            else sceIoRemove(p);
-        }
-        sceIoDclose(d);
-    }
-    sceIoRmdir(path);
-}
-#else
-#include <dirent.h>
-#include <unistd.h>
-static void remove_tree(const char *path) {
-    DIR *d = opendir(path);
-    if (d) {
-        struct dirent *e;
-        while ((e = readdir(d))) {
-            if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
-            char p[1024];
-            snprintf(p, sizeof p, "%s/%s", path, e->d_name);
-            struct stat st;
-            if (stat(p, &st) == 0 && S_ISDIR(st.st_mode)) remove_tree(p);
-            else remove(p);
-        }
-        closedir(d);
-    }
-    rmdir(path);
-}
-#endif
-
-// Returns true when <data>/game is ready.
+// Returns true when <data>/game.zip is ready.
 bool offline_install(void) {
     char err[600] = "";
     overlay_present("PokeRogue\n\nLooking for the offline game on GitHub...");
@@ -252,12 +134,11 @@ bool offline_install(void) {
     }
     free(json);
 
-    char zip_path[700], tmp_dir[700], game_dir[700];
+    char zip_path[700], game_zip[700], version_path[700];
     snprintf(zip_path, sizeof zip_path, "%s/game.zip.part", g_cfg.data_dir);
-    snprintf(tmp_dir, sizeof tmp_dir, "%s/game.tmp", g_cfg.data_dir);
-    snprintf(game_dir, sizeof game_dir, "%s/game", g_cfg.data_dir);
-    // Space: the zip plus the unpacked game (about 1.4x the zip) at the same time.
-    long long need = size > 0 ? size + size * 3 / 2 : 0, have_part = 0, free_b = plat_free_space(g_cfg.data_dir);
+    snprintf(game_zip, sizeof game_zip, "%s/game.zip", g_cfg.data_dir);
+    snprintf(version_path, sizeof version_path, "%s/game.zip.version", g_cfg.data_dir);
+    long long need = size > 0 ? size + 16 * 1024 * 1024 : 0, have_part = 0, free_b = plat_free_space(g_cfg.data_dir);
     struct stat st;
     if (stat(zip_path, &st) == 0) have_part = st.st_size;
     if (free_b >= 0 && need > 0 && free_b + have_part < need) {
@@ -279,23 +160,16 @@ bool offline_install(void) {
         }
         return false;
     }
-    remove_tree(tmp_dir);
-    if (!unpack(zip_path, tmp_dir, err, sizeof err)) {
-        host_log("[offline] unpacking failed: %s", err);
-        remove_tree(tmp_dir);
-        if (strcmp(err, "cancelled")) {
-            char m[700];
-            snprintf(m, sizeof m, "Unpacking failed:\n%s", err);
-            message_wait(m);
-        }
+    // Done: the game is played straight from the zip (no unpacking).
+    if (rename(zip_path, game_zip) != 0) {
+        message_wait("Couldn't rename the downloaded file.");
         return false;
     }
-    remove_tree(game_dir);
-    if (rename(tmp_dir, game_dir) != 0) {
-        message_wait("Couldn't move the unpacked game into place.");
-        return false;
+    FILE *vf = fopen(version_path, "w");
+    if (vf) {
+        fputs(!strncmp(tag, "release-", 8) ? tag + 8 : tag, vf);
+        fclose(vf);
     }
-    remove(zip_path);
-    host_log("[offline] installed release %s in %s", tag, game_dir);
+    host_log("[offline] installed release %s as %s", tag, game_zip);
     return true;
 }

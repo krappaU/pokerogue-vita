@@ -115,8 +115,10 @@ The game's text fields are HTML `<input>` elements over the canvas; `js/input.js
 ## Offline game (local mode)
 The start screen (`runtime/src/launcher.c`) chooses between the live site and an offline build of
 PokeRogue in `<data>/game/`; if none is installed it offers to download one
-(`runtime/src/offline_install.c`: GitHub release API, resumable download, unpacked with miniz into
-`game.tmp`, then renamed). The choice is remembered in `<data>/launcher.txt`. The offline game is
+(`runtime/src/offline_install.c`: GitHub release API, resumable download to `game.zip.part`,
+renamed to `<data>/game.zip`). The game is played straight from the zip (miniz, `net.c`):
+unpacking its 34,000 files ran at ~0.1 MB/s on the Vita's memory card. An unpacked folder in
+`<data>/game/` also works. The choice is remembered in `<data>/launcher.txt`. The offline game is
 played served under the made-up origin `https://offline.invalid`, no login,
 saves in `<data>/localStorage-offline.json`. `online=1` in `config.txt` ignores the folder;
 `local=<dir>` names another one. The build used for testing is the one Admiral-Billy's PokeRogue
