@@ -288,6 +288,7 @@ static double perf_t0;
 // one are counted (detected by the GC threshold changing).
 static int perf_gc;
 static double perf_gc_max;
+static double perf_swap_ms, perf_after_ms, perf_draw_ms; // non-JS parts of the frames in the window
 
 static int cmp_d(const void *a, const void *b) {
     double x = *(const double *)a, y = *(const double *)b;
@@ -308,10 +309,12 @@ static void perf_add(double js_ms) {
     net_stats(net, sizeof net);
     char gc[64] = "";
     if (perf_gc) snprintf(gc, sizeof gc, " | GC in %d frames (up to %.0f ms)", perf_gc, perf_gc_max);
-    host_log("[perf] %.1f fps | JS per frame: avg %.2f ms, p50 %.2f, p95 %.2f, max %.2f%s | net: %s", perf_n / secs,
-             sum / perf_n, perf_js[perf_n / 2], perf_js[perf_n * 95 / 100], perf_js[perf_n - 1], gc, net);
+    host_log("[perf] %.1f fps | JS per frame: avg %.2f ms, p50 %.2f, p95 %.2f, max %.2f%s | draw %.1f, swap %.1f, after %.1f ms | net: %s",
+             perf_n / secs, sum / perf_n, perf_js[perf_n / 2], perf_js[perf_n * 95 / 100], perf_js[perf_n - 1], gc,
+             perf_draw_ms / perf_n, perf_swap_ms / perf_n, perf_after_ms / perf_n, net);
     perf_gc = 0;
     perf_gc_max = 0;
+    perf_swap_ms = perf_after_ms = perf_draw_ms = 0;
     static int windows;
     if (windows++ % 4 == 0) mem_breakdown("running");
     perf_n = 0;
@@ -696,14 +699,18 @@ int main(int argc, char **argv) {
         prof_frame();
 
         set_phase("drawing");
+        double t_draw = host_now_ms();
         if (!overlay_draw()) draw_over_game(ctx, js_ms);
         if (pending_shot[0]) {
             save_screenshot(pending_shot);
             pending_shot[0] = 0;
         }
         set_phase("swap");
+        double t_swap = host_now_ms();
         plat_swap();
+        double t_after = host_now_ms();
         gl_after_frame();
+        perf_draw_ms += t_swap - t_draw, perf_swap_ms += t_after - t_swap, perf_after_ms += host_now_ms() - t_after;
         set_phase("input");
         frame_no++;
         if (g_cfg.exit_after_frames && frame_no >= g_cfg.exit_after_frames) quit = true;

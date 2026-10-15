@@ -628,8 +628,9 @@ static void textures_for_draw(JSContext *ctx) {
 
 // Once per frame: over budget -> evict the textures idle longest (oldest first, a few per frame).
 static void textures_evict(void) {
+    static uint32_t next_scan;
     gl_frame++;
-    if (tex_total <= TEX_BUDGET || evictable_bytes == 0) return;
+    if (tex_total <= TEX_BUDGET || evictable_bytes == 0 || gl_frame < next_scan) return;
     for (int round = 0; round < 8 && tex_total > TEX_BUDGET; round++) {
         GLuint victim = 0;
         uint32_t oldest = gl_frame;
@@ -639,7 +640,12 @@ static void textures_evict(void) {
             if (gl_frame - t->last_used < TEX_IDLE_FRAMES) continue;
             if (t->last_used < oldest) oldest = t->last_used, victim = id;
         }
-        if (!victim) return;
+        if (!victim) {
+            // Over budget, but everything was drawn recently: scanning all 16,384 slots every frame
+            // found nothing; look again in a while.
+            next_scan = gl_frame + 30;
+            return;
+        }
         static const uint8_t clear[4] = {0, 0, 0, 0};
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, victim);

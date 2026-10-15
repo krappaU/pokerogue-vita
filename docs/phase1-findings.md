@@ -200,3 +200,15 @@ resetFilters() and runs the last one once. Checked: starter select reset+update 
 0.14-0.23 s on desktop, identical filtered list, cursor, dropdown settings and visible icons (only
 the stale positions of hidden icons differ, and updateScroll positions every icon before showing
 it); Pokedex 8.3-8.8 s -> 3.6-4.0 s with an identical state (scripts/probe_filter_coalesce.js).
+
+### Threads and cores (runtime 0.35)
+The Vita gives apps three of its four Cortex-A9 cores. The game's JavaScript (game logic, Phaser,
+building draw batches) is one QuickJS context and runs on one thread; it can't be split. Off the
+main thread: audio mixing (core 1) and decoding (core 2) since 0.34, and vitaGL's display queue
+(the vblank wait happens there, with triple buffering, not on the main thread). 0.35 logs the
+non-JS parts of a frame in the `[perf]` line (draw = HUD/overlays, swap = vglSwapBuffers,
+after = per-frame texture housekeeping) to see what else could move.
+Battle-frame changes in 0.35: the scene update list keeps its sprite/non-sprite split and its
+membership sets up to date incrementally (it was rebuilt from the whole list, 1,000+ objects, in
+every frame where something was added or removed: 5-7% of battle frames on the Vita), and the
+texture-eviction scan of 16,384 slots runs at most every 30 frames when nothing can be evicted.

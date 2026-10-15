@@ -152,30 +152,69 @@
   });
   const origAnimDestroy = ASP.destroy;
   ASP.destroy = function () { playing.delete(this); return origAnimDestroy.apply(this, arguments); };
-  const PQ = Phaser.Structs.ProcessQueue.prototype, origPQUpdate = PQ.update;
-  PQ.update = function () {
-    if (this._toProcess !== 0) this._pkrVersion = (this._pkrVersion | 0) + 1;
-    const r = origPQUpdate.call(this);
-    if (this._pkrPending && this._pending.length === 0) this._pkrPending.clear(); // update() empties it in place
-    return r;
-  };
+  const PQ = Phaser.Structs.ProcessQueue.prototype;
+  const PQ_ADD = Phaser.Structs.Events.PROCESS_QUEUE_ADD, PQ_REMOVE = Phaser.Structs.Events.PROCESS_QUEUE_REMOVE;
+  const spritePreUpdate = Phaser.GameObjects.Sprite.prototype.preUpdate;
   // Membership in the update list's queues by Set instead of indexOf: every sprite added to a scene
-  // checks both its pending and active arrays (thousands long during UI setup).
+  // checks both its pending and active arrays (thousands long during UI setup). The sets follow the
+  // arrays incrementally; a size mismatch (someone changed an array directly) rebuilds them.
   function pendingSet(q) {
-    if (!q._pkrPending || q._pkrPendingArr !== q._pending) {
+    if (!q._pkrPending || q._pkrPendingArr !== q._pending || q._pkrPending.size !== q._pending.length) {
       q._pkrPending = new Set(q._pending);
       q._pkrPendingArr = q._pending;
     }
     return q._pkrPending;
   }
   function activeSet(q) {
-    if (!q._pkrActive || q._pkrActiveArr !== q._active || q._pkrActiveVer !== (q._pkrVersion | 0)) {
+    if (!q._pkrActive || q._pkrActiveArr !== q._active || q._pkrActive.size !== q._active.length) {
       q._pkrActive = new Set(q._active);
       q._pkrActiveArr = q._active;
-      q._pkrActiveVer = q._pkrVersion | 0;
     }
     return q._pkrActive;
   }
+  // fastSceneUpdate's split of an update list into animated sprites (members) and everything else
+  // (others, in list order).
+  function rebuildSplit(q) {
+    const list = q._active, others = [], members = new Set();
+    for (let i = 0; i < list.length; i++) {
+      const go = list[i];
+      if (go.preUpdate === spritePreUpdate) members.add(go); else others.push(go);
+    }
+    q._pkrList = list, q._pkrOthers = others, q._pkrMembers = members;
+  }
+  // ProcessQueue.update with the same effects (removals first, then additions, same events), using
+  // the sets instead of indexOf, and keeping the split up to date instead of rebuilding it.
+  PQ.update = function () {
+    if (this._toProcess === 0) return this._active;
+    const active = this._active, aset = activeSet(this);
+    const split = this._pkrMembers && this._pkrList === active ? this : null;
+    const d = this._destroy;
+    for (let i = 0; i < d.length; i++) {
+      const item = d[i];
+      if (!aset.has(item)) continue;
+      active.splice(active.indexOf(item), 1);
+      aset.delete(item);
+      if (split && !split._pkrMembers.delete(item)) {
+        const k = split._pkrOthers.indexOf(item);
+        if (k !== -1) split._pkrOthers.splice(k, 1);
+      }
+      this.emit(PQ_REMOVE, item);
+    }
+    d.length = 0;
+    const p = this._pending;
+    for (let i = 0; i < p.length; i++) {
+      const item = p[i];
+      if (this.checkQueue && aset.has(item)) continue;
+      active.push(item);
+      aset.add(item);
+      if (split) { if (item.preUpdate === spritePreUpdate) split._pkrMembers.add(item); else split._pkrOthers.push(item); }
+      this.emit(PQ_ADD, item);
+    }
+    p.length = 0;
+    if (this._pkrPending) this._pkrPending.clear();
+    this._toProcess = 0;
+    return active;
+  };
   PQ.isPending = function (item) { return this._toProcess > 0 && pendingSet(this).has(item); };
   PQ.isActive = function (item) { return activeSet(this).has(item); };
   PQ.add = function (item) {
@@ -198,17 +237,9 @@
   };
   const UL = Phaser.GameObjects.UpdateList.prototype;
   const origSceneUpdate = UL.sceneUpdate;
-  const spritePreUpdate = Phaser.GameObjects.Sprite.prototype.preUpdate;
   function fastSceneUpdate(time, delta) {
     const list = this._active;
-    if (list !== this._pkrList || (this._pkrVersion | 0) !== this._pkrSeen) {
-      const others = [], members = new Set();
-      for (let i = 0; i < list.length; i++) {
-        const go = list[i];
-        if (go.preUpdate === spritePreUpdate) members.add(go); else others.push(go);
-      }
-      this._pkrList = list, this._pkrSeen = this._pkrVersion | 0, this._pkrOthers = others, this._pkrMembers = members;
-    }
+    if (list !== this._pkrList || !this._pkrMembers || this._pkrMembers.size + this._pkrOthers.length !== list.length) rebuildSplit(this);
     const others = this._pkrOthers;
     for (let i = 0, n = others.length; i < n; i++) {
       const go = others[i];
