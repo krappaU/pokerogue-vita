@@ -71,6 +71,9 @@ if(VITA)
     SceCtrl_stub SceTouch_stub ScePower_stub SceSysmodule_stub SceNet_stub SceNetCtl_stub SceAppUtil_stub
     SceLibKernel_stub SceIofilemgr_stub SceRtc_stub
     stdc++ pthread m)
+  # vita-elf-create appends its tables after the code segment; with the default 64 KiB alignment the
+  # gap before the data segment depends on code size and was once too small ("segment 1 overlaps").
+  target_link_options(pokerogue-rt PRIVATE -Wl,--defsym,__sce_headroom=0x4000)
   vita_create_self(eboot.bin pokerogue-rt UNSAFE)
   file(GLOB JS_FILES js/*.js)
   set(VPK_FILES FILE third_party/cacert.pem cacert.pem
