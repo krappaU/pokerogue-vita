@@ -421,6 +421,13 @@ static JSValue n_load_script(JSContext *ctx, JSValueConst this_val, int argc, JS
     return v;
 }
 
+// gc() -> ms: runs QuickJS's cycle collector now (diagnostics: how long a collection takes).
+static JSValue n_gc(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    double t0 = host_now_ms();
+    JS_RunGC(JS_GetRuntime(ctx));
+    return JS_NewFloat64(ctx, host_now_ms() - t0);
+}
+
 // utf8Decode(ArrayBuffer|TypedArray[, start, end]) -> string
 static JSValue n_utf8_decode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     size_t len = 0;
@@ -651,6 +658,7 @@ static const JSCFunctionListEntry native_funcs[] = {
     JS_CFUNC_DEF("utf8Decode", 1, n_utf8_decode),
     JS_CFUNC_DEF("utf8Encode", 1, n_utf8_encode),
     JS_CFUNC_DEF("btoa", 1, n_btoa),
+    JS_CFUNC_DEF("gc", 0, n_gc),
     JS_CFUNC_DEF("atob", 1, n_atob),
     JS_CFUNC_DEF("log", 1, n_log),
     JS_CFUNC_DEF("now", 0, n_now),

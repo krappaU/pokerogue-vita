@@ -278,6 +278,11 @@ void mem_breakdown(const char *stage) {
 static double perf_js[PERF_WINDOW];
 static int perf_n;
 static double perf_t0;
+// QuickJS's cycle collector runs inside an allocation once the JS heap has grown by half since the
+// last run, and walks every object: a pause proportional to the whole heap. Frames that contained
+// one are counted (detected by the GC threshold changing).
+static int perf_gc;
+static double perf_gc_max;
 
 static int cmp_d(const void *a, const void *b) {
     double x = *(const double *)a, y = *(const double *)b;
@@ -296,8 +301,12 @@ static void perf_add(double js_ms) {
     qsort(perf_js, perf_n, sizeof *perf_js, cmp_d);
     char net[160];
     net_stats(net, sizeof net);
-    host_log("[perf] %.1f fps | JS per frame: avg %.2f ms, p50 %.2f, p95 %.2f, max %.2f | net: %s", perf_n / secs,
-             sum / perf_n, perf_js[perf_n / 2], perf_js[perf_n * 95 / 100], perf_js[perf_n - 1], net);
+    char gc[64] = "";
+    if (perf_gc) snprintf(gc, sizeof gc, " | GC in %d frames (up to %.0f ms)", perf_gc, perf_gc_max);
+    host_log("[perf] %.1f fps | JS per frame: avg %.2f ms, p50 %.2f, p95 %.2f, max %.2f%s | net: %s", perf_n / secs,
+             sum / perf_n, perf_js[perf_n / 2], perf_js[perf_n * 95 / 100], perf_js[perf_n - 1], gc, net);
+    perf_gc = 0;
+    perf_gc_max = 0;
     static int windows;
     if (windows++ % 4 == 0) mem_breakdown("running");
     perf_n = 0;
@@ -653,6 +662,8 @@ int main(int argc, char **argv) {
         net_poll(ctx);
         set_phase("promise jobs");
         in_frame_js = true;
+        size_t gc_threshold = JS_GetGCThreshold(JS_GetRuntime(ctx));
+        double t_jobs = host_now_ms();
         host_run_jobs(ctx);
 
         double t_js = host_now_ms();
@@ -666,6 +677,11 @@ int main(int argc, char **argv) {
         in_frame_js = false;
         double js_ms = host_now_ms() - t_js;
         if (js_ms > 1000) host_log("[perf] slow frame: %.0f ms of JS", js_ms);
+        if (JS_GetGCThreshold(JS_GetRuntime(ctx)) != gc_threshold) {
+            double all = host_now_ms() - t_jobs;
+            perf_gc++;
+            if (all > perf_gc_max) perf_gc_max = all;
+        }
         perf_add(js_ms);
         prof_frame();
 

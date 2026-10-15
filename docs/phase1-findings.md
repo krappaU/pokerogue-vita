@@ -117,3 +117,18 @@ of the whole save, ~0.5 MB), `GetValue` 3%. Causes and changes:
 - `btoa`/`atob` in C (a 6 MB round trip takes 33 ms on desktop).
 Desktop, same save, Continue -> Save and Quit: 3.76 s -> 2.76 s for the rebuild frame. The desktop
 profile weights these less than the Vita one did; expected Vita effect ~60% of that frame.
+
+### Long frames and battle cost (runtime 0.28), 2026-10-15, offline build e4e9b53
+Vita 0.27: return to the title 49.7 s -> 36.0 s; the first title frame at startup 49.8 s -> 42.0 s.
+During such frames nothing was presented (a black screen); from 0.28 a "Loading" screen is drawn from
+the JS interrupt callback once a frame has run for 2.5 s, with the game's GL state restored from
+shadow copies in gl.c afterwards.
+- Battles on the Vita: 50-60 ms of JS per frame, p95 110-140 ms; render is ~74% of the samples
+  although a battle frame draws only ~220 objects (~41 quads, ~11 texts, ~55 pipeline switches;
+  desktop probe). The game's sprite pipeline rebuilds 2x128-float uniform arrays with spread
+  `splice` calls in onBind/onBatch for every Pokemon sprite, every frame (~10% of the frame).
+  PokemonIconAnimHelper keeps 659 icons registered (starter select, party) and moves all of them on
+  a 200 ms repeating tween (~5%).
+- A full QuickJS cycle collection takes ~220 ms on desktop with the game's heap (~80 MB of JS
+  objects), probably ~3 s on the Vita. It only runs after the JS heap grows by half; none occurred in
+  desktop battles. The perf log line now reports frames that contained one.
