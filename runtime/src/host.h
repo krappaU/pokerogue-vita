@@ -135,6 +135,7 @@ void overlay_blit_text(uint8_t *px, int W, int H, int x, int y, const char *text
 void overlay_image_draw(const uint8_t *rgba, int w, int h, bool changed, int *ox, int *oy);
 void overlay_rgba_at(int slot, const uint8_t *rgba, int w, int h, bool changed, float x, float y, float dw, float dh);
 void gl_game_to_screen(float gx, float gy, float *sx, float *sy, float *scale);
+int launcher_run(bool offline_ok, const char *offline_version, void (*poll)(bool *quit)); // 0 online, 1 offline, -1 quit
 bool fields_draw(void); // the game's text input fields (js/input.js -> __native.setFieldOverlays)
 void fields_set(int n);
 bool fields_draw_pending(void);

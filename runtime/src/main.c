@@ -162,7 +162,7 @@ static void control_line(JSContext *ctx, char *line, bool *quit) {
         snprintf(pending_shot, sizeof pending_shot, "%s", arg);
     } else if (!strcmp(line, "eval") && arg) {
         char *res = NULL;
-        host_eval_string(ctx, arg, "<control>", &res);
+        if (ctx) host_eval_string(ctx, arg, "<control>", &res);
         host_log("[eval] %s", res ? res : "(exception)");
         free(res);
     } else if (!strcmp(line, "evalfile") && arg) {
@@ -179,7 +179,7 @@ static void control_line(JSContext *ctx, char *line, bool *quit) {
         src[got] = 0;
         fclose(f);
         char *res = NULL;
-        host_eval_string(ctx, src, arg, &res);
+        if (ctx) host_eval_string(ctx, src, arg, &res);
         host_log("[evalfile] %s", res ? res : "(exception)");
         free(res);
         free(src);
@@ -404,19 +404,29 @@ static void save_screenshot(const char *path) {
 //   local=game                      play an offline build of the game from <data>/game (no login,
 //                                   saves stay on the console); automatic if <data>/game exists
 //   online=1                        play the live site even if <data>/game exists
-// An offline build of the game in <data>/game is used automatically unless config.txt says
-// online=1 (or names another folder with local=).
-static void detect_local_game(void) {
-    if (g_cfg.local_dir || g_cfg.force_online) return;
-    static char dir[600];
+// Is an offline build of the game in <data>/game? The start screen offers it (unless config.txt
+// decides: online=1, or local=<dir>).
+static char offline_dir[600], offline_version[64] = "?";
+static bool offline_installed(void) {
+    snprintf(offline_dir, sizeof offline_dir, "%s/game", g_cfg.data_dir);
     char probe[700];
-    snprintf(dir, sizeof dir, "%s/game", g_cfg.data_dir);
-    snprintf(probe, sizeof probe, "%s/index.html", dir);
+    snprintf(probe, sizeof probe, "%s/index.html", offline_dir);
     FILE *f = fopen(probe, "rb");
-    if (!f) return;
+    if (!f) return false;
     fclose(f);
-    g_cfg.local_dir = dir;
-    g_cfg.base_url = LOCAL_ORIGIN "/";
+    snprintf(probe, sizeof probe, "%s/currentVersion.txt", offline_dir);
+    if ((f = fopen(probe, "rb"))) {
+        size_t n = fread(offline_version, 1, sizeof offline_version - 1, f);
+        offline_version[n] = 0;
+        offline_version[strcspn(offline_version, "\r\n")] = 0;
+        fclose(f);
+    }
+    return true;
+}
+
+static void launcher_poll(bool *quit) {
+    control_poll(NULL, quit);
+    frame_no++;
 }
 
 static void load_config_file(void) {
@@ -475,7 +485,6 @@ int main(int argc, char **argv) {
     for (int i = 1; i + 1 < argc; i++)
         if (!strcmp(argv[i], "--data")) g_cfg.data_dir = argv[i + 1];
     load_config_file();
-    detect_local_game();
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
         if (!strcmp(a, "--url") && v) g_cfg.base_url = argv[++i];
@@ -494,22 +503,25 @@ int main(int argc, char **argv) {
     snprintf(path, sizeof path, "%s/log.txt", g_cfg.data_dir);
     log_fp = fopen(path, "w");
     host_log("%s, built %s | QuickJS-ng %s | page %s", host_version_string(), __DATE__, JS_GetVersion(), g_cfg.base_url);
-    if (g_cfg.local_dir) {
-        char vp[700], ver[64] = "?";
-        snprintf(vp, sizeof vp, "%s/currentVersion.txt", g_cfg.local_dir);
-        FILE *vf = fopen(vp, "rb");
-        if (vf) {
-            size_t n = fread(ver, 1, sizeof ver - 1, vf);
-            ver[n] = 0;
-            ver[strcspn(ver, "\r\n")] = 0;
-            fclose(vf);
-        }
-        host_log("[local] offline game from %s (game version %s): no login, saves stay on this console", g_cfg.local_dir, ver);
-    }
+
 
     mem_report("start");
     if (!plat_init(g_cfg.win_w, g_cfg.win_h)) return 1;
     mem_report("after graphics init");
+
+    // Online or offline: the start screen, unless config.txt decided.
+    bool have_offline = offline_installed();
+    if (!g_cfg.local_dir && !g_cfg.force_online) {
+        int choice = launcher_run(have_offline, offline_version, launcher_poll);
+        if (choice < 0) return 0;
+        if (choice == 1) {
+            g_cfg.local_dir = offline_dir;
+            g_cfg.base_url = LOCAL_ORIGIN "/";
+        }
+    }
+    if (g_cfg.local_dir) host_log("[local] offline game from %s (game version %s): no login, saves stay on this console",
+                                  g_cfg.local_dir, g_cfg.local_dir == offline_dir ? offline_version : "?");
+    else host_log("[online] playing %s", g_cfg.base_url);
     net_init();
     mem_report("after network init");
     JSContext *ctx = host_js_init();
