@@ -44,7 +44,13 @@ static struct {
     GLboolean color_mask[4];
     GLuint fb;
     float fb_scale; // render-target scale of the bound framebuffer (1 or 0.5)
-} st = {.default_fb = true, .virt_w = 300, .virt_h = 150, .color_mask = {1, 1, 1, 1}, .fb_scale = 1};
+    // More shadow state, for drawing over the game in the middle of a frame (gl_restore_state).
+    bool blend_on, depth_on, stencil_on, cull_on;
+    GLenum blend_func[4], blend_eq[2];
+    GLint unpack_align;
+    struct { bool on, set; GLint size; GLenum type; GLboolean norm; GLsizei stride; intptr_t off; GLuint buf; } attrib[2];
+} st = {.default_fb = true, .virt_w = 300, .virt_h = 150, .color_mask = {1, 1, 1, 1}, .fb_scale = 1,
+        .blend_func = {GL_ONE, GL_ZERO, GL_ONE, GL_ZERO}, .blend_eq = {GL_FUNC_ADD, GL_FUNC_ADD}, .unpack_align = 4};
 
 // Off-screen render targets the size of the whole game canvas (Phaser's post-FX frames, 1920x1080)
 // are allocated at half size: the screen shows the game at about half that resolution anyway, and
@@ -211,11 +217,25 @@ FN(w_activeTexture) {
     return JS_UNDEFINED;
 }
 FN(w_blendColor) { glBlendColor(gf(ctx, A(0)), gf(ctx, A(1)), gf(ctx, A(2)), gf(ctx, A(3))); return JS_UNDEFINED; }
-FN(w_blendEquation) { glBlendEquation(gi(ctx, A(0))); return JS_UNDEFINED; }
-FN(w_blendEquationSeparate) { glBlendEquationSeparate(gi(ctx, A(0)), gi(ctx, A(1))); return JS_UNDEFINED; }
-FN(w_blendFunc) { glBlendFunc(gi(ctx, A(0)), gi(ctx, A(1))); return JS_UNDEFINED; }
+FN(w_blendEquation) {
+    st.blend_eq[0] = st.blend_eq[1] = gi(ctx, A(0));
+    glBlendEquation(st.blend_eq[0]);
+    return JS_UNDEFINED;
+}
+FN(w_blendEquationSeparate) {
+    st.blend_eq[0] = gi(ctx, A(0)), st.blend_eq[1] = gi(ctx, A(1));
+    glBlendEquationSeparate(st.blend_eq[0], st.blend_eq[1]);
+    return JS_UNDEFINED;
+}
+FN(w_blendFunc) {
+    st.blend_func[0] = st.blend_func[2] = gi(ctx, A(0));
+    st.blend_func[1] = st.blend_func[3] = gi(ctx, A(1));
+    glBlendFunc(st.blend_func[0], st.blend_func[1]);
+    return JS_UNDEFINED;
+}
 FN(w_blendFuncSeparate) {
-    glBlendFuncSeparate(gi(ctx, A(0)), gi(ctx, A(1)), gi(ctx, A(2)), gi(ctx, A(3)));
+    for (int i = 0; i < 4; i++) st.blend_func[i] = gi(ctx, A(i));
+    glBlendFuncSeparate(st.blend_func[0], st.blend_func[1], st.blend_func[2], st.blend_func[3]);
     return JS_UNDEFINED;
 }
 FN(w_clear) { glClear(gi(ctx, A(0))); return JS_UNDEFINED; }
@@ -235,15 +255,24 @@ FN(w_cullFace) { glCullFace(gi(ctx, A(0))); return JS_UNDEFINED; }
 FN(w_depthFunc) { glDepthFunc(gi(ctx, A(0))); return JS_UNDEFINED; }
 FN(w_depthMask) { glDepthMask(JS_ToBool(ctx, A(0))); return JS_UNDEFINED; }
 FN(w_depthRange) { glDepthRangef(gf(ctx, A(0)), gf(ctx, A(1))); return JS_UNDEFINED; }
+static void track_cap(int cap, bool on) {
+    switch (cap) {
+    case GL_SCISSOR_TEST: st.scissor_on = on; break;
+    case GL_BLEND: st.blend_on = on; break;
+    case GL_DEPTH_TEST: st.depth_on = on; break;
+    case GL_STENCIL_TEST: st.stencil_on = on; break;
+    case GL_CULL_FACE: st.cull_on = on; break;
+    }
+}
 FN(w_disable) {
     int cap = gi(ctx, A(0));
-    if (cap == GL_SCISSOR_TEST) st.scissor_on = false;
+    track_cap(cap, false);
     glDisable(cap);
     return JS_UNDEFINED;
 }
 FN(w_enable) {
     int cap = gi(ctx, A(0));
-    if (cap == GL_SCISSOR_TEST) st.scissor_on = true;
+    track_cap(cap, true);
     glEnable(cap);
     return JS_UNDEFINED;
 }
@@ -274,7 +303,10 @@ FN(w_pixelStorei) {
     if (p == 0x9240) st.flip_y = v != 0;
     else if (p == 0x9241) st.premultiply = v != 0;
     else if (p == 0x9243) { /* colorspace conversion: no-op */ }
-    else glPixelStorei(p, v);
+    else {
+        if (p == GL_UNPACK_ALIGNMENT) st.unpack_align = v;
+        glPixelStorei(p, v);
+    }
     return JS_UNDEFINED;
 }
 
@@ -883,12 +915,32 @@ FN(w_uniformMatrix3fv) { return uniform_matrix(ctx, argv, argc, 3); }
 FN(w_uniformMatrix4fv) { return uniform_matrix(ctx, argv, argc, 4); }
 
 FN(w_vertexAttribPointer) {
-    glVertexAttribPointer(gi(ctx, A(0)), gi(ctx, A(1)), gi(ctx, A(2)), JS_ToBool(ctx, A(3)), gi(ctx, A(4)),
-                          (const void *)(intptr_t)gi(ctx, A(5)));
+    int i = gi(ctx, A(0));
+    GLint size = gi(ctx, A(1));
+    GLenum type = gi(ctx, A(2));
+    GLboolean norm = JS_ToBool(ctx, A(3));
+    GLsizei stride = gi(ctx, A(4));
+    intptr_t off = gi(ctx, A(5));
+    glVertexAttribPointer(i, size, type, norm, stride, (const void *)off);
+    if (i >= 0 && i < 2) {
+        st.attrib[i].set = true;
+        st.attrib[i].size = size, st.attrib[i].type = type, st.attrib[i].norm = norm;
+        st.attrib[i].stride = stride, st.attrib[i].off = off, st.attrib[i].buf = oid(st.bound_array_buffer);
+    }
     return JS_UNDEFINED;
 }
-FN(w_enableVertexAttribArray) { glEnableVertexAttribArray(gi(ctx, A(0))); return JS_UNDEFINED; }
-FN(w_disableVertexAttribArray) { glDisableVertexAttribArray(gi(ctx, A(0))); return JS_UNDEFINED; }
+FN(w_enableVertexAttribArray) {
+    int i = gi(ctx, A(0));
+    if (i >= 0 && i < 2) st.attrib[i].on = true;
+    glEnableVertexAttribArray(i);
+    return JS_UNDEFINED;
+}
+FN(w_disableVertexAttribArray) {
+    int i = gi(ctx, A(0));
+    if (i >= 0 && i < 2) st.attrib[i].on = false;
+    glDisableVertexAttribArray(i);
+    return JS_UNDEFINED;
+}
 FN(w_vertexAttrib1f) { glVertexAttrib1f(gi(ctx, A(0)), gf(ctx, A(1))); return JS_UNDEFINED; }
 FN(w_vertexAttrib2f) { glVertexAttrib2f(gi(ctx, A(0)), gf(ctx, A(1)), gf(ctx, A(2))); return JS_UNDEFINED; }
 FN(w_vertexAttrib3f) {
@@ -1225,4 +1277,36 @@ void gl_after_frame(void) {
     glViewport(st.vp[0], st.vp[1], st.vp[2], st.vp[3]);
     if (st.scissor_on) glEnable(GL_SCISSOR_TEST);
     if (st.fb) glBindFramebuffer(GL_FRAMEBUFFER, st.fb);
+}
+
+// Puts back the GL state the overlay's drawing changes (overlay.c: framebuffer, viewport, caps,
+// blending, program, texture unit 0, array buffer, attributes 0-1), from the shadow copies. Used
+// when something is drawn in the middle of one of the game's frames, where Phaser expects its
+// own state to be untouched.
+void gl_restore_state(void) {
+    glBindFramebuffer(GL_FRAMEBUFFER, st.fb);
+    glViewport(st.vp[0], st.vp[1], st.vp[2], st.vp[3]);
+    if (st.scissor_on) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
+    if (st.blend_on) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+    if (st.depth_on) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+    if (st.stencil_on) glEnable(GL_STENCIL_TEST); else glDisable(GL_STENCIL_TEST);
+    if (st.cull_on) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
+    glBlendFuncSeparate(st.blend_func[0], st.blend_func[1], st.blend_func[2], st.blend_func[3]);
+    glBlendEquationSeparate(st.blend_eq[0], st.blend_eq[1]);
+    glColorMask(st.color_mask[0], st.color_mask[1], st.color_mask[2], st.color_mask[3]);
+    glClearColor(st.clear_color[0], st.clear_color[1], st.clear_color[2], st.clear_color[3]);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, st.unpack_align);
+    glUseProgram(oid(st.bound_program));
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, oid(st.bound_texture[0]));
+    glActiveTexture(GL_TEXTURE0 + st.active_unit);
+    for (int i = 0; i < 2; i++) {
+        if (st.attrib[i].set) {
+            glBindBuffer(GL_ARRAY_BUFFER, st.attrib[i].buf);
+            glVertexAttribPointer(i, st.attrib[i].size, st.attrib[i].type, st.attrib[i].norm, st.attrib[i].stride,
+                                  (const void *)st.attrib[i].off);
+        }
+        if (st.attrib[i].on) glEnableVertexAttribArray(i); else glDisableVertexAttribArray(i);
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, oid(st.bound_array_buffer));
 }

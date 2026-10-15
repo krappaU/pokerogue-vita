@@ -25,7 +25,7 @@ typedef struct {
 
 static char message[2048];
 static bool disabled;
-static textbox msg_box, footer_box, hud_box;
+static textbox msg_box, footer_box, hud_box, busy_box;
 static GLuint prog, vbo;
 static GLint a_pos, a_uv, u_tex;
 
@@ -207,6 +207,32 @@ bool overlay_draw(void) {
     draw_box(&footer_box, w - footer_box.w - 4, h - footer_box.h - 4, w, h);
     end_draw();
     return true;
+}
+
+// Full-screen "busy" message drawn while one of the game's frames runs for seconds (see busy_poll in
+// main.c). Unlike overlay_draw it works after the game's renderer has taken over; the caller swaps
+// and then restores the game's GL state (gl_restore_state).
+void overlay_busy_draw(const char *text) {
+    int w, h;
+    begin_draw(&w, &h);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_STENCIL_TEST);
+    glDisable(GL_CULL_FACE);
+    glColorMask(1, 1, 1, 1);
+    glBlendEquation(GL_FUNC_ADD);
+    if (!busy_box.tex || strcmp(busy_box.text, text)) {
+        snprintf(busy_box.text, sizeof busy_box.text, "%s", text);
+        build_texture(&busy_box, busy_box.text, 2, true, TEXT_FG, CLEAR, 0);
+    }
+    if (!footer_box.tex) {
+        snprintf(footer_box.text, sizeof footer_box.text, "%s", host_version_string());
+        build_texture(&footer_box, footer_box.text, 1, false, SMALL_FG, SMALL_BG, 3);
+    }
+    glClearColor(0.20f, 0.13f, 0.24f, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    draw_box(&busy_box, (w - busy_box.w) / 2, (h - busy_box.h) / 2, w, h);
+    draw_box(&footer_box, w - footer_box.w - 4, h - footer_box.h - 4, w, h);
+    end_draw();
 }
 
 // Debug line drawn over the game in the top-right corner. The caller lets Phaser know that GL

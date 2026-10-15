@@ -20,6 +20,7 @@ typedef struct {
     const char *local_dir;   // config.txt local=<dir>: play an offline build from this folder
     bool force_online;       // config.txt online=1
     bool no_profile;         // config.txt profile=0
+    int busy_after_ms;       // config.txt busy=<ms>: loading screen during long frames (0: never)
     bool net_trace;          // config.txt nettrace=1: log API request headers
     bool osk;                // always use the built-in keyboard (config.txt osk=1)
     bool hud;                // debug line over the game (config.txt hud=1; SELECT while holding L+R)
@@ -127,6 +128,7 @@ bool net_is_local(const char *url);
 
 void gl_register(JSContext *ctx, JSValue native);        // gl.c
 void gl_after_frame(void);
+void gl_restore_state(void); // after drawing over the game mid-frame
 void gl_texture_memory(size_t *bytes, size_t *peak, int *count);
 void canvas_register(JSContext *ctx, JSValue native);    // canvas2d.c
 void fastpath_register(JSContext *ctx, JSValue native);  // fastpath.c
@@ -138,6 +140,7 @@ bool overlay_draw(void);
 void overlay_disable(void);
 bool overlay_active(void);
 void overlay_hud_draw(const char *text); // debug line over the game (top-right)
+void overlay_busy_draw(const char *text); // full-screen message during a long frame (caller swaps)
 void overlay_blit_text(uint8_t *px, int W, int H, int x, int y, const char *text, int scale, const uint8_t rgba[4]);
 void overlay_image_draw(const uint8_t *rgba, int w, int h, bool changed, int *ox, int *oy);
 void overlay_rgba_at(int slot, const uint8_t *rgba, int w, int h, bool changed, float x, float y, float dw, float dh);

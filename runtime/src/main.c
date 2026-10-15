@@ -56,6 +56,7 @@ host_config g_cfg = {
     .win_w = 960,
     .win_h = 544,
     .exit_after_frames = 0,
+    .busy_after_ms = 2500,
 };
 
 static FILE *log_fp;
@@ -368,10 +369,34 @@ static void draw_over_game(JSContext *ctx, double js_ms) {
     host_call_rt(ctx, "afterExternalGL", 0, NULL);
 }
 
+// A frame of the game's JS can run for many seconds (building the title screen: ~40 s on the Vita),
+// and the screen would show whatever was presented last, often black. After 2.5 s (config busy=<ms>), a
+// "Loading" screen is drawn and presented from the JS interrupt callback, refreshed every
+// BUSY_EVERY_MS; the game's GL state is put back afterwards. Only once the game's renderer has
+// taken over from the startup overlay (which covers loading the code).
+#define BUSY_EVERY_MS 400
+static void busy_poll(void) {
+    static double last;
+    static int tick;
+    if (!in_frame_js || !g_cfg.busy_after_ms || overlay_active()) return;
+    double now = host_now_ms();
+    if (now - phase_t0 < g_cfg.busy_after_ms || now - last < (g_cfg.busy_after_ms < BUSY_EVERY_MS ? g_cfg.busy_after_ms : BUSY_EVERY_MS))
+        return;
+    last = now;
+    static double logged_t0;
+    if (logged_t0 != phase_t0 && g_cfg.busy_after_ms >= 1000) host_log("[busy] loading screen (frame running for %.0f s)", (now - phase_t0) / 1000);
+    logged_t0 = phase_t0;
+    static const char *dots[] = {"Loading   ", "Loading.  ", "Loading.. ", "Loading..."};
+    overlay_busy_draw(dots[tick++ % 4]);
+    plat_swap();
+    gl_restore_state();
+}
+
 static int js_interrupt(JSRuntime *rt, void *opaque) {
     (void)rt, (void)opaque;
     if (g_ctx_for_mem) prof_poll(g_ctx_for_mem);
     net_pump();
+    busy_poll();
     if (!in_frame_js || !g_cfg.interrupt_after_s || host_now_ms() - phase_t0 < g_cfg.interrupt_after_s * 1000.0)
         return 0;
     host_log("[watchdog] interrupting JS that has run for %d s in one frame", g_cfg.interrupt_after_s);
@@ -401,6 +426,7 @@ static void save_screenshot(const char *path) {
 //   interrupt=20                    stop JS that runs N s in one frame, logging where (debugging)
 //   hud=1                           start with the debug line on (toggle: SELECT while holding L+R)
 //   osk=1                           built-in keyboard instead of the system one
+//   busy=2500                       show a "Loading" screen once one frame's JS has run this long (0: never)
 //   profile=0                       no built-in profiler (on by default; see profiler.c)
 //   nettrace=1                      log the headers of requests to the game's API
 //   local=game                      play an offline build of the game from <data>/game (no login,
@@ -485,6 +511,8 @@ static void load_config_file(void) {
             g_cfg.net_trace = atoi(v) != 0;
         } else if (!strcmp(k, "profile")) {
             g_cfg.no_profile = atoi(v) == 0;
+        } else if (!strcmp(k, "busy")) {
+            g_cfg.busy_after_ms = atoi(v);
         }
     }
     fclose(f);
