@@ -154,6 +154,14 @@ static int n_done, n_cache_hits;
 static unsigned long long n_bytes;
 static char origin[256];
 
+// The page's origin ("https://pokerogue.net"): sent as Origin/Referer like a browser would (the
+// API's firewall blocks requests without them) and used to decide what goes in the disk cache.
+void net_set_origin(const char *page_url) {
+    const char *p = strstr(page_url, "://");
+    p = p ? strchr(p + 3, '/') : NULL;
+    snprintf(origin, sizeof origin, "%.*s", (int)(p ? p - page_url : (long)strlen(page_url)), page_url);
+}
+
 void net_init(void) {
 #ifdef __vita__
     sceSysmoduleLoadModule(SCE_SYSMODULE_NET);
@@ -169,12 +177,7 @@ void net_init(void) {
 #endif
     curl_global_init(CURL_GLOBAL_DEFAULT);
     multi = curl_multi_init();
-    // The page's origin ("https://pokerogue.net"): sent as Origin/Referer like a browser would (the
-    // API's firewall blocks requests without them) and used to decide what goes in the disk cache.
-    const char *p = strstr(g_cfg.base_url, "://");
-    p = p ? strchr(p + 3, '/') : NULL;
-    snprintf(origin, sizeof origin, "%.*s", (int)(p ? p - g_cfg.base_url : (long)strlen(g_cfg.base_url)),
-             g_cfg.base_url);
+    net_set_origin(g_cfg.base_url);
     // PKR_CA_FILE (Linux) tests the same in-memory path the Vita uses.
     const char *ca = getenv("PKR_CA_FILE");
 #ifdef CA_FILE
@@ -361,6 +364,71 @@ static CURL *make_easy(const char *raw_url) {
 // Module downloads reuse one easy handle, so they share a single connection (a new TLS handshake
 // per chunk is slow on the Vita).
 static CURL *sync_easy;
+
+// ---------------------------------------------------------------- file downloads
+// Downloads url to path (resuming a partial file left by an earlier attempt). progress() is called
+// regularly; returning false cancels. Returns true when the file is complete.
+
+typedef struct {
+    FILE *f;
+    bool (*progress)(long long done, long long total, void *ud);
+    void *ud;
+    long long base;
+    bool write_error;
+} dl_state;
+
+static size_t dl_write(char *p, size_t size, size_t n, void *ud) {
+    dl_state *d = ud;
+    size_t len = size * n;
+    if (fwrite(p, 1, len, d->f) != len) {
+        d->write_error = true;
+        return 0;
+    }
+    return len;
+}
+
+static int dl_progress(void *ud, curl_off_t total, curl_off_t now, curl_off_t ut, curl_off_t un) {
+    (void)ut, (void)un;
+    dl_state *d = ud;
+    return d->progress(d->base + now, total ? d->base + total : 0, d->ud) ? 0 : 1;
+}
+
+bool net_download_file(const char *url, const char *path, bool (*progress)(long long, long long, void *), void *ud,
+                       char *err, size_t errn) {
+    struct stat st;
+    long long have = stat(path, &st) == 0 ? (long long)st.st_size : 0;
+    dl_state d = {.f = fopen(path, have ? "ab" : "wb"), .progress = progress, .ud = ud, .base = have};
+    if (!d.f) {
+        snprintf(err, errn, "can't write %s", path);
+        return false;
+    }
+    CURL *e = curl_easy_init();
+    char errbuf[CURL_ERROR_SIZE] = "";
+    curl_easy_setopt(e, CURLOPT_URL, url);
+    apply_common_opts(e);
+    curl_easy_setopt(e, CURLOPT_TIMEOUT, 0L);           // a big file takes a while
+    curl_easy_setopt(e, CURLOPT_LOW_SPEED_LIMIT, 1L);   // but give up if it stalls for a minute
+    curl_easy_setopt(e, CURLOPT_LOW_SPEED_TIME, 60L);
+    curl_easy_setopt(e, CURLOPT_ERRORBUFFER, errbuf);
+    curl_easy_setopt(e, CURLOPT_WRITEFUNCTION, dl_write);
+    curl_easy_setopt(e, CURLOPT_WRITEDATA, &d);
+    curl_easy_setopt(e, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(e, CURLOPT_XFERINFOFUNCTION, dl_progress);
+    curl_easy_setopt(e, CURLOPT_XFERINFODATA, &d);
+    if (have) curl_easy_setopt(e, CURLOPT_RESUME_FROM_LARGE, (curl_off_t)have);
+    CURLcode rc = curl_easy_perform(e);
+    long status = 0;
+    curl_easy_getinfo(e, CURLINFO_RESPONSE_CODE, &status);
+    curl_easy_cleanup(e);
+    bool closed_ok = fclose(d.f) == 0;
+    if (rc == CURLE_OK && (status == 200 || status == 206) && closed_ok && !d.write_error) return true;
+    if (status == 416) return true; // range not satisfiable: the file was already complete
+    if (d.write_error || !closed_ok) snprintf(err, errn, "writing to the memory card failed (full?)");
+    else if (rc == CURLE_ABORTED_BY_CALLBACK) snprintf(err, errn, "cancelled");
+    else if (rc != CURLE_OK) snprintf(err, errn, "%s", errbuf[0] ? errbuf : curl_easy_strerror(rc));
+    else snprintf(err, errn, "HTTP %ld", status);
+    return false;
+}
 
 // ---------------------------------------------------------------- local mode
 // local=<dir> in config.txt: the game is served from a folder (a downloaded offline build) under

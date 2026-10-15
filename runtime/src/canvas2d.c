@@ -473,6 +473,16 @@ CFN(c_draw_image) {
 }
 
 // getImageData(x, y, w, h) -> ArrayBuffer (RGBA, straight alpha)
+// ArrayBuffer storage callback for getImageData's buffers: size 0 frees, otherwise reallocates.
+static void *image_data_realloc(JSRuntime *rt, void *opaque, void *ptr, size_t size) {
+    (void)rt, (void)opaque;
+    if (!size) {
+        free(ptr);
+        return NULL;
+    }
+    return realloc(ptr, size);
+}
+
 CFN(c_get_image_data) {
     SELF;
     if (!c->keep) n_keep_getimage++;
@@ -480,6 +490,7 @@ CFN(c_get_image_data) {
     int x = (int)F(0), y = (int)F(1), w = (int)F(2), h = (int)F(3);
     if (w <= 0 || h <= 0) return JS_NewArrayBufferCopy(ctx, (const uint8_t *)"", 0);
     uint8_t *out = calloc((size_t)w * h, 4);
+    if (!out) return JS_ThrowOutOfMemory(ctx);
     int stride = plutovg_surface_get_stride(c->surface);
     const uint8_t *data = plutovg_surface_get_data(c->surface);
     for (int row = 0; row < h; row++) {
@@ -490,9 +501,8 @@ CFN(c_get_image_data) {
         plutovg_convert_argb_to_rgba(out + ((size_t)row * w + (x0 - x)) * 4, data + (size_t)sy * stride + x0 * 4,
                                      x1 - x0, 1, (x1 - x0) * 4);
     }
-    JSValue ab = JS_NewArrayBufferCopy(ctx, out, (size_t)w * h * 4);
-    free(out);
-    return ab;
+    // Handed over without a copy: these can be several MB, and memory is tight on the Vita.
+    return JS_NewArrayBuffer(ctx, out, (size_t)w * h * 4, 0, image_data_realloc, NULL, false);
 }
 
 // putImageData(ArrayBuffer|TypedArray rgba, w, h, dx, dy)

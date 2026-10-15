@@ -25,3 +25,10 @@ ls third_party
 
 # 8x8 bitmap font for on-screen status messages (public domain, Daniel Hepper)
 [ -f third_party/font8x8_basic.h ] || curl -sfL https://raw.githubusercontent.com/dhepper/font8x8/8e279d2d864e79128e96188a6b9526cfa3fbfef9/font8x8_basic.h -o third_party/font8x8_basic.h
+
+# miniz (MIT): unpacks the offline game's zip on the console.
+if [ ! -f third_party/miniz/miniz.c ]; then
+  mkdir -p third_party/miniz
+  curl -sfL https://github.com/richgel999/miniz/releases/download/3.1.2/miniz-3.1.2.zip -o third_party/miniz/miniz.zip
+  (cd third_party/miniz && unzip -oq miniz.zip miniz.c miniz.h && rm miniz.zip)
+fi

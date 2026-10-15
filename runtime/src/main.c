@@ -35,7 +35,9 @@
 // QuickJS needs a deep native stack to parse the game's minified chunks; the default is 256 KB.
 unsigned int sceUserMainThreadStackSize = 8 * 1024 * 1024;
 // newlib heap for the JS engine and decoded images. vitaGL allocates GPU memory separately.
-int _newlib_heap_size_user = 200 * 1024 * 1024;
+// 256 MB: with extended memory mode (ATTRIBUTE2=12) the console reported ~89 MB of main memory
+// still free after a 200 MB heap and vitaGL's pools were set up (0.23 log); most of it goes here.
+int _newlib_heap_size_user = 256 * 1024 * 1024;
 #include <psp2/kernel/sysmem.h>
 #define DEFAULT_JS_DIR "app0:js"
 #define DEFAULT_DATA_DIR "ux0:data/pokerogue"
@@ -509,21 +511,37 @@ int main(int argc, char **argv) {
     if (!plat_init(g_cfg.win_w, g_cfg.win_h)) return 1;
     mem_report("after graphics init");
 
-    // Online or offline: the start screen, unless config.txt decided.
-    bool have_offline = offline_installed();
-    if (!g_cfg.local_dir && !g_cfg.force_online) {
-        int choice = launcher_run(have_offline, offline_version, launcher_poll);
-        if (choice < 0) return 0;
-        if (choice == 1) {
-            g_cfg.local_dir = offline_dir;
-            g_cfg.base_url = LOCAL_ORIGIN "/";
-        }
-    }
-    if (g_cfg.local_dir) host_log("[local] offline game from %s (game version %s): no login, saves stay on this console",
-                                  g_cfg.local_dir, g_cfg.local_dir == offline_dir ? offline_version : "?");
-    else host_log("[online] playing %s", g_cfg.base_url);
     net_init();
     mem_report("after network init");
+
+    // Online or offline: the start screen, unless config.txt decided. It can also download the
+    // offline game.
+    bool have_offline = offline_installed();
+    while (!g_cfg.local_dir && !g_cfg.force_online) {
+        int choice = launcher_run(have_offline, offline_version, launcher_poll);
+        if (choice < 0) return 0;
+        if (choice == 0) break;
+        if (choice == 2) {
+            if (offline_install()) have_offline = offline_installed();
+            continue; // back to the start screen, now offering the installed game
+        }
+        g_cfg.local_dir = offline_dir;
+        g_cfg.base_url = LOCAL_ORIGIN "/";
+    }
+    net_set_origin(g_cfg.base_url);
+    if (g_cfg.local_dir) {
+        char vp[700], ver[64] = "?";
+        snprintf(vp, sizeof vp, "%s/currentVersion.txt", g_cfg.local_dir);
+        FILE *vf = fopen(vp, "rb");
+        if (vf) {
+            size_t n = fread(ver, 1, sizeof ver - 1, vf);
+            ver[n] = 0;
+            ver[strcspn(ver, "\r\n")] = 0;
+            fclose(vf);
+        }
+        host_log("[local] offline game from %s (game version %s): no login, saves stay on this console", g_cfg.local_dir, ver);
+    }
+    else host_log("[online] playing %s", g_cfg.base_url);
     JSContext *ctx = host_js_init();
     if (!ctx) return 1;
     g_ctx_for_mem = ctx;

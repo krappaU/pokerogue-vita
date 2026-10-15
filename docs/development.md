@@ -113,12 +113,20 @@ The game's text fields are HTML `<input>` elements over the canvas; `js/input.js
   desktop a cache hit loads 4-6x faster than compiling.
 
 ## Offline game (local mode)
-An offline build of PokeRogue in `<data>/game/` (`index.html`, `assets/`, `images/`...) is played
-instead of the live site: served under the made-up origin `https://offline.invalid`, no login,
+The start screen (`runtime/src/launcher.c`) chooses between the live site and an offline build of
+PokeRogue in `<data>/game/`; if none is installed it offers to download one
+(`runtime/src/offline_install.c`: GitHub release API, resumable download, unpacked with miniz into
+`game.tmp`, then renamed). The choice is remembered in `<data>/launcher.txt`. The offline game is
+played served under the made-up origin `https://offline.invalid`, no login,
 saves in `<data>/localStorage-offline.json`. `online=1` in `config.txt` ignores the folder;
 `local=<dir>` names another one. The build used for testing is the one Admiral-Billy's PokeRogue
 App downloads for its offline mode (`game.zip` from github.com/Admiral-Billy/pokerogue/releases,
 ~530 MB, 735 MB unpacked; the `.map` files can be deleted).
+
+## Memory budget
+Extended memory mode (`ATTRIBUTE2=12`). Heap 256 MB (`_newlib_heap_size_user`), vitaGL pools: 88 MB
+CDRAM, 64 MB RAM, 16 MB phycont, 4 MB dialogs. On the test console this leaves ~17 MB of main
+memory and 8 MB of CDRAM to the system. `getImageData` hands its pixels to JS without a copy.
 
 ## Memory: texture eviction
 Phaser never frees textures. Image-backed textures not drawn for ~20 s are shrunk to 1x1 when GPU

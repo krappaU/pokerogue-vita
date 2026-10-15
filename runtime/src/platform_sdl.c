@@ -3,6 +3,7 @@
 // SDL2 also exists for the Vita, so this file is meant to serve both (with vitaGL there).
 
 #include <string.h>
+#include <sys/statvfs.h>
 
 #include <GLES2/gl2.h>
 #include <SDL.h>
@@ -266,4 +267,11 @@ int plat_ime_poll(char *out, size_t n) {
 void plat_inject_pointer(plat_event_type type, float x, float y) {
     if (n_injected >= 32) return;
     injected[n_injected++] = (plat_event){.type = type, .x = x, .y = y};
+}
+
+void plat_keep_awake(void) {}
+
+long long plat_free_space(const char *path) {
+    struct statvfs v;
+    return statvfs(path, &v) == 0 ? (long long)v.f_bavail * (long long)v.f_frsize : -1;
 }

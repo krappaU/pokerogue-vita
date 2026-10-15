@@ -11,6 +11,7 @@
 #include <psp2/ctrl.h>
 #include <psp2/ime_dialog.h>
 #include <psp2/system_param.h>
+#include <psp2/io/devctl.h>
 #include <psp2/io/stat.h>
 #include <psp2/kernel/processmgr.h>
 #include <psp2/power.h>
@@ -79,12 +80,12 @@ bool plat_init(int w, int h) {
     }
     // Full float precision: the game samples big texture atlases where half floats misplace pixels.
     vglSetupRuntimeShaderCompiler(SHARK_OPT_FAST, SHARK_ENABLE, SHARK_DISABLE, SHARK_ENABLE);
-    // Explicit GPU memory pools: 88 MB video RAM (CDRAM) first, then 48 MB of main RAM, 16 MB physically
+    // Explicit GPU memory pools: 88 MB video RAM (CDRAM) first, then 64 MB of main RAM, 16 MB physically
     // contiguous RAM, 4 MB for system dialogs. Explicit sizes also avoid vitaGL's free-memory query,
     // which the Vita3K emulator does not implement. Some CDRAM stays free: with none left, the system
     // keyboard failed to open (sceImeDialogInit 0x800204c4).
     // Note: the return value only says whether vitaGL fell back to another resolution.
-    if (vglInitWithCustomSizes(0, SCREEN_W, SCREEN_H, 48 * 1024 * 1024, 88 * 1024 * 1024, 16 * 1024 * 1024,
+    if (vglInitWithCustomSizes(0, SCREEN_W, SCREEN_H, 64 * 1024 * 1024, 88 * 1024 * 1024, 16 * 1024 * 1024,
                                4 * 1024 * 1024, SCE_GXM_MULTISAMPLE_NONE))
         host_log("vitaGL: requested resolution unavailable, using a fallback");
     vglWaitVblankStart(GL_TRUE);
@@ -300,4 +301,18 @@ void plat_drawable_size(int *w, int *h) {
 void plat_inject_pointer(plat_event_type type, float x, float y) {
     if (n_injected >= 32) return;
     injected[n_injected++] = (plat_event){.type = type, .x = x, .y = y};
+}
+
+void plat_keep_awake(void) { sceKernelPowerTick(SCE_KERNEL_POWER_TICK_DEFAULT); }
+
+long long plat_free_space(const char *path) {
+    // sceIoDevctl 0x3001 on "ux0:" reports the device's size and free space.
+    struct { uint64_t max_size, free_size; uint32_t cluster_size; void *unk; } info;
+    char dev[16];
+    const char *colon = strchr(path, ':');
+    if (!colon || colon - path > 10) return -1;
+    snprintf(dev, sizeof dev, "%.*s:", (int)(colon - path), path);
+    memset(&info, 0, sizeof info);
+    if (sceIoDevctl(dev, 0x3001, NULL, 0, &info, sizeof info) < 0) return -1;
+    return (long long)info.free_size;
 }

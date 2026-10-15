@@ -63,6 +63,9 @@ typedef struct {
 } plat_gamepad;
 
 bool plat_init(int w, int h);
+void plat_keep_awake(void);                 // reset the console's idle/auto-sleep timer
+long long plat_free_space(const char *path); // free bytes on the storage holding path, -1 if unknown
+bool offline_install(void);                 // offline_install.c: download + unpack <data>/game
 void plat_shutdown(void);
 // Returns false when there are no more events.
 bool plat_poll_event(plat_event *ev);
@@ -108,6 +111,9 @@ void prof_poll(JSContext *ctx); // from the JS interrupt handler
 void prof_frame(void);          // once per frame
 void net_poll(JSContext *ctx);                 // deliver finished requests
 void net_pump(void);                           // progress transfers only (from long JS runs)
+void net_set_origin(const char *page_url);     // the page origin sent as Origin/Referer
+bool net_download_file(const char *url, const char *path, bool (*progress)(long long done, long long total, void *ud),
+                       void *ud, char *err, size_t errn);
 void net_stats(char *out, size_t n);           // one-line summary for the log
 void net_register(JSContext *ctx, JSValue native);
 bool host_random_bytes(void *buf, size_t n);

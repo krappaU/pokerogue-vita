@@ -43,7 +43,7 @@ static void render(int sel, bool offline_ok, const char *offline_version) {
     char line1[120], line2[120];
     for (int i = 0; i < 2; i++) {
         int y = BOX_Y0 + i * (BOX_H + BOX_GAP);
-        bool s = i == sel, disabled = i == 1 && !offline_ok;
+        bool s = i == sel, disabled = false;
         fill(BOX_X, y, BOX_W, BOX_H, s ? hi : box);
         const uint8_t *tc = s ? dark : disabled ? dim : fg;
         if (i == 0) {
@@ -57,9 +57,9 @@ static void render(int sel, bool offline_ok, const char *offline_version) {
             text(BOX_X + 16, y + 44, line1, 1, tc);
             text(BOX_X + 16, y + 60, line2, 1, tc);
         } else {
-            text(BOX_X + 16, y + 14, "Play offline", 2, tc);
-            text(BOX_X + 16, y + 44, "Not installed: copy the offline game to", 1, tc);
-            text(BOX_X + 16, y + 60, "ux0:data/pokerogue/game (see the download page).", 1, tc);
+            text(BOX_X + 16, y + 14, "Download offline game", 2, tc);
+            text(BOX_X + 16, y + 44, "About 530 MB to the memory card (needs ~1.3 GB free),", 1, tc);
+            text(BOX_X + 16, y + 60, "then: no login, no downloads while playing, local saves.", 1, tc);
         }
     }
     text(BOX_X, H - 46, "D-pad and X (or touch) to choose. Your choice is remembered.", 1, dim);
@@ -73,7 +73,7 @@ static bool hit(int box, float px, float py, int ox, int oy) {
 
 static void choice_path(char *out, size_t n) { snprintf(out, n, "%s/launcher.txt", g_cfg.data_dir); }
 
-// Returns 0 for online, 1 for offline, -1 if the user quit (START + SELECT).
+// Returns 0 for online, 1 for offline, 2 to download the offline game, -1 if the user quit.
 int launcher_run(bool offline_ok, const char *offline_version, void (*poll)(bool *quit)) {
     char path[600], saved[32] = "";
     choice_path(path, sizeof path);
@@ -112,7 +112,7 @@ int launcher_run(bool offline_ok, const char *offline_version, void (*poll)(bool
             }
             memcpy(prev, now, sizeof prev), memcpy(prev_dir, dir, sizeof prev_dir);
         }
-        if (chosen && sel == 1 && !offline_ok) chosen = false; // not installed: stay
+
         int sw, sh;
         plat_drawable_size(&sw, &sh);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -129,6 +129,7 @@ int launcher_run(bool offline_ok, const char *offline_version, void (*poll)(bool
 #endif
     }
     if (quit) return -1;
+    if (sel == 1 && !offline_ok) return 2; // download it
     f = fopen(path, "w");
     if (f) {
         fputs(sel ? "offline\n" : "online\n", f);
