@@ -9,7 +9,13 @@
 // method on the handler (show, processInput, ...), and the objects it creates are moved back to
 // the position they would have had (the UI container's child order is the drawing order).
 // Handlers are picked by class name; if the game renames them, nothing is deferred.
-// localStorage PKR_LAZY_UI=0 turns this off.
+//
+// Second, opening the starter select or the Pokedex resets the filter bar: every dropdown's
+// reset (and every option toggle of the "caught" filter) calls the screen's change callback, which
+// re-filters and re-sorts all species, about 20 full passes; show() then runs it once more. While
+// resetFilters() runs, the dropdowns' change callbacks are held back and the last one runs once at
+// the end, so the screen ends in the same state.
+// localStorage PKR_LAZY_UI=0 turns both off.
 (function (g) {
   "use strict";
   const P = g.Phaser;
@@ -18,7 +24,29 @@
   const DEFER = new Set(["StarterSelectUiHandler", "PokedexUiHandler", "PokedexPageUiHandler", "TestDialogueUiHandler",
                          "EggSummaryUiHandler"]);
   const KEEP = new Set(["constructor", "setup", "destroy"]);
-  let deferredCount = 0, builtCount = 0;
+  const COALESCE = new Set(["StarterSelectUiHandler", "PokedexUiHandler"]);
+  let deferredCount = 0, builtCount = 0, heldBack = 0;
+
+  // Patches the class's resetFilters (once): dropdown change callbacks during it run once, at the end.
+  function coalesceFilterResets(proto) {
+    if (!proto || proto._pkrCoalesced || typeof proto.resetFilters !== "function") return;
+    proto._pkrCoalesced = true;
+    const orig = proto.resetFilters;
+    proto.resetFilters = function () {
+      const dds = this.filterBar && Array.isArray(this.filterBar.dropDowns) ? this.filterBar.dropDowns : null;
+      if (!dds || g.__rt.coalesceFilters === false) return orig.apply(this, arguments);
+      const saved = dds.map((d) => d.onChange);
+      let last = null;
+      dds.forEach((d, i) => {
+        const f = saved[i];
+        if (typeof f === "function") d.onChange = function () { heldBack++; last = [f, this, arguments]; };
+      });
+      let r;
+      try { r = orig.apply(this, arguments); } finally { dds.forEach((d, i) => { d.onChange = saved[i]; }); }
+      if (last) { heldBack--; last[0].apply(last[1], last[2]); }
+      return r;
+    };
+  }
 
   // Moves the objects added to `list` since `before` so that they follow `anchor` (null: the start).
   function restoreOrder(list, before, anchor) {
@@ -80,10 +108,12 @@
     if (typeof name === "string" && name.startsWith("ui-") && Array.isArray(this.handlers) && !this._pkrLazyUi) {
       this._pkrLazyUi = true;
       for (const h of this.handlers) {
-        if (h && h.constructor && DEFER.has(h.constructor.name) && typeof h.setup === "function") defer(h, this);
+        if (!h || !h.constructor) continue;
+        if (COALESCE.has(h.constructor.name)) coalesceFilterResets(Object.getPrototypeOf(h));
+        if (DEFER.has(h.constructor.name) && typeof h.setup === "function") defer(h, this);
       }
     }
     return origSetName.apply(this, arguments);
   };
-  g.__rt.lazyUiStats = () => ({ deferred: deferredCount, built: builtCount });
+  g.__rt.lazyUiStats = () => ({ deferred: deferredCount, built: builtCount, heldBack });
 })(globalThis);

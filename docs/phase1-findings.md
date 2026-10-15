@@ -189,3 +189,14 @@ handled). Desktop: first title frame 4.4 s -> 2.7 s, return to the title 2.6 s -
 select, its Pokedex page and the menu's Pokedex build on first use and look as before. Opening the
 Pokedex itself takes ~10 s of JS on desktop even when already built (PokeRogue's own work); not
 changed here.
+
+### Filter resets (runtime 0.33)
+Vita 0.32 log: title at startup 16.4 s (0.31: 35.7), return to the title 8.0 s (29.3), first
+New Game (starter select built and shown) 27.9 s; JS heap 78 -> 55 MB, canvases 1,680 -> 714.
+Showing the starter select or the Pokedex resets the filter bar, and every dropdown reset or option
+toggle calls the screen's change callback (a full re-filter and re-sort of all species): about 20
+passes, and show() then runs one more. js/lazy_ui.js now holds those callbacks back during
+resetFilters() and runs the last one once. Checked: starter select reset+update 1.1-1.2 s ->
+0.14-0.23 s on desktop, identical filtered list, cursor, dropdown settings and visible icons (only
+the stale positions of hidden icons differ, and updateScroll positions every icon before showing
+it); Pokedex 8.3-8.8 s -> 3.6-4.0 s with an identical state (scripts/probe_filter_coalesce.js).
