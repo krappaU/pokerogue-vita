@@ -90,7 +90,9 @@
     if (el.readOnly || el.disabled || !TEXT_TYPES.has(el.type)) return;
     handledSeq = focusSeq;
     const password = el.type === "password";
-    const title = el.placeholder || (password ? "Password" : "PokeRogue");
+    // The game's fields have no labels: name them from the form's layout.
+    const all = g.document.querySelectorAll("input"), next = all[all.indexOf(el) + 1];
+    const title = el.placeholder || (password ? "Password" : next && next.type === "password" ? "Username" : "Text");
     if (N.imeOpen(title, el.value || "", el.maxLength > 0 ? el.maxLength : 64, password)) imeTarget = el;
   });
 

@@ -344,8 +344,15 @@ static void draw_hud(JSContext *ctx, double js_ms) {
                  secs > 0 ? frames / secs : 0, frames ? js_sum / frames : 0, (unsigned)mi.uordblks / 1048576.0);
         t0 = now, js_sum = 0, frames = 0;
     }
-    host_call_rt(ctx, "beforeExternalGL", 0, NULL);
     overlay_hud_draw(text);
+}
+
+// Native drawing over the game's frame: the built-in keyboard and the debug line.
+static void draw_over_game(JSContext *ctx, double js_ms) {
+    if (!osk_active() && !g_cfg.hud) return;
+    host_call_rt(ctx, "beforeExternalGL", 0, NULL);
+    osk_draw();
+    if (g_cfg.hud) draw_hud(ctx, js_ms);
     host_call_rt(ctx, "afterExternalGL", 0, NULL);
 }
 
@@ -379,6 +386,7 @@ static void save_screenshot(const char *path) {
 //   frames=600                      quit after N frames
 //   interrupt=20                    stop JS that runs N s in one frame, logging where (debugging)
 //   hud=1                           start with the debug line on (toggle: SELECT while holding L+R)
+//   osk=1                           built-in keyboard instead of the system one
 static void load_config_file(void) {
     char path[512];
     snprintf(path, sizeof path, "%s/config.txt", g_cfg.data_dir);
@@ -401,6 +409,8 @@ static void load_config_file(void) {
             g_cfg.interrupt_after_s = atoi(v);
         } else if (!strcmp(k, "hud")) {
             g_cfg.hud = atoi(v) != 0;
+        } else if (!strcmp(k, "osk")) {
+            g_cfg.osk = atoi(v) != 0;
         }
     }
     fclose(f);
@@ -484,6 +494,7 @@ int main(int argc, char **argv) {
                 g_cfg.hud = !g_cfg.hud;
                 continue;
             }
+            if (osk_event(&ev)) continue;
             static const char *names[] = {"keydown", "keyup", "pointerdown", "pointermove", "pointerup"};
             JSValue args[7] = {
                 JS_NewString(ctx, names[ev.type]),
@@ -496,6 +507,10 @@ int main(int argc, char **argv) {
             };
             host_call_rt(ctx, "onInput", 7, args);
             for (int i = 0; i < 7; i++) JS_FreeValue(ctx, args[i]);
+        }
+        {
+            plat_gamepad pad;
+            osk_frame(plat_gamepads(&pad, 1) > 0 ? &pad : NULL);
         }
         set_phase("control channel");
         control_poll(ctx, &quit);
@@ -519,7 +534,7 @@ int main(int argc, char **argv) {
         perf_add(js_ms);
 
         set_phase("drawing");
-        if (!overlay_draw() && g_cfg.hud) draw_hud(ctx, js_ms);
+        if (!overlay_draw()) draw_over_game(ctx, js_ms);
         if (pending_shot[0]) {
             save_screenshot(pending_shot);
             pending_shot[0] = 0;

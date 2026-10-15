@@ -69,6 +69,25 @@ static int layout(const char *text, char lines[][MAX_COLS + 1], int max_lines) {
     return n;
 }
 
+static void upload(GLuint *tex, const uint8_t *px, int w, int h);
+
+// Draws text into an RGBA buffer of size W x H (8x8 glyphs times `scale`; no clipping beyond the buffer).
+void overlay_blit_text(uint8_t *px, int W, int H, int x0, int y0, const char *text, int scale, const uint8_t rgba[4]) {
+    for (int ci = 0; text[ci]; ci++) {
+        unsigned char ch = (unsigned char)text[ci];
+        const char *glyph = font8x8_basic[ch < 128 ? ch : '?'];
+        for (int gy = 0; gy < 8; gy++)
+            for (int gx = 0; gx < 8; gx++) {
+                if (!(glyph[gy] & (1 << gx))) continue;
+                for (int sy = 0; sy < scale; sy++)
+                    for (int sx = 0; sx < scale; sx++) {
+                        int x = x0 + ci * 8 * scale + gx * scale + sx, y = y0 + gy * scale + sy;
+                        if (x >= 0 && y >= 0 && x < W && y < H) memcpy(px + ((size_t)y * W + x) * 4, rgba, 4);
+                    }
+            }
+    }
+}
+
 static void build_texture(textbox *tb, const char *text, int scale, bool center, const uint8_t fg[4],
                           const uint8_t bg[4], int pad) {
     char lines[30][MAX_COLS + 1];
@@ -83,30 +102,22 @@ static void build_texture(textbox *tb, const char *text, int scale, bool center,
     for (size_t i = 0; i < (size_t)tb->w * tb->h; i++) memcpy(px + i * 4, bg, 4);
     for (int li = 0; li < n; li++) {
         int x0 = pad + (center ? (cols - (int)strlen(lines[li])) * cell / 2 : 0);
-        for (int ci = 0; lines[li][ci]; ci++) {
-            unsigned char ch = (unsigned char)lines[li][ci];
-            const char *glyph = font8x8_basic[ch < 128 ? ch : '?'];
-            for (int gy = 0; gy < 8; gy++)
-                for (int gx = 0; gx < 8; gx++) {
-                    if (!(glyph[gy] & (1 << gx))) continue;
-                    for (int sy = 0; sy < scale; sy++)
-                        for (int sx = 0; sx < scale; sx++) {
-                            int x = x0 + ci * cell + gx * scale + sx, y = pad + li * line_h + gy * scale + sy;
-                            memcpy(px + ((size_t)y * tb->w + x) * 4, fg, 4);
-                        }
-                }
-        }
+        overlay_blit_text(px, tb->w, tb->h, x0, pad + li * line_h, lines[li], scale, fg);
     }
-    if (!tb->tex) glGenTextures(1, &tb->tex);
-    glBindTexture(GL_TEXTURE_2D, tb->tex);
+    upload(&tb->tex, px, tb->w, tb->h);
+    free(px);
+    tb->dirty = false;
+}
+
+static void upload(GLuint *tex, const uint8_t *px, int w, int h) {
+    if (!*tex) glGenTextures(1, tex);
+    glBindTexture(GL_TEXTURE_2D, *tex);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tb->w, tb->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
-    free(px);
-    tb->dirty = false;
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
 }
 
 static GLuint compile(GLenum type, const char *src) {
@@ -216,4 +227,22 @@ void overlay_present(const char *msg) {
     if (disabled) return;
     overlay_set(msg);
     if (overlay_draw()) plat_swap();
+}
+
+// Draws an RGBA image centred on the screen over a dimmed game frame (the built-in keyboard).
+// `changed` re-uploads the pixels. Returns the image's top-left corner in screen pixels.
+void overlay_image_draw(const uint8_t *rgba, int iw, int ih, bool changed, int *ox, int *oy) {
+    static GLuint tex, dim_tex;
+    int w, h;
+    begin_draw(&w, &h);
+    if (!dim_tex) {
+        static const uint8_t dim[4] = {0, 0, 0, 140};
+        upload(&dim_tex, dim, 1, 1);
+    }
+    if (changed || !tex) upload(&tex, rgba, iw, ih);
+    textbox full = {.tex = dim_tex, .w = w, .h = h}, img = {.tex = tex, .w = iw, .h = ih};
+    draw_box(&full, 0, 0, w, h);
+    *ox = (w - iw) / 2, *oy = (h - ih) / 2;
+    draw_box(&img, *ox, *oy, w, h);
+    end_draw();
 }

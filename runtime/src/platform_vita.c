@@ -100,7 +100,6 @@ bool plat_init(int w, int h) {
     sceCommonDialogSetConfigParam(&cdcfg);
     sceCtrlSetSamplingMode(SCE_CTRL_MODE_ANALOG_WIDE);
     sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_START);
-    sceTouchSetSamplingState(SCE_TOUCH_PORT_BACK, SCE_TOUCH_SAMPLING_STATE_START);
     host_log("GL: %s | %s | shader compiler: %s", (const char *)glGetString(GL_VERSION),
              (const char *)glGetString(GL_RENDERER), shacccg);
     (void)w, (void)h;
@@ -187,11 +186,9 @@ int plat_gamepads(plat_gamepad *out, int max) {
     };
     if ((b & HUD_COMBO) == HUD_COMBO) b &= ~SCE_CTRL_SELECT; // SELECT belongs to the debug toggle then
     for (int i = 0; i < 17; i++) p->buttons[i] = (b & map[i]) ? 1.0f : 0.0f;
-    // The rear touchpad stands in for the DualShock touchpad click, which the game uses as "submit"
-    // (open the login form, send it).
-    SceTouchData back;
-    sceTouchPeek(SCE_TOUCH_PORT_BACK, &back, 1);
-    p->buttons[17] = back.reportNum > 0 ? 1.0f : 0.0f;
+    // The rear touchpad is not used: fingers resting on the back of the console kept "pressing" the
+    // game's submit button (the DualShock touchpad click) and sent the login form over and over.
+    // Submit by tapping the button on screen, or selecting it and pressing cross.
     p->axes[0] = stick(pad.lx);
     p->axes[1] = stick(pad.ly);
     p->axes[2] = stick(pad.rx);

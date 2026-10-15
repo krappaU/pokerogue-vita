@@ -91,6 +91,14 @@ frame rate, JS time per frame and heap use (`hud=1` in `<data>/config.txt` start
 on the control channel toggles it). While it is on, Phaser is told to restore its GL state after
 the line is drawn, which costs about a millisecond per frame.
 
+## Text entry
+The login and register forms open the system keyboard (Vita IME dialog). On the test console
+`sceImeDialogInit` fails with 0x800204c4 (cause unknown; it works in Vita3K), so after one failure
+the app uses its own keyboard (`runtime/src/osk.c`), drawn over the game: D-pad/stick and cross to
+type, circle delete, triangle space, square capitals, START done, SELECT back, or touch the keys.
+`osk=1` in `<data>/config.txt` forces it (on the desktop runtime too: arrows, Enter, Backspace,
+Escape, typed characters). The rear touchpad is unused: resting fingers held "submit" down.
+
 ## Debugging on the Vita and in Vita3K
 - `PREFILL_FROM=.cache/data ./scripts/run_vita3k.sh 300` copies the desktop runtime's HTTP cache
   into the emulator, so the game loads without going through Vita3K's network emulation.

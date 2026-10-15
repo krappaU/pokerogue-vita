@@ -17,6 +17,7 @@ typedef struct {
     const char *control;     // optional FIFO path for test commands (see main.c)
     int win_w, win_h;        // window / screen size
     int exit_after_frames;   // 0 = run forever
+    bool osk;                // always use the built-in keyboard (config.txt osk=1)
     bool hud;                // debug line over the game (config.txt hud=1; SELECT while holding L+R)
     int interrupt_after_s;   // 0 = never interrupt long-running JS (config.txt interrupt=N)
 } host_config;
@@ -117,6 +118,17 @@ bool overlay_draw(void);
 void overlay_disable(void);
 bool overlay_active(void);
 void overlay_hud_draw(const char *text); // debug line over the game (top-right)
+void overlay_blit_text(uint8_t *px, int W, int H, int x, int y, const char *text, int scale, const uint8_t rgba[4]);
+void overlay_image_draw(const uint8_t *rgba, int w, int h, bool changed, int *ox, int *oy);
+
+// Text entry: the system keyboard where it works, else the built-in one (osk.c).
+bool textin_open(const char *title, const char *initial, int max_len, bool password);
+int textin_poll(char *out, size_t n); // 0 open, 1 confirmed, -1 cancelled / not open
+bool osk_active(void);
+bool osk_mutes_pad(void);             // game input muted (keyboard open, or its buttons still held)
+bool osk_event(const plat_event *ev); // true if the keyboard consumed the event
+void osk_frame(const plat_gamepad *pad); // buttons and stick, once per frame
+bool osk_draw(void);                  // draws the keyboard if open (caller wraps GL state for Phaser)
 const char *host_version_string(void);  // "PokeRogue Vita 0.18 (abc1234)"
 
 // Bytes held by decoded-image objects: compressed files kept, and decoded pixels currently alive.

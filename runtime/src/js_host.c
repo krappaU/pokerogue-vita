@@ -280,6 +280,8 @@ static JSValue n_write_file(JSContext *ctx, JSValueConst this_val, int argc, JSV
 static JSValue n_gamepads(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     plat_gamepad pads[4];
     int n = plat_gamepads(pads, 4);
+    if (osk_mutes_pad()) // the built-in keyboard has the controls
+        for (int i = 0; i < n; i++) memset(pads[i].axes, 0, sizeof pads[i].axes), memset(pads[i].buttons, 0, sizeof pads[i].buttons);
     JSValue arr = JS_NewArray(ctx);
     for (int i = 0; i < n; i++) {
         JSValue p = JS_NewObject(ctx);
@@ -366,7 +368,7 @@ static JSValue n_ime_open(JSContext *ctx, JSValueConst this_val, int argc, JSVal
     const char *title = JS_ToCString(ctx, argv[0]), *init = JS_ToCString(ctx, argv[1]);
     int32_t max_len = 0;
     JS_ToInt32(ctx, &max_len, argv[2]);
-    bool ok = plat_ime_open(title ? title : "", init ? init : "", max_len, JS_ToBool(ctx, argv[3]));
+    bool ok = textin_open(title ? title : "", init ? init : "", max_len, JS_ToBool(ctx, argv[3]));
     JS_FreeCString(ctx, title);
     JS_FreeCString(ctx, init);
     return JS_NewBool(ctx, ok);
@@ -375,7 +377,7 @@ static JSValue n_ime_open(JSContext *ctx, JSValueConst this_val, int argc, JSVal
 // imePoll() -> undefined while open, {ok: true, text} when confirmed, {ok: false} when cancelled
 static JSValue n_ime_poll(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     char text[4096];
-    int r = plat_ime_poll(text, sizeof text);
+    int r = textin_poll(text, sizeof text);
     if (r == 0) return JS_UNDEFINED;
     JSValue o = JS_NewObject(ctx);
     JS_SetPropertyStr(ctx, o, "ok", JS_NewBool(ctx, r > 0));
