@@ -512,6 +512,27 @@ static char *local_read(const char *url, size_t *len) {
     return d;
 }
 
+// A plain GET with its own connection, safe to call from another thread (net_get_sync shares one
+// handle with the main thread). No cache, no page Origin. Returns the body (NUL-terminated) or NULL.
+char *net_get_threadsafe(const char *url, size_t *len, long *status) {
+    CURL *e = make_easy(url);
+    if (!e) return NULL;
+    buf b = {0};
+    curl_easy_setopt(e, CURLOPT_WRITEFUNCTION, on_write);
+    curl_easy_setopt(e, CURLOPT_WRITEDATA, &b);
+    curl_easy_setopt(e, CURLOPT_TIMEOUT, 30L);
+    CURLcode rc = curl_easy_perform(e);
+    *status = 0;
+    if (rc == CURLE_OK) curl_easy_getinfo(e, CURLINFO_RESPONSE_CODE, status);
+    curl_easy_cleanup(e);
+    if (rc != CURLE_OK || !buf_add(&b, "", 1)) {
+        free(b.data);
+        return NULL;
+    }
+    *len = b.len - 1;
+    return b.data;
+}
+
 char *net_get_sync(const char *url, size_t *len, long *status) {
     if (net_is_local(url)) {
         char *d = local_read(url, len);

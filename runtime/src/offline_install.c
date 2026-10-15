@@ -6,6 +6,7 @@
 // <data>/game.zip.part (an interrupted download resumes) and renamed when complete. The game is
 // played straight from the zip (net.c): unpacking its 34,000 files took hours on the Vita.
 
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -109,7 +110,109 @@ static long long json_num(const char *from, const char *key) {
     return atoll(p);
 }
 
-// Returns true when <data>/game.zip is ready.
+// ---------------------------------------------------------------- update check
+// The start screen asks GitHub for the latest release in the background (at most every 6 hours;
+// the answer is kept in <data>/offline-latest.txt) and offers an update when its tag differs from
+// the installed version.
+#define CHECK_EVERY_S (6 * 3600)
+static pthread_mutex_t check_lock = PTHREAD_MUTEX_INITIALIZER;
+static char latest[64];   // newest release tag without "release-", "" while unknown
+static bool check_running;
+
+static const char *strip_tag(const char *tag) { return !strncmp(tag, "release-", 8) ? tag + 8 : tag; }
+
+static void latest_path(char *out, size_t n) { snprintf(out, n, "%s/offline-latest.txt", g_cfg.data_dir); }
+
+static void *check_thread(void *arg) {
+    (void)arg;
+    size_t len = 0;
+    long status = 0;
+    char *json = net_get_threadsafe(RELEASE_API, &len, &status);
+    char tag[64] = "";
+    if (json && status == 200 && json_str(json, "tag_name", tag, sizeof tag) &&
+        (strstr(json, "\"name\":\"" ASSET_NAME "\"") || strstr(json, "\"name\": \"" ASSET_NAME "\""))) {
+        char path[700];
+        latest_path(path, sizeof path);
+        FILE *f = fopen(path, "w");
+        if (f) {
+            fprintf(f, "%lld %s\n", (long long)time(NULL), strip_tag(tag));
+            fclose(f);
+        }
+        host_log("[offline] latest release on GitHub: %s", tag);
+    } else {
+        host_log("[offline] update check failed (HTTP %ld)", status);
+        tag[0] = 0;
+    }
+    free(json);
+    pthread_mutex_lock(&check_lock);
+    if (tag[0]) snprintf(latest, sizeof latest, "%s", strip_tag(tag));
+    check_running = false;
+    pthread_mutex_unlock(&check_lock);
+    return NULL;
+}
+
+void offline_update_check_start(void) {
+    char path[700], tag[64] = "";
+    long long when = 0;
+    latest_path(path, sizeof path);
+    FILE *f = fopen(path, "r");
+    if (f) {
+        if (fscanf(f, "%lld %63s", &when, tag) != 2) tag[0] = 0;
+        fclose(f);
+    }
+    pthread_mutex_lock(&check_lock);
+    if (tag[0]) snprintf(latest, sizeof latest, "%s", tag);
+    bool due = !tag[0] || time(NULL) - when > CHECK_EVERY_S || time(NULL) < when;
+    if (due && !check_running) {
+        pthread_t t;
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setstacksize(&attr, 256 * 1024); // TLS handshakes need a deep stack
+        check_running = pthread_create(&t, &attr, check_thread, NULL) == 0;
+        if (check_running) pthread_detach(t);
+        pthread_attr_destroy(&attr);
+    }
+    pthread_mutex_unlock(&check_lock);
+}
+
+// The newer release's tag, or NULL (no update known, or `installed` is the latest).
+const char *offline_update_available(const char *installed) {
+    static char out[64];
+    pthread_mutex_lock(&check_lock);
+    bool newer = latest[0] && installed && installed[0] && strcmp(latest, installed) != 0;
+    if (newer) snprintf(out, sizeof out, "%s", latest);
+    pthread_mutex_unlock(&check_lock);
+    return newer ? out : NULL;
+}
+
+// Asks a yes/no question: X yes, O no.
+static bool confirm(const char *msg) {
+    char full[900];
+    snprintf(full, sizeof full, "%s\n\nX: yes      O: no", msg);
+    double t0 = host_now_ms();
+    for (;;) {
+        overlay_present(full);
+        plat_event ev;
+        while (plat_poll_event(&ev)) {
+            if (ev.type == PEV_QUIT || (ev.type == PEV_KEY_DOWN && ev.key && !strcmp(ev.key, "Escape"))) return false;
+            if (ev.type == PEV_KEY_DOWN && ev.key && !strcmp(ev.key, "Enter")) return true;
+        }
+        plat_gamepad pad;
+        if (host_now_ms() - t0 > 500 && plat_gamepads(&pad, 1) > 0) {
+            if (pad.buttons[0] > 0.5f) return true;
+            if (pad.buttons[1] > 0.5f) return false;
+        }
+#ifndef __vita__
+        struct timespec ts = {0, 30 * 1000000L};
+        nanosleep(&ts, NULL);
+#endif
+    }
+}
+
+// ---------------------------------------------------------------- download
+
+// Downloads the latest release to <data>/game.zip (replacing an installed one only once the
+// download is complete). Returns true when <data>/game.zip is ready.
 bool offline_install(void) {
     char err[600] = "";
     overlay_present("PokeRogue\n\nLooking for the offline game on GitHub...");
@@ -138,9 +241,37 @@ bool offline_install(void) {
     snprintf(zip_path, sizeof zip_path, "%s/game.zip.part", g_cfg.data_dir);
     snprintf(game_zip, sizeof game_zip, "%s/game.zip", g_cfg.data_dir);
     snprintf(version_path, sizeof version_path, "%s/game.zip.version", g_cfg.data_dir);
+    // A partial download of a different release can't be resumed.
+    char part_tag_path[720], part_tag[64] = "";
+    snprintf(part_tag_path, sizeof part_tag_path, "%s.tag", zip_path);
+    FILE *pt = fopen(part_tag_path, "r");
+    if (pt) {
+        if (!fgets(part_tag, sizeof part_tag, pt)) part_tag[0] = 0;
+        part_tag[strcspn(part_tag, "\r\n")] = 0;
+        fclose(pt);
+    }
+    if (strcmp(part_tag, tag)) {
+        remove(zip_path);
+        if ((pt = fopen(part_tag_path, "w"))) {
+            fputs(tag, pt);
+            fclose(pt);
+        }
+    }
     long long need = size > 0 ? size + 16 * 1024 * 1024 : 0, have_part = 0, free_b = plat_free_space(g_cfg.data_dir);
     struct stat st;
     if (stat(zip_path, &st) == 0) have_part = st.st_size;
+    // An update needs room for both versions until it's done; if there isn't, the old one can go first.
+    if (free_b >= 0 && need > 0 && free_b + have_part < need && stat(game_zip, &st) == 0 &&
+        free_b + have_part + st.st_size >= need) {
+        snprintf(err, sizeof err, "Not enough space to keep the installed version while the update\n"
+                                  "downloads (%.0f MB needed, %.0f MB free).\n\nDelete the installed version first?\n"
+                                  "Your saves are kept. Until the download finishes,\nonly online play is available.",
+                 (need - have_part) / 1048576.0, free_b / 1048576.0);
+        if (!confirm(err)) return false;
+        remove(game_zip);
+        remove(version_path);
+        free_b = plat_free_space(g_cfg.data_dir);
+    }
     if (free_b >= 0 && need > 0 && free_b + have_part < need) {
         snprintf(err, sizeof err, "Not enough space on the memory card:\n%.0f MB needed, %.0f MB free.",
                  (need - have_part) / 1048576.0, free_b / 1048576.0);
@@ -160,14 +291,16 @@ bool offline_install(void) {
         }
         return false;
     }
-    // Done: the game is played straight from the zip (no unpacking).
+    // Done: the game is played straight from the zip (no unpacking). An older version goes now.
+    remove(game_zip);
     if (rename(zip_path, game_zip) != 0) {
         message_wait("Couldn't rename the downloaded file.");
         return false;
     }
+    remove(part_tag_path);
     FILE *vf = fopen(version_path, "w");
     if (vf) {
-        fputs(!strncmp(tag, "release-", 8) ? tag + 8 : tag, vf);
+        fputs(strip_tag(tag), vf);
         fclose(vf);
     }
     host_log("[offline] installed release %s as %s", tag, game_zip);

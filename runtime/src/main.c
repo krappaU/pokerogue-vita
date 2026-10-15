@@ -582,8 +582,9 @@ int main(int argc, char **argv) {
         int choice = launcher_run(have_offline, offline_version, launcher_poll);
         if (choice < 0) return 0;
         if (choice == 0) break;
-        if (choice == 2) {
-            if (offline_install()) have_offline = offline_installed();
+        if (choice == 2 || choice == 3) { // download, or update to a newer release
+            offline_install();
+            have_offline = offline_installed();
             continue; // back to the start screen, now offering the installed game
         }
         g_cfg.local_dir = offline_dir;

@@ -70,7 +70,9 @@ bool plat_audio_start(int rate, void (*mix)(int16_t *out, int frames));
 void plat_thread_setup(const char *name, int core); // from inside a worker thread: name it, pin it (Vita)
 void plat_keep_awake(void);                 // reset the console's idle/auto-sleep timer
 long long plat_free_space(const char *path); // free bytes on the storage holding path, -1 if unknown
-bool offline_install(void);                 // offline_install.c: download + unpack <data>/game
+bool offline_install(void);                 // offline_install.c: download <data>/game.zip (or an update)
+void offline_update_check_start(void);      // background check for a newer offline game release
+const char *offline_update_available(const char *installed); // its tag, or NULL
 void plat_shutdown(void);
 // Returns false when there are no more events.
 bool plat_poll_event(plat_event *ev);
@@ -125,6 +127,7 @@ void net_register(JSContext *ctx, JSValue native);
 bool host_random_bytes(void *buf, size_t n);
 // Blocking GET used by the module loader. Returns malloc'd body or NULL.
 char *net_get_sync(const char *url, size_t *len, long *status);
+char *net_get_threadsafe(const char *url, size_t *len, long *status); // own connection, any thread
 #define LOCAL_ORIGIN "https://offline.invalid" // origin of the game in local mode (local=<dir>)
 bool net_is_local(const char *url);
 
