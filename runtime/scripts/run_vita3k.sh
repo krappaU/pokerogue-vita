@@ -24,7 +24,7 @@ if [ "$PREFILL_FROM" != none ] && [ -d "$PREFILL_FROM/http" ]; then
 fi
 docker build -q -t pkrb-vita3k -f ../phase0/docker/vita3k.Dockerfile ../phase0/docker >/dev/null
 docker rm -f pkr-vita3k >/dev/null 2>&1 || true
-docker run --rm --init --name pkr-vita3k ${DOCKER_ARGS:-} -e XDG_RUNTIME_DIR=/tmp -v "$(cd "$V3K" && pwd)":/v -v "$(cd "$V3K/home" && pwd)":/root \
+docker run --rm --init --name pkr-vita3k ${DOCKER_ARGS:-} -e XDG_RUNTIME_DIR=/tmp -e SDL_AUDIODRIVER=dummy -v "$(cd "$V3K" && pwd)":/v -v "$(cd "$V3K/home" && pwd)":/root \
   -v "$PWD/build-vita":/vpk -v "$PWD/.cache/vita3k-shots":/shots pkrb-vita3k bash -c "
     Xvfb :7 -screen 0 1280x800x24 >/dev/null 2>&1 &
     export DISPLAY=:7; sleep 2
