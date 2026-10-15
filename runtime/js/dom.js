@@ -360,6 +360,24 @@
   }
   rt.fetchBytes = fetchBytes;
 
+  // Image decoding happens on a native worker thread (src/canvas2d.c); results are collected once
+  // per frame. Falls back to decoding right here if the thread isn't available.
+  const pendingDecodes = new Map();
+  function decodeImage(ab) {
+    const id = N.decodeImageAsync ? N.decodeImageAsync(ab) : 0;
+    if (!id) return Promise.resolve().then(() => N.decodeImage(ab));
+    return new Promise((resolve, reject) => pendingDecodes.set(id, { resolve, reject }));
+  }
+  rt.frameHooks.push(() => {
+    if (!pendingDecodes.size) return;
+    for (const [id, bmp, err] of N.decodeImagePoll()) {
+      const p = pendingDecodes.get(id);
+      if (!p) continue;
+      pendingDecodes.delete(id);
+      if (bmp) p.resolve(bmp); else p.reject(new Error("decodeImage: " + err));
+    }
+  });
+
   class HTMLImageElement extends HTMLElement {
     constructor(tag = "img") {
       super(tag);
@@ -384,9 +402,8 @@
       this.complete = false;
       const seq = ++this._seq;
       if (!v) return;
-      fetchBytes(this._src).then((ab) => {
+      fetchBytes(this._src).then((ab) => decodeImage(ab)).then((bmp) => {
         if (seq !== this._seq) return;
-        const bmp = N.decodeImage(ab);
         this._native = bmp;
         this.naturalWidth = bmp.width;
         this.naturalHeight = bmp.height;

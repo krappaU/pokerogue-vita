@@ -7,6 +7,7 @@
 
 #include <ctype.h>
 #include <math.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -110,6 +111,127 @@ static JSValue n_decode_image(JSContext *ctx, JSValueConst this_val, int argc, J
     JS_DefinePropertyValueStr(ctx, v, "width", JS_NewInt32(ctx, w), JS_PROP_ENUMERABLE);
     JS_DefinePropertyValueStr(ctx, v, "height", JS_NewInt32(ctx, h), JS_PROP_ENUMERABLE);
     return v;
+}
+
+// ---------------------------------------------------------------- decoding on a worker thread
+// Image loads decode on their own thread (CPU core 1 on the Vita) so that the game's loading screens
+// don't stop for every PNG; the JS side (js/dom.js) gets the bitmap on a later frame, as browsers
+// deliver images asynchronously too.
+
+typedef struct img_job {
+    uint32_t id;
+    uint8_t *data;
+    size_t len;
+    uint8_t *rgba;
+    int w, h;
+    const char *error;
+    struct img_job *next;
+} img_job;
+static pthread_mutex_t img_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t img_cond = PTHREAD_COND_INITIALIZER;
+static img_job *img_in, *img_in_tail, *img_out;
+static uint32_t img_next_id = 1;
+static bool img_thread_started;
+
+static void *img_thread(void *arg) {
+    (void)arg;
+    plat_thread_setup("pkr_image", 1);
+    for (;;) {
+        pthread_mutex_lock(&img_lock);
+        while (!img_in) pthread_cond_wait(&img_cond, &img_lock);
+        img_job *j = img_in;
+        img_in = j->next;
+        if (!img_in) img_in_tail = NULL;
+        pthread_mutex_unlock(&img_lock);
+        int comp;
+        j->rgba = stbi_load_from_memory(j->data, (int)j->len, &j->w, &j->h, &comp, 4);
+        if (!j->rgba) j->error = stbi_failure_reason();
+        pthread_mutex_lock(&img_lock);
+        j->next = img_out;
+        img_out = j;
+        pthread_mutex_unlock(&img_lock);
+    }
+    return NULL;
+}
+
+// decodeImageAsync(ArrayBuffer | TypedArray) -> job id (the bytes are copied)
+static JSValue n_decode_image_async(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    size_t len = 0;
+    uint8_t *p = JS_GetArrayBuffer(ctx, &len, argv[0]);
+    if (!p) {
+        JS_FreeValue(ctx, JS_GetException(ctx));
+        size_t off, tlen, bpe, total;
+        JSValue ab = JS_GetTypedArrayBuffer(ctx, argv[0], &off, &tlen, &bpe);
+        if (JS_IsException(ab)) return JS_EXCEPTION;
+        p = JS_GetArrayBuffer(ctx, &total, ab);
+        JS_FreeValue(ctx, ab);
+        if (!p) return JS_EXCEPTION;
+        p += off;
+        len = tlen;
+    }
+    if (!img_thread_started) {
+        pthread_t t;
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setstacksize(&attr, 256 * 1024);
+        img_thread_started = pthread_create(&t, &attr, img_thread, NULL) == 0;
+        if (img_thread_started) pthread_detach(t);
+        pthread_attr_destroy(&attr);
+        if (!img_thread_started) return JS_NewInt32(ctx, 0); // JS falls back to decodeImage
+    }
+    img_job *j = calloc(1, sizeof *j);
+    if (!j || !(j->data = malloc(len ? len : 1))) {
+        free(j);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    memcpy(j->data, p, len);
+    j->len = len;
+    pthread_mutex_lock(&img_lock);
+    j->id = img_next_id++;
+    if (img_in_tail) img_in_tail->next = j;
+    else img_in = j;
+    img_in_tail = j;
+    uint32_t id = j->id;
+    pthread_cond_signal(&img_cond);
+    pthread_mutex_unlock(&img_lock);
+    return JS_NewUint32(ctx, id);
+}
+
+// decodeImagePoll() -> [[jobId, Bitmap | null, error], ...] for the decodes finished so far
+static JSValue n_decode_image_poll(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    pthread_mutex_lock(&img_lock);
+    img_job *done = img_out;
+    img_out = NULL;
+    pthread_mutex_unlock(&img_lock);
+    JSValue arr = JS_NewArray(ctx);
+    uint32_t n = 0;
+    while (done) {
+        img_job *j = done;
+        done = j->next;
+        JSValue e = JS_NewArray(ctx);
+        JS_SetPropertyUint32(ctx, e, 0, JS_NewUint32(ctx, j->id));
+        if (j->rgba) {
+            bitmap *b = calloc(1, sizeof *b);
+            b->w = j->w, b->h = j->h, b->rgba = j->rgba;
+            b->encoded = j->data, b->encoded_len = j->len;
+            j->data = NULL;
+            mem_encoded += b->encoded_len;
+            mem_decoded += (size_t)b->w * b->h * 4;
+            JSValue v = JS_NewObjectClass(ctx, bitmap_class);
+            JS_SetOpaque(v, b);
+            JS_DefinePropertyValueStr(ctx, v, "width", JS_NewInt32(ctx, b->w), JS_PROP_ENUMERABLE);
+            JS_DefinePropertyValueStr(ctx, v, "height", JS_NewInt32(ctx, b->h), JS_PROP_ENUMERABLE);
+            JS_SetPropertyUint32(ctx, e, 1, v);
+            JS_SetPropertyUint32(ctx, e, 2, JS_NULL);
+        } else {
+            JS_SetPropertyUint32(ctx, e, 1, JS_NULL);
+            JS_SetPropertyUint32(ctx, e, 2, JS_NewString(ctx, j->error ? j->error : "decode failed"));
+        }
+        JS_SetPropertyUint32(ctx, arr, n++, e);
+        free(j->data);
+        free(j);
+    }
+    return arr;
 }
 
 // imageMemory() -> [compressed bytes kept, decoded bytes alive]
@@ -686,6 +808,8 @@ void canvas_register(JSContext *ctx, JSValue native) {
     canvas_proto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, canvas_proto, canvas_funcs, sizeof canvas_funcs / sizeof *canvas_funcs);
     JS_SetPropertyStr(ctx, native, "decodeImage", JS_NewCFunction(ctx, n_decode_image, "decodeImage", 1));
+    JS_SetPropertyStr(ctx, native, "decodeImageAsync", JS_NewCFunction(ctx, n_decode_image_async, "decodeImageAsync", 1));
+    JS_SetPropertyStr(ctx, native, "decodeImagePoll", JS_NewCFunction(ctx, n_decode_image_poll, "decodeImagePoll", 0));
     JS_SetPropertyStr(ctx, native, "imageMemory", JS_NewCFunction(ctx, n_image_memory, "imageMemory", 0));
     JS_SetPropertyStr(ctx, native, "registerFont", JS_NewCFunction(ctx, n_register_font, "registerFont", 5));
     JS_SetPropertyStr(ctx, native, "createCanvas2D", JS_NewCFunction(ctx, n_create_canvas, "createCanvas2D", 2));

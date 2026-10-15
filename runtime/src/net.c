@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // HTTP for fetch/XHR and the module loader, on libcurl.
 //
-// Requests run on curl's multi interface and are polled once per frame, so no threads are needed.
+// Requests run on a network thread (CPU core 2 on the Vita): it reads disk-cache hits and files of
+// the offline game, runs curl's multi interface (connections, TLS, decompression) and writes the disk
+// cache. The main thread only creates requests and, once per frame, hands finished ones to JS. A
+// request belongs to the network thread from submission until it comes back on the done queue.
 // Responses for versioned static files (hashed /assets/ chunks, or URLs carrying ?t=/?v= cache
 // busters from the game's manifest) are cached on disk, which is what makes later boots fast.
 // The page itself, the manifest and all API calls always go to the network.
 
 #include <math.h>
+#include <pthread.h>
 #include <sys/time.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -147,11 +151,22 @@ typedef struct req {
     // Served from disk cache: delivered on the next poll without touching the network.
     int local_status; // local mode: 200 or 404 (delivered like a cache hit)
     bool from_cache;
-    struct req *next;
+    bool local;            // offline game file
+    // Set by the network thread before the request comes back:
+    long status;
+    const char *error;     // curl's static error string, or NULL
+    char *final_url;       // after redirects (malloc), or NULL
+    bool aborted;          // set by the main thread (under qlock): no callback
+    struct req *next;      // main thread's list of live requests
+    struct req *qnext;     // submit / in-flight / done queues
 } req;
 
 static CURLM *multi;
+static void net_thread_start(void);
 static req *reqs;
+// Queues between the main thread and the network thread.
+static pthread_mutex_t qlock = PTHREAD_MUTEX_INITIALIZER;
+static req *submit_q, *submit_tail, *done_q, *done_tail;
 static int next_id = 1;
 static int n_done, n_cache_hits;
 static unsigned long long n_bytes;
@@ -211,11 +226,11 @@ void net_init(void) {
     char dir[512];
     snprintf(dir, sizeof dir, "%s/http", g_cfg.data_dir);
     mkdir(dir, 0777);
+    net_thread_start();
 }
 
 void net_shutdown(void) {
-    curl_multi_cleanup(multi);
-    curl_global_cleanup();
+    // The network thread still uses the multi handle; the process is about to end anyway.
 }
 
 // ---------------------------------------------------------------- disk cache
@@ -452,7 +467,15 @@ static bool local_is_zip(void) {
     return n > 4 && !strcmp(g_cfg.local_dir + n - 4, ".zip");
 }
 
+static pthread_mutex_t zip_lock = PTHREAD_MUTEX_INITIALIZER; // network thread + module loader
+static char *zip_read_locked(const char *name, size_t *len);
 static char *zip_read(const char *name, size_t *len) {
+    pthread_mutex_lock(&zip_lock);
+    char *d = zip_read_locked(name, len);
+    pthread_mutex_unlock(&zip_lock);
+    return d;
+}
+static char *zip_read_locked(const char *name, size_t *len) {
     if (local_zip_state == 0) {
         memset(&local_zip, 0, sizeof local_zip);
         local_zip_state = mz_zip_reader_init_file(&local_zip, g_cfg.local_dir, 0) ? 1 : -1;
@@ -585,6 +608,130 @@ char *net_get_sync(const char *url, size_t *len, long *status) {
     return b.data;
 }
 
+// ---------------------------------------------------------------- network thread
+
+static void submit(req *r) {
+    pthread_mutex_lock(&qlock);
+    r->qnext = NULL;
+    if (submit_tail) submit_tail->qnext = r;
+    else submit_q = r;
+    submit_tail = r;
+    pthread_mutex_unlock(&qlock);
+    curl_multi_wakeup(multi);
+}
+
+static void finish(req *r) { // network thread: hand back to the main thread
+    if (r->easy) {
+        curl_multi_remove_handle(multi, r->easy);
+        curl_easy_cleanup(r->easy);
+        r->easy = NULL;
+    }
+    pthread_mutex_lock(&qlock);
+    r->qnext = NULL;
+    if (done_tail) done_tail->qnext = r;
+    else done_q = r;
+    done_tail = r;
+    pthread_mutex_unlock(&qlock);
+}
+
+static bool is_aborted(req *r) {
+    pthread_mutex_lock(&qlock);
+    bool a = r->aborted;
+    pthread_mutex_unlock(&qlock);
+    return a;
+}
+
+static void *net_thread(void *arg) {
+    (void)arg;
+    plat_thread_setup("pkr_net", 2);
+    req *inflight = NULL; // transfers in the multi handle
+    for (;;) {
+        pthread_mutex_lock(&qlock);
+        req *jobs = submit_q;
+        submit_q = submit_tail = NULL;
+        pthread_mutex_unlock(&qlock);
+        for (req *r = jobs, *next; r; r = next) {
+            next = r->qnext;
+            if (is_aborted(r)) {
+                finish(r);
+            } else if (r->local) {
+                size_t len = 0;
+                char *d = local_read(r->url, &len);
+                r->local_status = d ? 200 : 404;
+                r->body.data = d;
+                r->body.len = r->body.cap = d ? len : 0;
+                r->from_cache = true;
+                finish(r);
+            } else {
+                size_t len = 0;
+                char *d = r->cacheable ? cache_read(r->url, &len) : NULL;
+                if (d) {
+                    r->body.data = d;
+                    r->body.len = r->body.cap = len;
+                    r->from_cache = true;
+                    curl_easy_cleanup(r->easy); // never added to the multi handle
+                    r->easy = NULL;
+                    finish(r);
+                } else {
+                    curl_multi_add_handle(multi, r->easy);
+                    r->qnext = inflight;
+                    inflight = r;
+                }
+            }
+        }
+        int running = 0;
+        curl_multi_perform(multi, &running);
+        CURLMsg *m;
+        int left;
+        while ((m = curl_multi_info_read(multi, &left))) {
+            if (m->msg != CURLMSG_DONE) continue;
+            req *r;
+            curl_easy_getinfo(m->easy_handle, CURLINFO_PRIVATE, (char **)&r);
+            char *fu = NULL;
+            r->status = 0;
+            curl_easy_getinfo(r->easy, CURLINFO_RESPONSE_CODE, &r->status);
+            curl_easy_getinfo(r->easy, CURLINFO_EFFECTIVE_URL, &fu);
+            r->error = m->data.result == CURLE_OK ? NULL : curl_easy_strerror(m->data.result);
+            if (r->error) {
+                host_log("[net] %s failed: %s (%s)", r->url, r->error, r->errbuf);
+                r->status = 0;
+            }
+            if (fu) r->final_url = strdup(fu);
+            if (!r->error && r->status == 200 && r->cacheable && r->body.data && !is_aborted(r))
+                cache_write(r->url, r->body.data, r->body.len);
+            for (req **pp = &inflight; *pp; pp = &(*pp)->qnext)
+                if (*pp == r) {
+                    *pp = r->qnext;
+                    break;
+                }
+            finish(r);
+        }
+        // Aborted transfers stop now.
+        for (req **pp = &inflight; *pp;) {
+            req *r = *pp;
+            if (is_aborted(r)) {
+                *pp = r->qnext;
+                finish(r);
+            } else {
+                pp = &r->qnext;
+            }
+        }
+        // Sleep until a socket is ready, a request is submitted (curl_multi_wakeup) or a timer runs.
+        curl_multi_poll(multi, NULL, 0, inflight ? 100 : 1000, NULL);
+    }
+    return NULL;
+}
+
+static void net_thread_start(void) {
+    pthread_t t;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 512 * 1024); // TLS, inflate, zip reads
+    if (pthread_create(&t, &attr, net_thread, NULL) == 0) pthread_detach(t);
+    else host_log("[net] could not start the network thread");
+    pthread_attr_destroy(&attr);
+}
+
 // ---------------------------------------------------------------- JS API
 
 // http(method, url, headers: [k, v, ...], body: string|ArrayBuffer|TypedArray|null, callback) -> id
@@ -605,32 +752,16 @@ static JSValue n_http(JSContext *ctx, JSValueConst this_val, int argc, JSValueCo
     r->next = reqs;
     reqs = r;
 
-    if (net_is_local(url)) {
-        size_t len = 0;
-        char *d = local_read(url, &len);
-        r->local_status = d ? 200 : 404;
-        r->body.data = d;
-        r->body.len = r->body.cap = len;
-        r->from_cache = true;
+    if (net_is_local(url)) { // read by the network thread
+        r->local = true;
         r->cacheable = false;
+        submit(r);
         JS_FreeCString(ctx, method);
         JS_FreeCString(ctx, url);
         return JS_NewInt32(ctx, r->id);
     }
 
-    if (r->cacheable) {
-        size_t len;
-        char *d = cache_read(url, &len);
-        if (d) {
-            r->body.data = d;
-            r->body.len = r->body.cap = len;
-            r->from_cache = true;
-            JS_FreeCString(ctx, method);
-            JS_FreeCString(ctx, url);
-            return JS_NewInt32(ctx, r->id);
-        }
-    }
-
+    // The network thread tries the disk cache first (cacheable GETs) and only then the network.
     CURL *e = r->easy = make_easy(url);
     curl_easy_setopt(e, CURLOPT_ERRORBUFFER, r->errbuf);
     bool has_origin = false, has_referer = false;
@@ -694,7 +825,7 @@ static JSValue n_http(JSContext *ctx, JSValueConst this_val, int argc, JSValueCo
     curl_easy_setopt(e, CURLOPT_HEADERFUNCTION, on_write);
     curl_easy_setopt(e, CURLOPT_HEADERDATA, &r->resp_headers);
     curl_easy_setopt(e, CURLOPT_PRIVATE, r);
-    curl_multi_add_handle(multi, e);
+    submit(r);
     JS_FreeCString(ctx, method);
     JS_FreeCString(ctx, url);
     return JS_NewInt32(ctx, r->id);
@@ -778,6 +909,7 @@ static void deliver(JSContext *ctx, req *r, long status, const char *error, cons
     for (int i = 0; i < 5; i++) JS_FreeValue(ctx, args[i]);
 }
 
+// Main thread, for requests that came back from the network thread (or were never submitted).
 static void req_free(JSContext *ctx, req *r) {
     for (req **pp = &reqs; *pp; pp = &(*pp)->next) {
         if (*pp == r) {
@@ -785,10 +917,8 @@ static void req_free(JSContext *ctx, req *r) {
             break;
         }
     }
-    if (r->easy) {
-        curl_multi_remove_handle(multi, r->easy);
-        curl_easy_cleanup(r->easy);
-    }
+    if (r->easy) curl_easy_cleanup(r->easy);
+    free(r->final_url);
     curl_slist_free_all(r->headers);
     free(r->body.data);
     free(r->resp_headers.data);
@@ -797,28 +927,37 @@ static void req_free(JSContext *ctx, req *r) {
     free(r);
 }
 
-// Moves transfers along without delivering anything to JS: called from the JS interrupt handler,
-// so that downloads don't stall (and time out) while the game spends seconds in one frame.
-void net_pump(void) {
-    static double next;
-    static bool busy;
-    double now = host_now_ms();
-    if (busy || now < next || !multi) return;
-    next = now + 50;
-    busy = true;
-    int running;
-    curl_multi_perform(multi, &running);
-    busy = false;
-}
+// Transfers run on the network thread now; kept for the JS interrupt handler's call.
+void net_pump(void) {}
 
+// Hands finished requests to JS. Cache hits and offline-game files at most ~8 ms worth per frame:
+// the game handles each response right away (decoding images among other things), and hundreds at
+// once would freeze the screen. Network responses are always delivered.
 void net_poll(JSContext *ctx) {
-    // Cache hits first, at most ~8 ms worth per frame: the game handles each response right away
-    // (decoding images among other things), and hundreds at once would freeze the screen.
+    pthread_mutex_lock(&qlock);
+    req *list = done_q;
+    done_q = done_tail = NULL;
+    pthread_mutex_unlock(&qlock);
     double t0 = host_now_ms();
-    for (req *r = reqs, *next; r; r = next) {
-        next = r->next;
+    req *keep = NULL, *keep_tail = NULL;
+    for (req *r = list, *next; r; r = next) {
+        next = r->qnext;
+        bool aborted;
+        pthread_mutex_lock(&qlock);
+        aborted = r->aborted;
+        pthread_mutex_unlock(&qlock);
+        if (aborted) {
+            req_free(ctx, r);
+            continue;
+        }
+        if (r->from_cache && host_now_ms() - t0 > 8) { // later frame
+            r->qnext = NULL;
+            if (keep_tail) keep_tail->qnext = r;
+            else keep = r;
+            keep_tail = r;
+            continue;
+        }
         if (r->from_cache) {
-            if (host_now_ms() - t0 > 8) break;
             if (r->local_status == 404) {
                 buf_add(&r->resp_headers, "HTTP/1.1 404 Not Found\r\n\r\n", 28);
                 deliver(ctx, r, 404, NULL, NULL);
@@ -827,29 +966,17 @@ void net_poll(JSContext *ctx) {
                 n_cache_hits++;
                 deliver(ctx, r, 200, NULL, NULL);
             }
-            req_free(ctx, r);
-            next = reqs; // list changed; restart (cheap, few entries)
+        } else {
+            deliver(ctx, r, r->status, r->error, r->final_url);
         }
-    }
-    int running;
-    curl_multi_perform(multi, &running);
-    CURLMsg *m;
-    int left;
-    while ((m = curl_multi_info_read(multi, &left))) {
-        if (m->msg != CURLMSG_DONE) continue;
-        req *r;
-        curl_easy_getinfo(m->easy_handle, CURLINFO_PRIVATE, (char **)&r);
-        long status = 0;
-        char *final_url = NULL;
-        curl_easy_getinfo(r->easy, CURLINFO_RESPONSE_CODE, &status);
-        curl_easy_getinfo(r->easy, CURLINFO_EFFECTIVE_URL, &final_url);
-        const char *err = m->data.result == CURLE_OK ? NULL : curl_easy_strerror(m->data.result);
-        if (err) host_log("[net] %s failed: %s (%s)", r->url, err, r->errbuf);
-        if (!err && status == 200 && r->cacheable && r->body.data) cache_write(r->url, r->body.data, r->body.len);
-        char fu[4096];
-        snprintf(fu, sizeof fu, "%s", final_url ? final_url : r->url);
-        deliver(ctx, r, err ? 0 : status, err, fu);
         req_free(ctx, r);
+    }
+    if (keep) { // back to the front of the queue, in order
+        pthread_mutex_lock(&qlock);
+        keep_tail->qnext = done_q;
+        done_q = keep;
+        if (!done_tail) done_tail = keep_tail;
+        pthread_mutex_unlock(&qlock);
     }
 }
 
@@ -860,12 +987,16 @@ void net_stats(char *out, size_t n) {
              n_bytes / 1048576.0, pending);
 }
 
+// The request is freed when the network thread hands it back; no callback is made.
 static JSValue n_http_abort(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     int id = 0;
     JS_ToInt32(ctx, &id, argv[0]);
     for (req *r = reqs; r; r = r->next) {
         if (r->id == id) {
-            req_free(ctx, r);
+            pthread_mutex_lock(&qlock);
+            r->aborted = true;
+            pthread_mutex_unlock(&qlock);
+            curl_multi_wakeup(multi);
             break;
         }
     }

@@ -212,3 +212,10 @@ Battle-frame changes in 0.35: the scene update list keeps its sprite/non-sprite 
 membership sets up to date incrementally (it was rebuilt from the whole list, 1,000+ objects, in
 every frame where something was added or removed: 5-7% of battle frames on the Vita), and the
 texture-eviction scan of 16,384 slots runs at most every 30 frames when nothing can be evicted.
+0.36 moves I/O and image decoding off the main thread: HTTP transfers, HTTP-cache reads and
+offline-zip reads run on a network thread (core 2, curl multi), and the main thread only picks up
+finished responses (cache/zip hits within its 8 ms per-frame budget as before); PNG/JPEG decoding
+for image elements runs on its own thread (core 1) and the image's `load` fires on a later frame.
+Audio's per-frame hook now skips re-folding node chains when no gain, pan, rate or connection
+changed and no ramp is running. Checked on desktop (offline game to a battle turn, live site to its
+login screen) and in Vita3K (no crash); device timings pending.

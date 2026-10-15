@@ -12,32 +12,37 @@
   const rt = g.__rt, N = g.__native;
   const native = typeof N.audioStart === "function";
 
+  // Anything that can change a playing voice's gains or rate bumps `gen`; the frame hook only
+  // re-folds the node chains when it changed, or while a ramp is running.
+  let gen = 0, ramps = 0;
   class AudioParam {
     constructor(v = 1) { this._v = v; this._ramp = null; this.defaultValue = v; this.minValue = -3.4e38; this.maxValue = 3.4e38; }
     get value() {
       const r = this._ramp;
       if (r) {
         const now = N.audioTime();
-        if (now >= r.t1 || r.t1 <= r.t0) { this._v = r.to; this._ramp = null; }
+        if (now >= r.t1 || r.t1 <= r.t0) { this._v = r.to; this._setRamp(null); }
         else this._v = r.from + (r.to - r.from) * Math.max(0, (now - r.t0) / (r.t1 - r.t0));
       }
       return this._v;
     }
-    set value(v) { this._ramp = null; this._v = +v; }
+    set value(v) { this._setRamp(null); this._set(v); }
+    _set(v) { v = +v; if (v !== this._v) { this._v = v; gen++; } }
+    _setRamp(r) { if (!!r !== !!this._ramp) ramps += r ? 1 : -1; this._ramp = r; gen++; }
     // Scheduled changes are applied at once (Phaser schedules them for "now").
-    setValueAtTime(v) { this._ramp = null; this._v = +v; return this; }
-    linearRampToValueAtTime(v, t) { const from = this.value; this._ramp = { from, to: +v, t0: N.audioTime(), t1: +t || 0 }; return this; }
+    setValueAtTime(v) { if (this._ramp) this._setRamp(null); this._set(v); return this; }
+    linearRampToValueAtTime(v, t) { const from = this.value; this._setRamp({ from, to: +v, t0: N.audioTime(), t1: +t || 0 }); return this; }
     exponentialRampToValueAtTime(v, t) { return this.linearRampToValueAtTime(v, t); }
-    setTargetAtTime(v) { this._ramp = null; this._v = +v; return this; }
+    setTargetAtTime(v) { return this.setValueAtTime(v); }
     setValueCurveAtTime(curve) { if (curve && curve.length) this.setValueAtTime(curve[curve.length - 1]); return this; }
-    cancelScheduledValues() { const v = this.value; this._ramp = null; this._v = v; return this; }
+    cancelScheduledValues() { const v = this.value; if (this._ramp) this._setRamp(null); this._set(v); return this; }
     cancelAndHoldAtTime() { return this.cancelScheduledValues(); }
   }
 
   class AudioNode extends EventTarget {
     constructor(ctx) { super(); this.context = ctx; this._out = null; this.numberOfInputs = 1; this.numberOfOutputs = 1; this.channelCount = 2; }
-    connect(dest) { this._out = dest; return dest; }
-    disconnect() { this._out = null; }
+    connect(dest) { this._out = dest; gen++; return dest; }
+    disconnect() { this._out = null; gen++; }
   }
   class GainNode extends AudioNode { constructor(c) { super(c); this.gain = new AudioParam(1); } }
   class StereoPannerNode extends AudioNode { constructor(c) { super(c); this.pan = new AudioParam(0); } }
@@ -89,7 +94,7 @@
   class AudioBufferSourceNode extends AudioNode {
     constructor(c) {
       super(c);
-      this.buffer = null; this.loop = false; this.loopStart = 0; this.loopEnd = 0;
+      this.buffer = null; this._loop = false; this._loopStart = 0; this._loopEnd = 0;
       this.playbackRate = new AudioParam(1); this.detune = new AudioParam(0);
       this.onended = null; this._id = 0; this._timer = 0; this._started = false; this._key = "";
     }
@@ -118,6 +123,12 @@
       else if (this._timer) { g.clearTimeout(this._timer); this._timer = 0; g.setTimeout(() => this._fireEnded(), 0); }
     }
     _fireEnded() { this.dispatchEvent(new Event("ended")); }
+    get loop() { return this._loop; }
+    set loop(v) { this._loop = !!v; gen++; }
+    get loopStart() { return this._loopStart; }
+    set loopStart(v) { this._loopStart = +v || 0; gen++; }
+    get loopEnd() { return this._loopEnd; }
+    set loopEnd(v) { this._loopEnd = +v || 0; gen++; }
   }
 
   class AudioContext extends EventTarget {
@@ -173,6 +184,7 @@
   }
 
   if (native) {
+    let seenGen = -1;
     rt.frameHooks.push(() => {
       if (pendingDecodes.size) {
         for (const [id, data, ch, rate, frames] of N.audioPoll()) {
@@ -189,6 +201,8 @@
         node._id = 0;
         node._fireEnded();
       }
+      if (gen === seenGen && ramps === 0) return;
+      seenGen = gen;
       for (const [id, s] of active) {
         const [gl, gr] = chainGains(s), rate = rateOf(s);
         const key = gl + "|" + gr + "|" + rate + "|" + s.loop + "|" + s.loopStart + "|" + s.loopEnd;
