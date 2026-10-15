@@ -426,6 +426,14 @@ static bool offline_installed(void) {
     return true;
 }
 
+// Called by screens drawn before the game loop (start screen) right before they swap buffers.
+void host_frame_drawn(void) {
+    if (pending_shot[0]) {
+        save_screenshot(pending_shot);
+        pending_shot[0] = 0;
+    }
+}
+
 static void launcher_poll(bool *quit) {
     control_poll(NULL, quit);
     frame_no++;

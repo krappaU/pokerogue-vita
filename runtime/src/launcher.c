@@ -122,6 +122,7 @@ int launcher_run(bool offline_ok, const char *offline_version, void (*poll)(bool
         if (dirty) render(sel, offline_ok, offline_version);
         overlay_image_draw(img, W, H, dirty, &ox, &oy);
         dirty = false;
+        host_frame_drawn();
         plat_swap();
 #ifndef __vita__
         struct timespec ts = {0, 16 * 1000000L};
