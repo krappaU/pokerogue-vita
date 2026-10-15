@@ -52,8 +52,10 @@ target_compile_options(miniz PRIVATE -w)
 set(RT_SRC src/main.c src/js_host.c src/net.c src/gl.c src/canvas2d.c src/fastpath.c src/overlay.c src/osk.c src/profiler.c src/launcher.c src/offline_install.c)
 
 if(VITA)
-  set(CMAKE_C_FLAGS_RELEASE "-O2 -marm -mcpu=cortex-a9 -mfpu=neon")
-  set(CMAKE_C_FLAGS_RELWITHDEBINFO "-O2 -g -marm -mcpu=cortex-a9 -mfpu=neon")
+  # NDEBUG: without it QuickJS keeps ~140 internal assert checks, some on hot paths (atoms, shapes,
+  # the GC's marking); the desktop build (CMake's default flags) always had it.
+  set(CMAKE_C_FLAGS_RELEASE "-O2 -DNDEBUG -marm -mcpu=cortex-a9 -mfpu=neon")
+  set(CMAKE_C_FLAGS_RELWITHDEBINFO "-O2 -g -DNDEBUG -marm -mcpu=cortex-a9 -mfpu=neon")
   add_executable(pokerogue-rt ${RT_SRC} src/platform_vita.c src/vita_compat.c)
   # Our own libcurl build (scripts/build_vita_curl.sh): the prebuilt one is ABI-incompatible with
   # VitaSDK's OpenSSL 1.1.

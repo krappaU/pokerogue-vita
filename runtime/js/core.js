@@ -65,9 +65,20 @@
   // is corrected by the difference. Dates built from explicit values are unchanged.
   const RealDate = Date;
   const nowMs = () => RealDate.now() + N.clockOffset();
-  function PDate(...a) {
+  // No rest parameters: `new Date()` runs thousands of times while some screens are built
+  // (PokeRogue's event checks), and spreading arguments is slow in QuickJS.
+  function PDate(a, b, c, d, e, f, h) {
     if (!new.target) return new RealDate(nowMs()).toString(); // Date() called as a function
-    return a.length ? new RealDate(...a) : new RealDate(nowMs());
+    switch (arguments.length) {
+      case 0: return new RealDate(nowMs());
+      case 1: return new RealDate(a);
+      case 2: return new RealDate(a, b);
+      case 3: return new RealDate(a, b, c);
+      case 4: return new RealDate(a, b, c, d);
+      case 5: return new RealDate(a, b, c, d, e);
+      case 6: return new RealDate(a, b, c, d, e, f);
+      default: return new RealDate(a, b, c, d, e, f, h);
+    }
   }
   Object.setPrototypeOf(PDate, RealDate);
   PDate.prototype = RealDate.prototype;

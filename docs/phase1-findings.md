@@ -167,3 +167,12 @@ Creating 400 game-style texts: 330 ms -> 84-98 ms.
 Starter-select icons showed 1-pixel stripes of neighbouring atlas frames on the Vita (not on
 desktop): sprite edges fall exactly on pixel centres at half resolution. The projection matrix is
 shifted by 1/16 pixel (gl.c uniform_matrix).
+
+### Vita build flags (runtime 0.31)
+Vita 0.30 log: title at startup 36.4 s (0.29: 42.3), return to the title 30.2 s (35.9), entering
+starter select 21.3 s (21.9). Entering starter select is PokeRogue's filter code: resetting the
+filter dropdowns toggles each option, and every toggle re-filters all species (array
+map/filter/some, event-date checks with `new Date()` per species). Found while profiling it: the
+Vita build overrode CMake's release flags without -DNDEBUG, so QuickJS's ~140 internal asserts
+(atoms, shapes, GC marking) were compiled in; the desktop build always had NDEBUG. Fixed in 0.31,
+along with a `Date` constructor without rest parameters.
