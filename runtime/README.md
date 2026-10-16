@@ -61,7 +61,8 @@ playing any offline run to a battle and copying the data folder's `localStorage-
 ### Checking native fast paths
 Every replacement of Phaser code is checked against Phaser's own output with animations frozen:
 `scripts/probe_verify_render.js` (vertex data per flush), `probe_verify_uniforms.js` (GL uniform
-calls) and `probe_verify_batching.js` (draw calls, texture binds, uploaded vertex bytes).
+calls), `probe_verify_batching.js` (draw calls, texture binds, uploaded vertex bytes) and
+`probe_verify_pipeline.js` (every WebGL call, for the pipeline machinery).
 [../docs/render-coverage.md](../docs/render-coverage.md) lists which draw features and screens take
 the native paths.
 

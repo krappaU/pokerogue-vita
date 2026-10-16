@@ -1187,6 +1187,457 @@ static JSValue js_make_batch_quad(JSContext *ctx, JSValueConst this_val, int arg
 }
 
 // ---------------------------------------------------------------- uniforms
+// ---------------------------------------------------------------- pipeline machinery
+// Phaser's pipeline switching and uniform wrappers in C (docs/native-renderer.md step 2):
+// PipelineManager.set / isCurrent, WebGLPipeline.bind / updateProjectionMatrix and its set*
+// uniform wrappers, WebGLShader.bind / setAttribPointers / set*, WebGLRenderer.setProgram /
+// setBlendMode. PokeRogue's sprite pipelines switch pipeline around nearly every sprite and set
+// about a dozen uniforms each time, so these run thousands of times per battle frame.
+// Each function calls the others directly when an object still has the native version (checked
+// by identity, so a game that overrides one still gets its own), and through JS otherwise.
+
+// The uniform setters: WebGLShader.<name>(name, ...) -> this.setUniformN(gl.<gl>, name, ...).
+enum { U_PLAIN, U_BOOL, U_ARRAY, U_MATRIX };
+static const struct { const char *name, *gl; int n, kind; } USET[] = {
+    {"setBoolean", "uniform1i", 1, U_BOOL},
+    {"set1f", "uniform1f", 1, U_PLAIN}, {"set2f", "uniform2f", 2, U_PLAIN},
+    {"set3f", "uniform3f", 3, U_PLAIN}, {"set4f", "uniform4f", 4, U_PLAIN},
+    {"set1fv", "uniform1fv", 1, U_ARRAY}, {"set2fv", "uniform2fv", 1, U_ARRAY},
+    {"set3fv", "uniform3fv", 1, U_ARRAY}, {"set4fv", "uniform4fv", 1, U_ARRAY},
+    {"set1iv", "uniform1iv", 1, U_ARRAY}, {"set2iv", "uniform2iv", 1, U_ARRAY},
+    {"set3iv", "uniform3iv", 1, U_ARRAY}, {"set4iv", "uniform4iv", 1, U_ARRAY},
+    {"set1i", "uniform1i", 1, U_PLAIN}, {"set2i", "uniform2i", 2, U_PLAIN},
+    {"set3i", "uniform3i", 3, U_PLAIN}, {"set4i", "uniform4i", 4, U_PLAIN},
+    {"setMatrix2fv", "uniformMatrix2fv", 2, U_MATRIX}, {"setMatrix3fv", "uniformMatrix3fv", 2, U_MATRIX},
+    {"setMatrix4fv", "uniformMatrix4fv", 2, U_MATRIX},
+};
+#define N_USET (int)(sizeof USET / sizeof USET[0])
+// arguments of the shader method after the uniform name
+static inline int uset_args(int k) { return USET[k].kind == U_PLAIN ? USET[k].n : USET[k].kind == U_MATRIX ? 2 : 1; }
+
+static struct {
+    bool ready;
+    JSAtom name[N_USET], gl[N_USET], set_uniform[5], ev_bind;
+    // the native functions (to recognise them on objects)
+    JSValue shader_set[N_USET], pipeline_set[N_USET], set_uniform_fn[5], set_program, set_blend_mode, pm_set,
+        pm_is_current, wp_bind, wp_update_projection, ws_bind, ws_set_attrib_pointers;
+    // Phaser's own versions of what stays in JS, to recognise them: WebGLRenderer.flush,
+    // PipelineManager.flush, WebGLPipeline.unbind / onActive, WebGLShader.setAttribPointers
+    JSValue renderer_flush, pm_flush, wp_unbind, wp_on_active, ws_orig_set_attrib_pointers;
+} PM;
+
+static JSAtom pa(JSContext *ctx, const char *s) { return JS_NewAtom(ctx, s); }
+static JSAtom PA_isPostFX, PA_glReset, PA_rebind, PA_getParameter, PA_unbind, PA_onActive, PA_isCurrent,
+    PA_updateProjectionMatrix, PA_bind, PA_currentRenderTarget, PA_blendModes, PA_equation, PA_func, PA_enable,
+    PA_blendEquation, PA_blendFunc, PA_blendFuncSeparate, PA_useProgram, PA_webGLProgram, PA_pipelines,
+    PA_attributes, PA_size, PA_offset, PA_enabled, PA_normalized, PA_webGLAttribLocation, PA_vertexAttribPointer,
+    PA_disableVertexAttribArray, PA_setAttribPointers;
+static void pm_atoms(JSContext *ctx) {
+#define X(n) PA_##n = pa(ctx, #n);
+    X(isPostFX) X(glReset) X(rebind) X(getParameter) X(unbind) X(onActive) X(isCurrent) X(updateProjectionMatrix)
+    X(bind) X(currentRenderTarget) X(blendModes) X(equation) X(func) X(enable) X(blendEquation) X(blendFunc)
+    X(blendFuncSeparate) X(useProgram) X(webGLProgram) X(pipelines) X(attributes) X(size) X(offset) X(enabled)
+    X(normalized) X(webGLAttribLocation) X(vertexAttribPointer) X(disableVertexAttribArray) X(setAttribPointers)
+#undef X
+    for (int k = 0; k < N_USET; k++) PM.name[k] = pa(ctx, USET[k].name), PM.gl[k] = pa(ctx, USET[k].gl);
+    for (int n = 1; n <= 4; n++) {
+        char s[16];
+        snprintf(s, sizeof s, "setUniform%d", n);
+        PM.set_uniform[n] = pa(ctx, s);
+    }
+}
+static bool psame(JSContext *ctx, JSValueConst o, JSAtom a, JSValueConst ref) {
+    JSValue v = JS_GetProperty(ctx, o, a);
+    bool r = same(v, ref);
+    JS_FreeValue(ctx, v);
+    return r;
+}
+static int pcall0(JSContext *ctx, JSValueConst o, JSAtom a, int argc, JSValueConst *argv) {
+    JSValue f = JS_GetProperty(ctx, o, a);
+    JSValue r = JS_Call(ctx, f, o, argc, argv);
+    JS_FreeValue(ctx, f);
+    if (JS_IsException(r)) return -1;
+    JS_FreeValue(ctx, r);
+    return 0;
+}
+
+// WebGLRenderer.flush(): this.pipelines.flush() -> if (current) current.flush()
+static int renderer_flush(JSContext *ctx, JSValueConst renderer) {
+    if (!psame(ctx, renderer, AT[A_flush], PM.renderer_flush)) return call0(ctx, renderer, A_flush, 0, NULL);
+    JSValue mgr = JS_GetProperty(ctx, renderer, PA_pipelines);
+    int e;
+    if (!JS_IsObject(mgr) || !psame(ctx, mgr, AT[A_flush], PM.pm_flush)) {
+        e = call0(ctx, mgr, A_flush, 0, NULL);
+    } else {
+        JSValue cur = G(mgr, A_current);
+        e = JS_ToBool(ctx, cur) > 0 ? call0(ctx, cur, A_flush, 0, NULL) : 0;
+        JS_FreeValue(ctx, cur);
+    }
+    JS_FreeValue(ctx, mgr);
+    return e;
+}
+
+// WebGLRenderer.setProgram(program) -> whether it changed
+static int set_program(JSContext *ctx, JSValueConst renderer, JSValueConst program) {
+    JSValue cp = G(renderer, A_currentProgram);
+    bool eq = JS_IsStrictEqual(ctx, program, cp);
+    JS_FreeValue(ctx, cp);
+    if (eq) return 0;
+    if (renderer_flush(ctx, renderer)) return -1;
+    JSValue gl = G(renderer, A_gl), wp = JS_GetProperty(ctx, program, PA_webGLProgram);
+    int e = JS_IsException(wp) ? -1 : pcall0(ctx, gl, PA_useProgram, 1, (JSValueConst *)&wp);
+    JS_FreeValue(ctx, gl), JS_FreeValue(ctx, wp);
+    if (e) return -1;
+    sset(ctx, renderer, A_currentProgram, JS_DupValue(ctx, program));
+    return 1;
+}
+static int renderer_set_program(JSContext *ctx, JSValueConst renderer, JSValueConst program) {
+    if (psame(ctx, renderer, AT[A_setProgram], PM.set_program)) return set_program(ctx, renderer, program) < 0 ? -1 : 0;
+    return call0(ctx, renderer, A_setProgram, 1, &program);
+}
+static JSValue js_set_program(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    int r = set_program(ctx, this_val, argv[0]);
+    return r < 0 ? JS_EXCEPTION : JS_NewBool(ctx, r);
+}
+
+// WebGLRenderer.setBlendMode(blendModeId, force) -> whether it changed
+static JSValue js_set_blend_mode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    JSValueConst id = argv[0];
+    bool force = JS_ToBool(ctx, argv[1]) > 0; // undefined -> false
+    JSValue modes = JS_GetProperty(ctx, this_val, PA_blendModes);
+    JSValue bm = JS_IsException(modes) ? JS_EXCEPTION : JS_GetPropertyValue(ctx, modes, JS_DupValue(ctx, id));
+    JS_FreeValue(ctx, modes);
+    if (JS_IsException(bm)) return JS_EXCEPTION;
+    if (!force) {
+        bool skip = JS_IsStrictEqual(ctx, id, JS_NewInt32(ctx, -1)); // BlendModes.SKIP_CHECK
+        JSValue cur = G(this_val, A_currentBlendMode);
+        bool eq = JS_IsStrictEqual(ctx, cur, id);
+        JS_FreeValue(ctx, cur);
+        if (skip || eq) {
+            JS_FreeValue(ctx, bm);
+            return JS_FALSE;
+        }
+    }
+    JSValue gl = JS_UNDEFINED, eqn = JS_UNDEFINED, func = JS_UNDEFINED, f[4] = {JS_UNDEFINED, JS_UNDEFINED, JS_UNDEFINED, JS_UNDEFINED};
+    JSValue ret = JS_EXCEPTION;
+    if (renderer_flush(ctx, this_val)) goto out;
+    gl = G(this_val, A_gl);
+    JSValueConst blend = JS_NewInt32(ctx, 0x0BE2); // gl.BLEND
+    if (pcall0(ctx, gl, PA_enable, 1, &blend)) goto out;
+    eqn = JS_GetProperty(ctx, bm, PA_equation);
+    if (JS_IsException(eqn) || pcall0(ctx, gl, PA_blendEquation, 1, (JSValueConst *)&eqn)) goto out;
+    func = JS_GetProperty(ctx, bm, PA_func);
+    int64_t n = 0;
+    if (JS_IsException(func) || JS_GetLength(ctx, func, &n) < 0) goto out;
+    for (int i = 0; i < 4; i++) f[i] = JS_GetPropertyInt64(ctx, func, i); // beyond the length: undefined
+    if (n > 2 ? pcall0(ctx, gl, PA_blendFuncSeparate, 4, (JSValueConst *)f) : pcall0(ctx, gl, PA_blendFunc, 2, (JSValueConst *)f))
+        goto out;
+    sset(ctx, this_val, A_currentBlendMode, JS_DupValue(ctx, id));
+    ret = JS_TRUE;
+out:
+    for (int i = 0; i < 4; i++) JS_FreeValue(ctx, f[i]);
+    JS_FreeValue(ctx, bm), JS_FreeValue(ctx, gl), JS_FreeValue(ctx, eqn), JS_FreeValue(ctx, func);
+    return ret;
+}
+
+// WebGLShader.setAttribPointers(reset): the reset case (context restore, pipeline rebind) stays Phaser's.
+static int set_attrib_pointers(JSContext *ctx, JSValueConst sh) {
+    JSValue gl = G(sh, A_gl), vsize = G(sh, A_vertexSize), attrs = JS_GetProperty(ctx, sh, PA_attributes);
+    int64_t n = 0;
+    int e = JS_IsException(attrs) || JS_GetLength(ctx, attrs, &n) < 0 ? -1 : 0;
+    for (int64_t i = 0; i < n && !e; i++) {
+        JSValue el = JS_GetPropertyInt64(ctx, attrs, i);
+        JSValue size = JS_GetProperty(ctx, el, PA_size), type = G(el, A_type), off = JS_GetProperty(ctx, el, PA_offset);
+        JSValue loc = G(el, A_location);
+        JSValue ev = JS_GetProperty(ctx, el, PA_enabled), nv = JS_GetProperty(ctx, el, PA_normalized);
+        bool enabled = JS_ToBool(ctx, ev) > 0, norm = JS_ToBool(ctx, nv) > 0;
+        JS_FreeValue(ctx, ev), JS_FreeValue(ctx, nv);
+        if (enabled) {
+            JSValue wl = JS_GetProperty(ctx, loc, PA_webGLAttribLocation);
+            JSValueConst args[6] = {wl, size, type, JS_NewBool(ctx, norm), vsize, off};
+            e = JS_IsException(wl) ? -1 : pcall0(ctx, gl, PA_vertexAttribPointer, 6, args);
+            JS_FreeValue(ctx, wl);
+        } else if (!JS_IsStrictEqual(ctx, loc, JS_NewInt32(ctx, -1))) {
+            JSValue wl = JS_GetProperty(ctx, loc, PA_webGLAttribLocation);
+            if (JS_IsException(wl)) {
+                e = -1;
+            } else {
+                double d = 0;
+                bool gt = JS_IsNumber(wl) && !JS_ToFloat64(ctx, &d, wl) && d > -1;
+                if (gt && !(e = pcall0(ctx, gl, PA_disableVertexAttribArray, 1, (JSValueConst *)&wl)))
+                    sset(ctx, el, A_location, JS_NewInt32(ctx, -1));
+            }
+            JS_FreeValue(ctx, wl);
+        }
+        JS_FreeValue(ctx, el), JS_FreeValue(ctx, size), JS_FreeValue(ctx, type), JS_FreeValue(ctx, off), JS_FreeValue(ctx, loc);
+    }
+    JS_FreeValue(ctx, gl), JS_FreeValue(ctx, vsize), JS_FreeValue(ctx, attrs);
+    return e;
+}
+static JSValue js_set_attrib_pointers(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    if (JS_ToBool(ctx, argv[0]) > 0) return JS_Call(ctx, PM.ws_orig_set_attrib_pointers, this_val, argc, argv);
+    return set_attrib_pointers(ctx, this_val) ? JS_EXCEPTION : JS_DupValue(ctx, this_val);
+}
+
+// WebGLShader.bind(setAttributes, flush)
+static int shader_bind(JSContext *ctx, JSValueConst sh, JSValueConst set_attributes, JSValueConst flush) {
+    if (JS_ToBool(ctx, flush) > 0) {
+        JSValue p = G(sh, A_pipeline);
+        int e = call0(ctx, p, A_flush, 0, NULL);
+        JS_FreeValue(ctx, p);
+        if (e) return -1;
+    }
+    JSValue renderer = G(sh, A_renderer), program = G(sh, A_program);
+    int e = renderer_set_program(ctx, renderer, program);
+    JS_FreeValue(ctx, renderer), JS_FreeValue(ctx, program);
+    if (e) return -1;
+    if (JS_ToBool(ctx, set_attributes) > 0) {
+        if (psame(ctx, sh, PA_setAttribPointers, PM.ws_set_attrib_pointers)) return set_attrib_pointers(ctx, sh);
+        return pcall0(ctx, sh, PA_setAttribPointers, 0, NULL);
+    }
+    return 0;
+}
+static JSValue js_shader_bind(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    return shader_bind(ctx, this_val, argv[0], argv[1]) ? JS_EXCEPTION : JS_DupValue(ctx, this_val);
+}
+
+// WebGLPipeline.bind(currentShader)
+static int pipeline_bind(JSContext *ctx, JSValueConst p, JSValueConst shader_arg) {
+    JSValue sh = JS_IsUndefined(shader_arg) ? G(p, A_currentShader) : JS_DupValue(ctx, shader_arg);
+    JSValue gl = JS_UNDEFINED, vb = JS_UNDEFINED, act = JS_UNDEFINED;
+    int e = -1;
+    JSValue reset = JS_GetProperty(ctx, p, PA_glReset);
+    bool r = JS_ToBool(ctx, reset) > 0;
+    JS_FreeValue(ctx, reset);
+    if (r) {
+        e = pcall0(ctx, p, PA_rebind, 1, (JSValueConst *)&sh);
+        goto out;
+    }
+    gl = G(p, A_gl);
+    vb = G(p, A_vertexBuffer);
+    JSValueConst q = JS_NewInt32(ctx, 0x8894); // gl.ARRAY_BUFFER_BINDING
+    JSValue f = JS_GetProperty(ctx, gl, PA_getParameter);
+    JSValue bound = JS_Call(ctx, f, gl, 1, &q);
+    JS_FreeValue(ctx, f);
+    if (JS_IsException(bound)) goto out;
+    bool was_bound = !JS_IsStrictEqual(ctx, bound, vb);
+    JS_FreeValue(ctx, bound);
+    if (was_bound) {
+        JSValue wb = G(vb, A_webGLBuffer);
+        JSValueConst args[2] = {JS_NewInt32(ctx, 0x8892), wb};
+        int be = JS_IsException(wb) ? -1 : call0(ctx, gl, A_bindBuffer, 2, args);
+        JS_FreeValue(ctx, wb);
+        if (be) goto out;
+        sset(ctx, p, A_activeBuffer, JS_DupValue(ctx, vb));
+    }
+    if (psame(ctx, sh, PA_bind, PM.ws_bind)) {
+        if (shader_bind(ctx, sh, JS_NewBool(ctx, was_bound), JS_UNDEFINED)) goto out;
+    } else {
+        JSValueConst a = JS_NewBool(ctx, was_bound);
+        if (pcall0(ctx, sh, PA_bind, 1, &a)) goto out;
+    }
+    sset(ctx, p, A_currentShader, JS_DupValue(ctx, sh));
+    act = G(p, A_activeTextures);
+    if (JS_SetProperty(ctx, act, AT[A_length], JS_NewInt32(ctx, 0)) < 0) goto out;
+    if (emit_flush_event(ctx, p, PM.ev_bind, sh)) goto out; // emit(Events.BIND, this, currentShader)
+    if (!psame(ctx, p, PA_onActive, PM.wp_on_active) && pcall0(ctx, p, PA_onActive, 1, (JSValueConst *)&sh)) goto out;
+    e = 0;
+out:
+    JS_FreeValue(ctx, sh), JS_FreeValue(ctx, gl), JS_FreeValue(ctx, vb), JS_FreeValue(ctx, act);
+    return e;
+}
+static JSValue js_pipeline_bind(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    return pipeline_bind(ctx, this_val, argv[0]) ? JS_EXCEPTION : JS_DupValue(ctx, this_val);
+}
+
+// WebGLPipeline.updateProjectionMatrix()
+static int update_projection(JSContext *ctx, JSValueConst p) {
+    if (!gbool(ctx, p, A_projectionMatrix)) return 0;
+    JSValue renderer = G(p, A_renderer);
+    JSValue gw = G(renderer, A_projectionWidth), gh = G(renderer, A_projectionHeight);
+    JSValue pw = G(p, A_projectionWidth), ph = G(p, A_projectionHeight);
+    int e = 0;
+    if (!JS_IsStrictEqual(ctx, pw, gw) || !JS_IsStrictEqual(ctx, ph, gh)) {
+        JSValueConst args[2] = {gw, gh};
+        e = call0(ctx, p, A_setProjectionMatrix, 2, args);
+    }
+    JS_FreeValue(ctx, renderer), JS_FreeValue(ctx, gw), JS_FreeValue(ctx, gh), JS_FreeValue(ctx, pw), JS_FreeValue(ctx, ph);
+    return e;
+}
+static JSValue js_update_projection(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    return update_projection(ctx, this_val) ? JS_EXCEPTION : JS_UNDEFINED;
+}
+
+// PipelineManager.isCurrent(pipeline, currentShader)
+static int pm_is_current(JSContext *ctx, JSValueConst mgr, JSValueConst pipeline, JSValueConst shader_arg) {
+    JSValue cur = G(mgr, A_current);
+    int r = 0;
+    if (JS_IsStrictEqual(ctx, cur, pipeline)) { // else !(true || ...): false without touching the shader
+        JSValue sh = JS_ToBool(ctx, cur) > 0 && JS_ToBool(ctx, shader_arg) <= 0 ? G(cur, A_currentShader) : JS_DupValue(ctx, shader_arg);
+        JSValue prog = G(sh, A_program), renderer = G(mgr, A_renderer);
+        JSValue cp = JS_IsException(prog) ? JS_UNDEFINED : G(renderer, A_currentProgram);
+        r = JS_IsException(prog) || JS_IsException(cp) ? -1 : JS_IsStrictEqual(ctx, prog, cp);
+        JS_FreeValue(ctx, sh), JS_FreeValue(ctx, prog), JS_FreeValue(ctx, renderer), JS_FreeValue(ctx, cp);
+    }
+    JS_FreeValue(ctx, cur);
+    return r;
+}
+static JSValue js_pm_is_current(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    int r = pm_is_current(ctx, this_val, argv[0], argv[1]);
+    return r < 0 ? JS_EXCEPTION : JS_NewBool(ctx, r);
+}
+
+// PipelineManager.set(pipeline, gameObject, currentShader)
+static JSValue js_pm_set(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    JSValueConst mgr = this_val, p = argv[0], go = argv[1], shader = argv[2];
+    JSValue v = JS_GetProperty(ctx, p, PA_isPostFX);
+    if (JS_IsException(v)) return JS_EXCEPTION;
+    bool post = JS_ToBool(ctx, v) > 0;
+    JS_FreeValue(ctx, v);
+    if (post) return JS_UNDEFINED;
+    int cur;
+    if (psame(ctx, mgr, PA_isCurrent, PM.pm_is_current)) {
+        cur = pm_is_current(ctx, mgr, p, shader);
+    } else {
+        JSValueConst args[2] = {p, shader};
+        JSValue f = JS_GetProperty(ctx, mgr, PA_isCurrent);
+        JSValue r = JS_Call(ctx, f, mgr, 2, args);
+        JS_FreeValue(ctx, f);
+        cur = JS_IsException(r) ? -1 : JS_ToBool(ctx, r) > 0;
+        JS_FreeValue(ctx, r);
+    }
+    if (cur < 0) return JS_EXCEPTION;
+    if (!cur) {
+        // this.flush(); if (this.current) this.current.unbind(); this.current = pipeline; pipeline.bind(currentShader)
+        if (psame(ctx, mgr, AT[A_flush], PM.pm_flush)) {
+            JSValue c = G(mgr, A_current);
+            int e = JS_ToBool(ctx, c) > 0 ? call0(ctx, c, A_flush, 0, NULL) : 0;
+            JS_FreeValue(ctx, c);
+            if (e) return JS_EXCEPTION;
+        } else if (call0(ctx, mgr, A_flush, 0, NULL)) {
+            return JS_EXCEPTION;
+        }
+        JSValue c = G(mgr, A_current);
+        int e = 0;
+        if (JS_ToBool(ctx, c) > 0) {
+            if (psame(ctx, c, PA_unbind, PM.wp_unbind)) { // if (this.currentRenderTarget) this.currentRenderTarget.unbind()
+                JSValue rt = JS_GetProperty(ctx, c, PA_currentRenderTarget);
+                e = JS_IsException(rt) ? -1 : JS_ToBool(ctx, rt) > 0 ? pcall0(ctx, rt, PA_unbind, 0, NULL) : 0;
+                JS_FreeValue(ctx, rt);
+            } else {
+                e = pcall0(ctx, c, PA_unbind, 0, NULL);
+            }
+        }
+        JS_FreeValue(ctx, c);
+        if (e) return JS_EXCEPTION;
+        sset(ctx, mgr, A_current, JS_DupValue(ctx, p));
+        if (psame(ctx, p, PA_bind, PM.wp_bind) ? pipeline_bind(ctx, p, shader) : pcall0(ctx, p, PA_bind, 1, &shader))
+            return JS_EXCEPTION;
+    }
+    if (psame(ctx, p, PA_updateProjectionMatrix, PM.wp_update_projection) ? update_projection(ctx, p)
+                                                                           : pcall0(ctx, p, PA_updateProjectionMatrix, 0, NULL))
+        return JS_EXCEPTION;
+    if (!gsame(ctx, p, A_onBind, H.wp_on_bind) && call0(ctx, p, A_onBind, 1, &go)) return JS_EXCEPTION;
+    return JS_DupValue(ctx, p);
+}
+
+// WebGLShader.<USET[k].name>(name, ...)
+static JSValue js_set_uniform(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv, int n);
+static JSValue shader_set(JSContext *ctx, JSValueConst sh, int k, JSValueConst *a) {
+    int kind = USET[k].kind, un = kind == U_PLAIN ? USET[k].n : kind == U_MATRIX ? 2 : 1;
+    JSValue gl = G(sh, A_gl);
+    JSValue setter = JS_IsException(gl) ? JS_EXCEPTION : JS_GetProperty(ctx, gl, PM.gl[k]);
+    JS_FreeValue(ctx, gl);
+    if (JS_IsException(setter)) return JS_EXCEPTION;
+    JSValueConst args[7];
+    int argc = 0;
+    args[argc++] = setter;
+    args[argc++] = a[0];
+    if (kind == U_BOOL) { // Number(value)
+        double d;
+        if (JS_ToFloat64(ctx, &d, a[1])) {
+            JS_FreeValue(ctx, setter);
+            return JS_EXCEPTION;
+        }
+        args[argc++] = JS_NewFloat64(ctx, d);
+    } else if (kind == U_PLAIN) {
+        for (int i = 0; i < un; i++) args[argc++] = a[1 + i];
+    } else { // arrays and matrices: skipCheck
+        for (int i = 0; i < un; i++) args[argc++] = a[1 + i];
+        args[argc++] = JS_TRUE;
+    }
+    JSValue r;
+    if (psame(ctx, sh, PM.set_uniform[un], PM.set_uniform_fn[un])) {
+        r = js_set_uniform(ctx, sh, argc, (JSValueConst *)args, un);
+    } else {
+        JSValue f = JS_GetProperty(ctx, sh, PM.set_uniform[un]);
+        r = JS_Call(ctx, f, sh, argc, args);
+        JS_FreeValue(ctx, f);
+    }
+    JS_FreeValue(ctx, setter);
+    return r;
+}
+static JSValue js_shader_set(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv, int k) {
+    return shader_set(ctx, this_val, k, argv);
+}
+// WebGLPipeline.<USET[k].name>(name, ..., shader = this.currentShader): shader.<name>(name, ...); return this
+static JSValue js_pipeline_set(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv, int k) {
+    int na = 1 + uset_args(k);
+    JSValue sh = JS_IsUndefined(argv[na]) ? G(this_val, A_currentShader) : JS_DupValue(ctx, argv[na]);
+    JSValue r;
+    if (psame(ctx, sh, PM.name[k], PM.shader_set[k])) {
+        r = shader_set(ctx, sh, k, argv);
+    } else {
+        JSValue f = JS_GetProperty(ctx, sh, PM.name[k]);
+        r = JS_Call(ctx, f, sh, na, argv);
+        JS_FreeValue(ctx, f);
+    }
+    JS_FreeValue(ctx, sh);
+    if (JS_IsException(r)) return JS_EXCEPTION;
+    JS_FreeValue(ctx, r);
+    return JS_DupValue(ctx, this_val);
+}
+
+static JSValue keep(JSContext *ctx, JSValue *slot, JSValue f) {
+    JS_FreeValue(ctx, *slot);
+    *slot = JS_DupValue(ctx, f);
+    return f;
+}
+// pipelineSetup({rendererFlush, pmFlush, wpUnbind, wpOnActive, wsSetAttribPointers, evBind}) -> the
+// native functions: {setProgram, setBlendMode, pmSet, pmIsCurrent, wpBind, wpUpdateProjectionMatrix,
+// wsBind, wsSetAttribPointers, shader: {set1f...}, pipeline: {set1f...}}, to install in js/fastpath.js
+static JSValue js_pipeline_setup(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    if (!AT[0])
+        for (int i = 0; i < A_COUNT; i++) AT[i] = JS_NewAtom(ctx, atom_names[i]);
+    if (!PM.ready) pm_atoms(ctx);
+    JSValueConst o = argv[0];
+#define HOOK(field, name) JS_FreeValue(ctx, PM.field), PM.field = JS_GetPropertyStr(ctx, o, name);
+    HOOK(renderer_flush, "rendererFlush") HOOK(pm_flush, "pmFlush") HOOK(wp_unbind, "wpUnbind")
+    HOOK(wp_on_active, "wpOnActive") HOOK(ws_orig_set_attrib_pointers, "wsSetAttribPointers")
+#undef HOOK
+    JSValue ev = JS_GetPropertyStr(ctx, o, "evBind");
+    PM.ev_bind = JS_ValueToAtom(ctx, ev);
+    JS_FreeValue(ctx, ev);
+    JSValue out = JS_NewObject(ctx), sh = JS_NewObject(ctx), pl = JS_NewObject(ctx);
+#define FN(field, name, fn, len) JS_SetPropertyStr(ctx, out, name, keep(ctx, &PM.field, JS_NewCFunction(ctx, fn, name, len)));
+    FN(set_program, "setProgram", js_set_program, 1) FN(set_blend_mode, "setBlendMode", js_set_blend_mode, 2)
+    FN(pm_set, "pmSet", js_pm_set, 3) FN(pm_is_current, "pmIsCurrent", js_pm_is_current, 2)
+    FN(wp_bind, "wpBind", js_pipeline_bind, 1) FN(wp_update_projection, "wpUpdateProjectionMatrix", js_update_projection, 0)
+    FN(ws_bind, "wsBind", js_shader_bind, 2) FN(ws_set_attrib_pointers, "wsSetAttribPointers", js_set_attrib_pointers, 1)
+#undef FN
+    for (int k = 0; k < N_USET; k++) {
+        int na = 1 + uset_args(k);
+        JS_SetPropertyStr(ctx, sh, USET[k].name, keep(ctx, &PM.shader_set[k],
+            JS_NewCFunctionMagic(ctx, js_shader_set, USET[k].name, na, JS_CFUNC_generic_magic, k)));
+        JS_SetPropertyStr(ctx, pl, USET[k].name, keep(ctx, &PM.pipeline_set[k],
+            JS_NewCFunctionMagic(ctx, js_pipeline_set, USET[k].name, na + 1, JS_CFUNC_generic_magic, k)));
+    }
+    JS_SetPropertyStr(ctx, out, "shader", sh);
+    JS_SetPropertyStr(ctx, out, "pipeline", pl);
+    PM.ready = true;
+    return out;
+}
+
 // WebGLShader.setUniform1..4(setter, name, v1[, v2, v3, v4], skipCheck): Phaser's code, run for
 // every uniform PokeRogue's sprite pipelines set on every sprite (thousands of calls per frame).
 //   var u = this.uniforms[name];
@@ -1226,11 +1677,10 @@ static JSValue js_set_uniform(JSContext *ctx, JSValueConst this_val, int argc, J
     if (!has) sset(ctx, u, A_setter, JS_DupValue(ctx, setter));
     for (int i = 0; i < n; i++) sset(ctx, u, vat[i], JS_DupValue(ctx, argc > 2 + i ? argv[2 + i] : JS_UNDEFINED));
     JSValue renderer = G(this_val, A_renderer), program = G(this_val, A_program);
-    JSValue r = call(ctx, renderer, A_setProgram, 1, (JSValueConst *)&program);
+    int pe = renderer_set_program(ctx, renderer, program);
     JS_FreeValue(ctx, renderer), JS_FreeValue(ctx, program);
-    if (JS_IsException(r)) goto fail;
-    JS_FreeValue(ctx, r);
-    JSValue gl = G(this_val, A_gl), loc = G(u, A_location), wl = G(loc, A_webGLUniformLocation);
+    if (pe) goto fail;
+    JSValue r, gl = G(this_val, A_gl), loc = G(u, A_location), wl = G(loc, A_webGLUniformLocation);
     JSValueConst args[5] = {wl};
     for (int i = 0; i < n; i++) args[1 + i] = argc > 2 + i ? argv[2 + i] : JS_UNDEFINED;
     r = JS_Call(ctx, setter, gl, n + 1, args);
@@ -1326,8 +1776,10 @@ void fastpath_register(JSContext *ctx, JSValue native) {
     for (int n = 1; n <= 4; n++) {
         char name[16];
         snprintf(name, sizeof name, "setUniform%d", n);
-        JS_SetPropertyStr(ctx, native, name, JS_NewCFunctionMagic(ctx, js_set_uniform, name, 3 + n, JS_CFUNC_generic_magic, n));
+        JS_SetPropertyStr(ctx, native, name, keep(ctx, &PM.set_uniform_fn[n],
+            JS_NewCFunctionMagic(ctx, js_set_uniform, name, 3 + n, JS_CFUNC_generic_magic, n)));
     }
+    JS_SetPropertyStr(ctx, native, "pipelineSetup", JS_NewCFunction(ctx, js_pipeline_setup, "pipelineSetup", 1));
     JS_SetPropertyStr(ctx, native, "batchSprite", JS_NewCFunction(ctx, js_batch_sprite, "batchSprite", 30));
     JS_SetPropertyStr(ctx, native, "batchVerts", JS_NewCFunction(ctx, js_batch_verts, "batchVerts", 8));
     JS_SetPropertyStr(ctx, native, "renderContainer", JS_NewCFunction(ctx, js_render_container, "renderContainer", 4));

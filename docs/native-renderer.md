@@ -24,10 +24,28 @@ calls into can be made cheaper, and everything around it can move to C.
    `f(a, ...arr)` without an iterator object; array species creation without a generic
    constructor call. Spread `splice` -31%, spread `push` -38%, `flat` -12% (standalone qjs,
    desktop). QuickJS's own tests unchanged.
-2. **Pipeline machinery in C:** `PipelineManager.set`/`isCurrent`/`rebind`, `WebGLPipeline.bind`/
-   `rebind`, `WebGLShader.bind`/`rebind`/`setAttribPointers`, `renderer.setProgram`/
-   `setBlendMode`, and the `WebGLPipeline.set*`/`WebGLShader.set*` uniform wrappers. Each
-   pipeline switch currently re-creates attribute locations and re-sets all attribute pointers.
+2. **Pipeline machinery in C. Done** (`src/fastpath.c` "pipeline machinery", `js/fastpath.js`
+   part 14): `PipelineManager.set`/`isCurrent`, `WebGLPipeline.bind`/`updateProjectionMatrix`
+   and its 21 `set1f`... uniform wrappers, `WebGLShader.bind`/`setAttribPointers` and its 21
+   `set1f`..., `WebGLRenderer.setProgram`/`setBlendMode` (48 functions). Each calls the others
+   directly while an object still has the native version, so a uniform set from the game's
+   `onBind` is one C call instead of three JS calls; anything a game overrides is called through
+   JS. The rare paths stay Phaser's (`rebind` and `setAttribPointers(true)` after a GL reset).
+   Installed only if Phaser's functions still look like 3.90's.
+   - Checked (2026-10-16, offline game e4e9b53, Phaser 3.90.0): `scripts/probe_verify_pipeline.js`
+     records every WebGL call (arguments, objects by first use, a hash of the vertex bytes per
+     draw) with animations frozen, alternating native and Phaser frames: identical in the
+     battle command menu (193 calls/frame), fight menu, during a move, the pause menu, the EXP
+     message and the reward shop. `probe_verify_uniforms.js` and `probe_verify_batching.js`
+     unchanged (identical).
+   - Measured on desktop (`scripts/probe_pipeline_time.js`, draw calls skipped because the
+     software GL dominates otherwise; render time per frame in the battle command menu,
+     alternating every 30 frames, ~1,600 frames each): median 1.92 vs 2.02 ms and 1.83 vs
+     1.87 ms, i.e. 2-5% of the render time. Less than the 16% of profile samples these
+     functions had: a property read costs about the same in C as in the interpreter, so the
+     saving is mostly the JS calls and bytecode around them.
+   - Making desktop test runs reach a battle reliably: `scripts/run_saved_battle.sh` (starts from
+     a saved run, presses through by the game's UI mode).
 3. **Remaining game-object renderers:** Graphics (the HP/EXP bars, overlays), BitmapText,
    Rectangle and other shapes, TileSprite, RenderTexture; Text in the cases the current fast path
    skips.

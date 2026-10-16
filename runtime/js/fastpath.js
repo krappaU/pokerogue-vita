@@ -742,6 +742,44 @@
     WS.setUniform4 = g.__native.setUniform4;
   }
 
+  // 14. Pipeline switching and the uniform wrappers in C (src/fastpath.c, "pipeline machinery"):
+  //     PipelineManager.set / isCurrent, WebGLPipeline.bind / updateProjectionMatrix / set1f...,
+  //     WebGLShader.bind / setAttribPointers / set1f..., WebGLRenderer.setProgram / setBlendMode.
+  //     Only for Phaser versions whose code still looks like 3.90's (checked below).
+  //     localStorage PKR_NATIVE_PIPELINE=0 keeps Phaser's; __rt.pipelineSwaps lists [object, name,
+  //     Phaser's, native] for scripts/probe_verify_pipeline.js.
+  const WR = Phaser.Renderer.WebGL.WebGLRenderer.prototype, PMP = Phaser.Renderer.WebGL.PipelineManager.prototype;
+  const WPP = Phaser.Renderer.WebGL.WebGLPipeline.prototype;
+  const PEvents = Phaser.Renderer.WebGL.Pipelines && Phaser.Renderer.WebGL.Pipelines.Events;
+  let nativePipeline = !!(g.__native.pipelineSetup && WS && PEvents && PEvents.BIND);
+  try { if (g.localStorage.getItem("PKR_NATIVE_PIPELINE") === "0") nativePipeline = false; } catch (e) { /* keep */ }
+  const looks = [
+    [WR.setProgram, /currentProgram[\s\S]*useProgram/], [WR.setBlendMode, /SKIP_CHECK[\s\S]*currentBlendMode[\s\S]*blendFuncSeparate/],
+    [WR.flush, /pipelines\.flush\(\)/], [PMP.flush, /current\.flush\(\)/],
+    [PMP.set, /isPostFX[\s\S]*isCurrent[\s\S]*unbind[\s\S]*\.bind\([\s\S]*updateProjectionMatrix[\s\S]*onBind/],
+    [PMP.isCurrent, /currentShader[\s\S]*currentProgram/],
+    [WPP.bind, /glReset[\s\S]*ARRAY_BUFFER_BINDING[\s\S]*activeTextures[\s\S]*onActive/],
+    [WPP.updateProjectionMatrix, /projectionWidth[\s\S]*setProjectionMatrix/], [WPP.unbind, /currentRenderTarget/],
+    [WS.bind, /setProgram[\s\S]*setAttribPointers/],
+    [WS.setAttribPointers, /createAttribLocation[\s\S]*vertexAttribPointer[\s\S]*disableVertexAttribArray/],
+  ];
+  if (nativePipeline && looks.every(([f, re]) => typeof f === "function" && re.test(String(f)))) {
+    const n = g.__native.pipelineSetup({ rendererFlush: WR.flush, pmFlush: PMP.flush, wpUnbind: WPP.unbind,
+      wpOnActive: WPP.onActive, wsSetAttribPointers: WS.setAttribPointers, evBind: PEvents.BIND });
+    const swaps = [[WR, "setProgram", n.setProgram], [WR, "setBlendMode", n.setBlendMode], [PMP, "set", n.pmSet],
+      [PMP, "isCurrent", n.pmIsCurrent], [WPP, "bind", n.wpBind], [WPP, "updateProjectionMatrix", n.wpUpdateProjectionMatrix],
+      [WS, "bind", n.wsBind], [WS, "setAttribPointers", n.wsSetAttribPointers]];
+    // set1f(name, x) { return this.setUniform1(this.gl.uniform1f, name, x) } and the pipeline's
+    // set1f(name, x, shader) { shader ||= this.currentShader; shader.set1f(name, x); return this }
+    for (const k of Object.keys(n.shader)) {
+      const gs = String(WS[k]), ps = String(WPP[k]);
+      if (/setUniform[1-4]\(/.test(gs) && /\.uniform\w+/.test(gs)) swaps.push([WS, k, n.shader[k]]);
+      if (/currentShader/.test(ps) && ps.includes("." + k + "(")) swaps.push([WPP, k, n.pipeline[k]]);
+    }
+    g.__rt.pipelineSwaps = swaps.map(([o, k, f]) => [o, k, o[k], f]);
+    for (const [o, k, , f] of g.__rt.pipelineSwaps) o[k] = f;
+  }
+
   g.__rt.fastpath = g.__fastpath = {
     available: typeof nbs === "function",
     set(on) {
