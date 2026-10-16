@@ -52,6 +52,11 @@ use the offline game: put Admiral-Billy's `game.zip` (or let the start screen do
 folder such as `.cache/offline/` and run with `--data .cache/offline`. It plays as a guest.
 `scripts/drive_to_battle.sh` drives a fresh save into the first battle (timing-sensitive; check with
 a screenshot).
+For profiles and probes, `scripts/run_saved_battle.sh` is the reliable route: it copies a
+`localStorage-offline.json` snapshot that holds a saved run (default `.cache/session.json`) into the
+data folder, starts the runtime in the background and presses Continue and through the battle messages,
+checking the game's UI mode, until the command menu (about 35 s on desktop). Make the snapshot once by
+playing any offline run to a battle and copying the data folder's `localStorage-offline.json`.
 
 ### Checking native fast paths
 Every replacement of Phaser code is checked against Phaser's own output with animations frozen:
