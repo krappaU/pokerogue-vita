@@ -334,9 +334,39 @@ def make_handler(key, source, logs_dir, default_branch, logs_key=None):
             build = self.headers.get("X-Build", "?")
             what = "previous run" if kind == "prev" else "sent from the game"
             log(f"log received ({what}, {n // 1024} KB, {build}): {os.path.join(logs_dir, name)}")
+            threading.Thread(target=push_gist, args=(os.path.dirname(logs_dir),), daemon=True).start()
             self.reply(200, {"saved": name})
 
     return Handler
+
+
+GIST_LOCK = threading.Lock()
+
+
+def push_gist(folder):
+    """Copy the newest logs to the private gist named in <dir>/gist-id, so cloud sessions can read
+    them (their sandbox can't reach this server). Best effort: a failure only costs a log line."""
+    try:
+        with open(os.path.join(folder, "gist-id")) as f:
+            gist = f.read().strip()
+    except OSError:
+        return
+    files = {}
+    for alias in ("latest.txt", "latest-prev.txt"):
+        try:
+            with open(os.path.join(folder, "logs", alias), "rb") as f:
+                f.seek(0, 2)
+                f.seek(max(0, f.tell() - (900 << 10)))  # the gist API truncates big files
+                files[alias] = {"content": f.read().decode("utf-8", "replace") or "(empty)"}
+        except OSError:
+            pass
+    try:
+        with GIST_LOCK:
+            r = subprocess.run(["gh", "api", "-X", "PATCH", "gists/" + gist, "--input", "-"],
+                               input=json.dumps({"files": files}), capture_output=True, text=True, timeout=60)
+        log("gist updated" if r.returncode == 0 else "gist update failed: " + r.stderr.strip()[:200])
+    except (OSError, subprocess.SubprocessError) as e:
+        log(f"gist update failed: {e}")
 
 
 def github_token():
