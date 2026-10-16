@@ -61,7 +61,7 @@ static bool show_progress(long long done, long long total, void *ud) {
 }
 
 // Shows a message until a button is pressed (so errors can be read).
-static void message_wait(const char *msg) {
+void ui_message_wait(const char *msg) {
     char full[800];
     snprintf(full, sizeof full, "%s\n\nPress X to go back.", msg);
     double t0 = host_now_ms();
@@ -85,7 +85,7 @@ static void message_wait(const char *msg) {
 }
 
 // Finds "key":"value" after `from` in a JSON text (enough for GitHub's release JSON).
-static bool json_str(const char *from, const char *key, char *out, size_t n) {
+bool json_str(const char *from, const char *key, char *out, size_t n) {
     char pat[64];
     snprintf(pat, sizeof pat, "\"%s\":", key);
     const char *p = strstr(from, pat);
@@ -100,7 +100,7 @@ static bool json_str(const char *from, const char *key, char *out, size_t n) {
     return true;
 }
 
-static long long json_num(const char *from, const char *key) {
+long long json_num(const char *from, const char *key) {
     char pat[64];
     snprintf(pat, sizeof pat, "\"%s\":", key);
     const char *p = strstr(from, pat);
@@ -186,7 +186,7 @@ const char *offline_update_available(const char *installed) {
 }
 
 // Asks a yes/no question: X yes, O no.
-static bool confirm(const char *msg) {
+bool ui_confirm(const char *msg) {
     char full[900];
     snprintf(full, sizeof full, "%s\n\nX: yes      O: no", msg);
     double t0 = host_now_ms();
@@ -211,6 +211,11 @@ static bool confirm(const char *msg) {
 
 // ---------------------------------------------------------------- download
 
+bool ui_download(const char *url, const char *path, const char *what, char *err, size_t errn) {
+    progress_ui ui = {.t0 = host_now_ms(), .what = what};
+    return net_download_file(url, path, show_progress, &ui, err, errn);
+}
+
 // Downloads the latest release to <data>/game.zip (replacing an installed one only once the
 // download is complete). Returns true when <data>/game.zip is ready.
 bool offline_install(void) {
@@ -222,7 +227,7 @@ bool offline_install(void) {
     if (!json || status != 200) {
         free(json);
         snprintf(err, sizeof err, "Couldn't reach GitHub (%s).\nCheck that Wi-Fi is connected.", status ? "HTTP error" : "no connection");
-        message_wait(err);
+        ui_message_wait(err);
         return false;
     }
     char tag[64] = "?", url[1024] = "";
@@ -232,7 +237,7 @@ bool offline_install(void) {
     long long size = asset ? json_num(asset, "size") : -1;
     if (!asset || !json_str(asset, "browser_download_url", url, sizeof url)) {
         free(json);
-        message_wait("The latest release has no game.zip.\nTry again later.");
+        ui_message_wait("The latest release has no game.zip.\nTry again later.");
         return false;
     }
     free(json);
@@ -267,7 +272,7 @@ bool offline_install(void) {
                                   "downloads (%.0f MB needed, %.0f MB free).\n\nDelete the installed version first?\n"
                                   "Your saves are kept. Until the download finishes,\nonly online play is available.",
                  (need - have_part) / 1048576.0, free_b / 1048576.0);
-        if (!confirm(err)) return false;
+        if (!ui_confirm(err)) return false;
         remove(game_zip);
         remove(version_path);
         free_b = plat_free_space(g_cfg.data_dir);
@@ -275,7 +280,7 @@ bool offline_install(void) {
     if (free_b >= 0 && need > 0 && free_b + have_part < need) {
         snprintf(err, sizeof err, "Not enough space on the memory card:\n%.0f MB needed, %.0f MB free.",
                  (need - have_part) / 1048576.0, free_b / 1048576.0);
-        message_wait(err);
+        ui_message_wait(err);
         return false;
     }
     host_log("[offline] downloading %s (release %s, %.0f MB)", url, tag, size / 1048576.0);
@@ -287,14 +292,14 @@ bool offline_install(void) {
         if (strcmp(err, "cancelled")) {
             char m[700];
             snprintf(m, sizeof m, "The download stopped:\n%s\n\nIt continues where it stopped next time.", err);
-            message_wait(m);
+            ui_message_wait(m);
         }
         return false;
     }
     // Done: the game is played straight from the zip (no unpacking). An older version goes now.
     remove(game_zip);
     if (rename(zip_path, game_zip) != 0) {
-        message_wait("Couldn't rename the downloaded file.");
+        ui_message_wait("Couldn't rename the downloaded file.");
         return false;
     }
     remove(part_tag_path);

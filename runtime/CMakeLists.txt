@@ -31,6 +31,7 @@ target_compile_options(plutovg PRIVATE -w)
 
 # Version: runtime/VERSION ("0.18"); the build scripts pass the git commit as PKR_COMMIT.
 file(STRINGS VERSION PKR_VERSION LIMIT_COUNT 1)
+set(PKR_TITLE_ID PKRV00001)
 if(NOT PKR_COMMIT)
   set(PKR_COMMIT unknown)
 endif()
@@ -57,7 +58,7 @@ target_include_directories(qrcodegen PUBLIC third_party/qrcodegen)
 target_compile_definitions(miniz PUBLIC MINIZ_NO_TIME)  # changes struct layouts: users must agree
 target_compile_options(miniz PRIVATE -w)
 
-set(RT_SRC src/main.c src/js_host.c src/net.c src/gl.c src/canvas2d.c src/fastpath.c src/overlay.c src/osk.c src/profiler.c src/launcher.c src/offline_install.c src/audio.c src/audio_m4a.c src/savecrypt.c src/dialogs.c)
+set(RT_SRC src/main.c src/js_host.c src/net.c src/gl.c src/canvas2d.c src/fastpath.c src/overlay.c src/osk.c src/profiler.c src/launcher.c src/offline_install.c src/audio.c src/audio_m4a.c src/savecrypt.c src/dialogs.c src/devtools.c)
 
 if(VITA)
   # NDEBUG: without it QuickJS keeps ~140 internal assert checks, some on hot paths (atoms, shapes,
@@ -97,7 +98,7 @@ if(VITA)
   endforeach()
   # Extended memory mode: lets the app use more of the Vita's main RAM.
   set(VITA_MKSFOEX_FLAGS "${VITA_MKSFOEX_FLAGS} -d ATTRIBUTE2=12")
-  vita_create_vpk(pokerogue-${PKR_VERSION}.vpk "PKRV00001" eboot.bin VERSION "${PKR_SFO_VERSION}" NAME "PokeRogue" ${VPK_FILES})
+  vita_create_vpk(pokerogue-${PKR_VERSION}.vpk "${PKR_TITLE_ID}" eboot.bin VERSION "${PKR_SFO_VERSION}" NAME "PokeRogue" ${VPK_FILES})
 else()
   add_executable(pokerogue-rt ${RT_SRC} src/platform_sdl.c)
   target_include_directories(pokerogue-rt PRIVATE src third_party/stb third_party)
@@ -111,4 +112,4 @@ else()
   target_link_libraries(pokerogue-rt quickjs plutovg miniz qrcodegen ${SDL2_LIBRARIES} faad ${CURL_LIBRARIES} ${GLES_LIBRARIES} ${SSL_LIBRARIES} m pthread)
 endif()
 
-target_compile_definitions(pokerogue-rt PRIVATE PKR_VERSION="${PKR_VERSION}" PKR_COMMIT="${PKR_COMMIT}")
+target_compile_definitions(pokerogue-rt PRIVATE PKR_VERSION="${PKR_VERSION}" PKR_COMMIT="${PKR_COMMIT}" PKR_TITLE_ID="${PKR_TITLE_ID}")

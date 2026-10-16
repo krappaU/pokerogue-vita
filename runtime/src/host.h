@@ -27,6 +27,9 @@ typedef struct {
     bool hud;                // debug line over the game (config.txt hud=1; SELECT while holding L+R)
     bool sample;             // profiler sampling without the debug line (control channel "profile")
     int interrupt_after_s;   // 0 = never interrupt long-running JS (config.txt interrupt=N)
+    const char *dev_server;  // config.txt devserver=<url>: test builds and log upload (devtools.c)
+    const char *dev_key;     // config.txt devkey=<secret>, sent to the dev server
+    const char *dev_branch;  // config.txt devbranch=<branch>: test builds from this branch only
 } host_config;
 
 extern host_config g_cfg;
@@ -47,6 +50,7 @@ typedef enum {
     PEV_POINTER_UP,
     PEV_QUIT,
     PEV_TOGGLE_HUD, // debug line on/off
+    PEV_SEND_LOG,   // upload the log to the dev server (devtools.c)
 } plat_event_type;
 
 typedef struct {
@@ -73,7 +77,19 @@ bool plat_audio_start(int rate, void (*mix)(int16_t *out, int frames));
 void plat_thread_setup(const char *name, int core, int priority);
 void plat_keep_awake(void);                 // reset the console's idle/auto-sleep timer
 long long plat_free_space(const char *path); // free bytes on the storage holding path, -1 if unknown
-bool offline_install(void);                 // offline_install.c: download <data>/game.zip (or an update)
+bool offline_install(void);
+// Screens drawn outside the game loop (offline_install.c).
+bool ui_confirm(const char *msg);       // X yes, O no
+void ui_message_wait(const char *msg);  // until X or O
+// Finds "key":"value" / "key":number after `from` in a JSON text (flat objects; no escapes).
+bool json_str(const char *from, const char *key, char *out, size_t n);
+long long json_num(const char *from, const char *key);
+bool ui_download(const char *url, const char *path, const char *what, char *err, size_t errn); // with progress, O cancels
+// Dev server (devtools.c): test builds and log upload, only when config.txt names a server.
+void dev_start(const char *prev_log);  // after net_init: uploads the previous run's log
+bool dev_offer_update(void);           // start screen: installs a newer test build (restarts the app)
+void dev_send_log(void);               // L + R + START in game: uploads the current log
+void dev_frame(void);                  // main loop: shows upload results                 // offline_install.c: download <data>/game.zip (or an update)
 void offline_update_check_start(void);      // background check for a newer offline game release
 const char *offline_update_available(const char *installed); // its tag, or NULL
 void plat_shutdown(void);
@@ -131,6 +147,7 @@ bool host_random_bytes(void *buf, size_t n);
 // Blocking GET used by the module loader. Returns malloc'd body or NULL.
 char *net_get_sync(const char *url, size_t *len, long *status);
 char *net_get_threadsafe(const char *url, size_t *len, long *status); // own connection, any thread
+long net_post_threadsafe(const char *url, const char *const *headers, const void *body, size_t len, char *err, size_t errn);
 #define LOCAL_ORIGIN "https://offline.invalid" // origin of the game in local mode (local=<dir>)
 bool net_is_local(const char *url);
 
