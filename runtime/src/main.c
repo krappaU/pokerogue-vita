@@ -145,7 +145,9 @@ static void control_line(JSContext *ctx, char *line, bool *quit) {
         for (int i = 0; i < 8; i++) {
             if (!pending_release[i].key[0]) {
                 snprintf(pending_release[i].key, sizeof pending_release[i].key, "%s", arg);
-                pending_release[i].release_frame = frame_no + 4;
+                // released on the next frame: held longer, slow desktop frames (100-200 ms) turned
+                // a tap into the game's 250 ms key repeat
+                pending_release[i].release_frame = frame_no + 1;
                 break;
             }
         }
