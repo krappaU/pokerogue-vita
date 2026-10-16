@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Built-in sampling profiler, so that logs from the Vita show where the time goes. It samples
-// while the debug line is on (SELECT while holding L+R, or hud=1 in config.txt).
+// while the debug line is on (SELECT while holding L+R, or hud=1 in config.txt), or after the
+// control channel's "profile" command (without the debug line).
 //
 // At each of the interpreter's interrupt checks (QuickJS makes one every 10000 counted operations,
 // a few dozen times a second) it records the JS call stack (JS_SampleStack,
@@ -110,7 +111,7 @@ void prof_poll(JSContext *ctx) {
     if (!started) return;
     // Only while the debug line is on: in the Vita3K emulator, sampling during normal play caused
     // one-second stalls (cause unknown; each sample itself is fast).
-    if (!g_cfg.hud) return;
+    if (!g_cfg.hud && !g_cfg.sample) return;
     static char buf[4096];
     if (JS_SampleStack(ctx, buf, sizeof buf) > 0 && buf[0]) {
         shorten(buf);

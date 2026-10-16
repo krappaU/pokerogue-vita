@@ -192,6 +192,9 @@ static void control_line(JSContext *ctx, char *line, bool *quit) {
         plat_ime_answer(arg ? arg : "");
     } else if (!strcmp(line, "ime-cancel")) {
         plat_ime_answer(NULL);
+    } else if (!strcmp(line, "profile")) {
+        // sampling without the debug line: drawing it makes Phaser rebuild its GL state every frame
+        g_cfg.sample = !g_cfg.sample;
     } else if (!strcmp(line, "hud")) {
         g_cfg.hud = !g_cfg.hud;
     } else if (!strcmp(line, "quit")) {
