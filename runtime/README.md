@@ -62,9 +62,14 @@ playing any offline run to a battle and copying the data folder's `localStorage-
 Every replacement of Phaser code is checked against Phaser's own output with animations frozen:
 `scripts/probe_verify_render.js` (vertex data per flush), `probe_verify_uniforms.js` (GL uniform
 calls), `probe_verify_batching.js` (draw calls, texture binds, uploaded vertex bytes) and
-`probe_verify_pipeline.js` (every WebGL call, for the pipeline machinery).
+`probe_verify_pipeline.js` (every WebGL call, for the pipeline machinery and shape renderers).
+`tests/phaser/` runs the first three on a Phaser scene without the game (CI does this on every push).
 [../docs/render-coverage.md](../docs/render-coverage.md) lists which draw features and screens take
 the native paths.
+
+### Tests
+`scripts/lint.sh`, `scripts/test_linux.sh` and `scripts/test_vita3k.sh` (test pages in `tests/`)
+run in CI on every push; see "Tests" in [../docs/development.md](../docs/development.md).
 
 ## Status
 See the [root README](../README.md) and the open items in [../docs/PLAN.md](../docs/PLAN.md).

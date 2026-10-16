@@ -7,14 +7,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 SECONDS_TO_RUN=${1:-120}
-V3K=.cache/vita3k                    # emulator install (downloaded on first use)
+V3K=.cache/vita3k                    # emulator install (scripts/get_vita3k.sh)
 docker build -q -t pkrb-vita3k -f docker/vita3k.Dockerfile docker >/dev/null
-if [ ! -d "$V3K/squashfs-root" ]; then
-  mkdir -p "$V3K/home"
-  curl -sfL -o "$V3K/Vita3K.AppImage" https://github.com/Vita3K/Vita3K/releases/download/continuous/Vita3K-x86_64.AppImage
-  chmod +x "$V3K/Vita3K.AppImage"
-  docker run --rm -v "$PWD/$V3K":/v -w /v pkrb-vita3k ./Vita3K.AppImage --appimage-extract >/dev/null
-fi
+scripts/get_vita3k.sh
 FS="$V3K/home/.local/share/Vita3K/Vita3K"
 mkdir -p "$FS/ur0/data" .cache/vita3k-shots
 [ -f .cache/private/libshacccg.suprx ] && cp .cache/private/libshacccg.suprx "$FS/ur0/data/"

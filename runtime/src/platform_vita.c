@@ -141,6 +141,16 @@ bool plat_poll_event(plat_event *ev) {
             return true;
         }
         select_was_down = select_down;
+        // START pressed while holding L + R: send the log to the dev server.
+        static bool start_was_down;
+        bool start_down = pad.buttons & SCE_CTRL_START;
+        if (start_down && !start_was_down && lr) {
+            start_was_down = true;
+            memset(ev, 0, sizeof *ev);
+            ev->type = PEV_SEND_LOG;
+            return true;
+        }
+        start_was_down = start_down;
     }
     if (phase == 1) {
         phase = 2;

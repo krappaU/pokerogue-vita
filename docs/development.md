@@ -30,6 +30,42 @@ Homebrew**. Builds are marked unsafe so they can raise the CPU clock.
 The app also needs `ur0:data/libshacccg.suprx` (Sony's shader compiler, extracted on the console
 with ShaRKBR33D or ShaRKF00D); vitaGL compiles shaders with it at runtime. Never commit or share it.
 
+## Test builds and logs without FTP (dev server)
+Dev builds only: `PKR_DEV=1 runtime/scripts/build_vita.sh` (`build-vita-dev/pokerogue-<VERSION>-dev.vpk`;
+CI uploads it as the `pokerogue-dev-*` artifact). Normal builds, the ones handed to players, don't
+contain this code at all: they never replace their own files or send logs anywhere. Dev builds
+show "dev" after the version.
+
+`tools/devserver/devserver.py` (Python standard library only) runs on any machine the console can
+reach, the internet included: the console opens every connection, so nothing on the home network
+is exposed. Once it is set up, after one install from VitaShell:
+- **New builds:** before the start screen the app asks the server for its newest build: the latest
+  CI dev `.vpk` (push runs; any branch, or the one in `devbranch=`), or with `--vpk` one built on that
+  machine. If it isn't the one running, the app asks, downloads it, replaces its own files in
+  `ux0:app/PKRV00001` (eboot.bin, js/, cacert.pem) and restarts. `sce_sys/` (LiveArea, param.sfo)
+  is left alone, so changes there still need an install from VitaShell. If installing fails, the
+  download stays in `ux0:data/pokerogue/dev-update.vpk` for VitaShell. A build that was declined
+  isn't offered again.
+- **Logs:** each start uploads the previous run's log (kept as `log-prev.txt`, so the log of a
+  crash is sent by the next start), and L + R + START in game uploads the current one. They land in
+  `<dir>/logs/` on the server (`latest.txt` is the newest; `latest-prev.txt` the newest of a run
+  that ended), where a Claude session on that machine can read them.
+
+Setup:
+1. On the server: `DEVSERVER_KEY=<secret> tools/devserver/devserver.py` (port 8765; `--vpk
+   runtime/build-vita-dev` to serve dev builds made there instead of CI's). CI builds need a GitHub token
+   (`gh auth login`, or `GITHUB_TOKEN`). Make a key with
+   `python3 -c 'import secrets; print(secrets.token_urlsafe(16))'`.
+2. In `ux0:data/pokerogue/config.txt` on the console:
+   ```
+   devserver=http://your.server:8765/
+   devkey=<secret>
+   ```
+   Plain HTTP sends the key and logs unencrypted; put the server behind an HTTPS proxy (Caddy,
+   nginx) and use an `https://` URL to avoid that.
+
+Even a dev build does nothing of this without `devserver=`.
+
 ## Vita gotchas
 - CMake needs `-DCMAKE_TOOLCHAIN_FILE=$VITASDK/share/vita.toolchain.cmake`.
 - Vita newlib's printf has no `%zu`; use `%lu` with a cast.
@@ -164,6 +200,32 @@ of API requests. Don't test logins in a loop from a server: Cloudflare starts bl
 - An empty file named `dump-shaders` in the data folder makes vitaGL write each shader as handed
   to the Cg compiler (after GLSL translation) to `<data>/shaders/`
   (`runtime/patches/vitagl-0002-*.patch`).
+
+## Tests
+CI (`.github/workflows/ci.yml`) runs on every push and pull request; the same scripts run locally:
+
+| script | what it checks |
+|---|---|
+| `runtime/scripts/lint.sh` | JS syntax (`node --check`), shellcheck, SPDX headers, `VERSION` format, no Sony modules committed |
+| `runtime/scripts/test_linux.sh` | the test pages on the desktop runtime (build with `build_linux.sh` first) |
+| `runtime/scripts/test_vita3k.sh` | the test pages on the .vpk in Vita3K (build with `build_vita.sh` first) |
+
+Test pages are folders in `runtime/tests/`, loaded by the runtime as an offline game (no network,
+no start screen). They log `[test] PASS/FAIL <name>` lines and finally `[test] DONE passed=N
+failed=M`; `tests/run_page.sh` (desktop) and `tests/run_vita3k_page.sh` (Vita3K) wait for that line
+and fail on any failed check, uncaught JS error or timeout. Logs and screenshots go to
+`.cache/test/<name>/` and `.cache/test-vita3k/<name>/` (CI uploads them as artifacts).
+- `tests/smoke/`: the browser shim: DOM, timers, fetch/XHR, `import()`, storage, PNG decoding,
+  Canvas 2D, WebGL (incl. the Cg identifier renaming), WAV decoding.
+- `tests/phaser/`: a still Phaser 3.90 scene built from what PokeRogue draws, checked with the
+  `scripts/probe_verify_*.js` probes (native fast paths against Phaser's own code). Phaser comes
+  from npm (`tests/fetch_test_deps.sh`, pinned hash).
+
+In Vita3K the pages need a shader compiler: your own copy in `runtime/.cache/private/libshacccg.suprx`
+(without it only the boot is checked: the eboot loads, links and runs `main()`). CI uses the PSM
+runtime's copy from AnimMouse/SceShaccCg, pinned to a commit and hash-checked, only inside the job.
+Vita3K doesn't write its rendering back to the Vita's memory, so `readPixels` returns zeros there;
+the smoke test skips pixel comparisons on the Vita's GPU.
 
 ## Measuring the real game
 See [tools/measure/README.md](../tools/measure/README.md): headless Chrome running a local dev

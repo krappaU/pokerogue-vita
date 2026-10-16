@@ -1,0 +1,124 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Checks every push and pull request: lint, desktop build + test pages, Vita build (.vpk artifact),
+# and the .vpk in the Vita3K emulator. The same scripts run locally (docs/development.md, "Tests").
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: runtime
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: sudo apt-get install -y -qq shellcheck >/dev/null
+      - run: scripts/lint.sh
+
+  linux:
+    # The desktop runtime in Docker (pkr-rt-linux), then the test pages headless: tests/smoke (the
+    # browser shim) and tests/phaser (native fast paths against Phaser's own code).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/fetch_deps.sh
+      - run: scripts/build_linux.sh
+      - run: scripts/test_linux.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-test-results
+          include-hidden-files: true
+          if-no-files-found: ignore
+          path: |
+            runtime/.cache/test/*/data/log.txt
+            runtime/.cache/test/*/stdout.txt
+            runtime/.cache/test/*/screen.png
+
+  vita:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      # Our own libcurl and vitaGL builds take a while; rebuilt when their scripts or patches change.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            runtime/third_party/vita-curl
+            runtime/third_party/vita-vitagl
+          key: vita-libs-${{ hashFiles('runtime/scripts/build_vita_curl.sh', 'runtime/scripts/build_vita_vitagl.sh', 'runtime/patches/vitagl-*') }}
+      - run: scripts/fetch_deps.sh
+      - run: scripts/build_vita.sh
+      - run: echo "VERSION=$(cat VERSION)" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pokerogue-${{ env.VERSION }}-${{ github.sha }}
+          path: runtime/build-vita/pokerogue-${{ env.VERSION }}.vpk
+          if-no-files-found: error
+      # The dev build (dev server client: test builds and log upload) for the developer's console;
+      # tools/devserver serves it. Never for players.
+      - run: PKR_DEV=1 scripts/build_vita.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pokerogue-dev-${{ env.VERSION }}-${{ github.sha }}
+          path: runtime/build-vita-dev/pokerogue-${{ env.VERSION }}-dev.vpk
+          if-no-files-found: error
+
+  vita3k:
+    # Crash and correctness check only: Vita3K's speed says nothing about the real console.
+    needs: vita
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # vitaGL compiles shaders with Sony's libshacccg.suprx, which can't be committed. CI takes the
+      # PSM runtime's copy published at AnimMouse/SceShaccCg, pinned to a commit and checked against
+      # its hash; it only exists inside this job (never cached or uploaded). Developers use their
+      # own copy in runtime/.cache/private/.
+      SHACCCG_URL: https://raw.githubusercontent.com/AnimMouse/SceShaccCg/f9511fc20ce905704f384b3a99a17c5e97f9a92c/libshacccg.suprx
+      SHACCCG_SHA256: 188adb8c34c3983d63244c32d981fd7b518a8dcfd200f5886233fface6b5fa40
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "VERSION=$(cat VERSION)" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          name: pokerogue-${{ env.VERSION }}-${{ github.sha }}
+          path: runtime/build-vita
+      - name: Boot check without the shader compiler
+        run: scripts/test_vita3k.sh smoke
+      - name: Shader compiler (pinned, hash-checked)
+        run: |
+          mkdir -p .cache/private
+          curl -sfL -o .cache/private/libshacccg.suprx "$SHACCCG_URL"
+          echo "$SHACCCG_SHA256  .cache/private/libshacccg.suprx" | sha256sum -c
+      - name: Test pages on the emulated Vita
+        run: scripts/test_vita3k.sh
+      - name: Remove the shader compiler
+        if: always()
+        run: rm -f .cache/private/libshacccg.suprx
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vita3k-test-results
+          include-hidden-files: true
+          if-no-files-found: ignore
+          path: |
+            runtime/.cache/test-vita3k/*/app-log.txt
+            runtime/.cache/test-vita3k/*/vita3k.log
+            runtime/.cache/test-vita3k/*/screen.png
