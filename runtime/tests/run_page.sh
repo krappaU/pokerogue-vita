@@ -8,7 +8,7 @@
 # and test libraries fetched by tests/fetch_test_deps.sh (third_party/test/). Log, screenshot and
 # data in .cache/test/<name>/.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 NAME=${1:?usage: tests/run_page.sh <name> [timeout]}
 TIMEOUT=${2:-120}
 RT=${RT:-build-linux/pokerogue-rt}
@@ -32,7 +32,7 @@ PID=$!
 
 status=timeout
 for _ in $(seq 1 $((TIMEOUT * 4))); do
-  if grep -q '^\[test\] DONE' "$LOG" 2>/dev/null; then status=done; break; fi
+  if grep -q '^\[test\] DONE' "$LOG" 2>/dev/null; then status=finished; break; fi
   if ! kill -0 $PID 2>/dev/null; then status=exited; break; fi
   sleep 0.25
 done
@@ -49,7 +49,7 @@ echo "== $NAME: test results"
 grep -E '^\[test\]' "$LOG" 2>/dev/null
 # Errors the page didn't catch also fail the run.
 errors=$(grep -cE '^\[js\] (uncaught|unhandled)|^\[boot\] failed|^bootstrap failed' "$LOG" 2>/dev/null)
-if [ "$status" != done ] || ! grep -q '^\[test\] DONE .*failed=0$' "$LOG" || [ "${errors:-0}" != 0 ]; then
+if [ "$status" != finished ] || ! grep -q '^\[test\] DONE .*failed=0$' "$LOG" || [ "${errors:-0}" != 0 ]; then
   echo "== $NAME: FAILED ($status, $errors uncaught JS errors); last log lines:"
   tail -40 "$LOG" 2>/dev/null || cat "$OUT/stdout.txt"
   exit 1

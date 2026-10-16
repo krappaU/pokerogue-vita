@@ -31,9 +31,13 @@ Never fork or patch the game itself. Anything the game needs is provided by the 
 - Loop for Vita builds: build on Linux first for fast iteration → build the .vpk
   (`runtime/scripts/build_vita.sh`) → optionally `runtime/scripts/run_vita3k.sh` as a crash check →
   test on a real Vita for timing. **Never treat Vita3K timings as real performance.**
+- Before pushing: `runtime/scripts/lint.sh`, and after runtime changes `runtime/scripts/test_linux.sh`
+  (and `test_vita3k.sh` for Vita changes). CI runs the same on every push; new web APIs or fast
+  paths get a check in `runtime/tests/smoke/` or `runtime/tests/phaser/`.
 - vitaGL needs `libshacccg.suprx`, Sony's shader compiler, which each user installs on their own
   console. Never commit, bundle or publish it; for emulator tests keep a personal copy in
-  `runtime/.cache/private/` (ignored by git).
+  `runtime/.cache/private/` (ignored by git). CI downloads a pinned, hash-checked copy inside its
+  Vita3K job only (owner's decision; see "Tests" in `docs/development.md`).
 - Any native fast path that replaces Phaser code must be checked against Phaser's own output
   (`runtime/scripts/probe_verify_render.js`, `probe_verify_uniforms.js`, `probe_verify_batching.js`).
 - Record measured results in the relevant README or `docs/`, with dates and game/Phaser versions.

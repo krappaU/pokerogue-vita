@@ -10,20 +10,15 @@
 # compile shaders, so only the boot is checked: the vpk installs, the eboot loads and links, main()
 # runs and stops at the shader-compiler check with its message.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 NAME=${1:?usage: tests/run_vita3k_page.sh <name> [timeout]}
 TIMEOUT=${2:-240}
 VPK=build-vita/pokerogue-$(cat VERSION).vpk
-V3K=.cache/vita3k                       # emulator (downloaded on first use)
+V3K=.cache/vita3k                       # emulator (scripts/get_vita3k.sh)
 OUT=$PWD/.cache/test-vita3k/$NAME       # fresh emulator home per run: log, screenshot
 [ -f "$VPK" ] || { echo "no $VPK (build it first)"; exit 2; }
 [ -d "tests/$NAME" ] || { echo "no test page tests/$NAME"; exit 2; }
-if [ ! -x "$V3K/squashfs-root/AppRun" ]; then
-  mkdir -p "$V3K"
-  curl -sfL -o "$V3K/Vita3K.AppImage" https://github.com/Vita3K/Vita3K/releases/download/continuous/Vita3K-x86_64.AppImage || exit 2
-  chmod +x "$V3K/Vita3K.AppImage"
-  (cd "$V3K" && ./Vita3K.AppImage --appimage-extract >/dev/null)
-fi
+[ -x "$V3K/squashfs-root/AppRun" ] || scripts/get_vita3k.sh || { echo "no Vita3K (scripts/get_vita3k.sh)"; exit 2; }
 
 rm -rf "${OUT:?}"
 FS=$OUT/home/.local/share/Vita3K/Vita3K
@@ -54,13 +49,16 @@ EPID=$!
 
 status=timeout
 for _ in $(seq 1 $((TIMEOUT * 2))); do
-  if grep -qa '^\[test\] DONE' "$LOG" 2>/dev/null; then status=done; break; fi
+  if grep -qa '^\[test\] DONE' "$LOG" 2>/dev/null; then status=finished; break; fi
   if ! kill -0 $EPID 2>/dev/null; then status=exited; break; fi
   sleep 0.5
 done
 command -v xwd >/dev/null && xwd -root -silent -display "$DISP" | convert xwd:- "$OUT/screen.png" 2>/dev/null
 kill $EPID 2>/dev/null; sleep 1; pkill -P $EPID 2>/dev/null; kill $XPID 2>/dev/null
 wait 2>/dev/null
+# The results to keep sit next to the screenshot; Sony's module doesn't stay in the emulator's files.
+rm -f "$FS/ur0/data/libshacccg.suprx"
+cp "$LOG" "$OUT/app-log.txt" 2>/dev/null
 
 fail() {
   echo "== vita3k $NAME: FAILED: $1; app log:"
@@ -80,7 +78,7 @@ fi
 echo "== vita3k $NAME: test results"
 grep -aE '^\[test\]' "$LOG"
 errors=$(grep -caE '^\[js\] (uncaught|unhandled)|^\[boot\] failed|^bootstrap failed' "$LOG")
-[ "$status" = done ] || fail "$status before the page finished"
+[ "$status" = finished ] || fail "$status before the page finished"
 grep -qa '^\[test\] DONE .*failed=0$' "$LOG" || fail "failed checks"
 [ "${errors:-0}" = 0 ] || fail "$errors uncaught JS errors"
 echo "== vita3k $NAME: ok"
