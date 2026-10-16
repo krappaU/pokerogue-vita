@@ -175,6 +175,14 @@ bool osk_mutes_pad(void);             // game input muted (keyboard open, or its
 bool osk_event(const plat_event *ev); // true if the keyboard consumed the event
 void osk_frame(const plat_gamepad *pad); // buttons and stick, once per frame
 bool osk_draw(void);                  // draws the keyboard if open (caller wraps GL state for Phaser)
+
+// Links the game opens, shown as a QR code (linkqr.c).
+void link_show(const char *url, const char *caption);
+bool link_active(void);
+bool link_mutes_pad(void);             // game input muted (code shown, or its closing button still held)
+bool link_event(const plat_event *ev); // true if consumed
+void link_frame(const plat_gamepad *pad);
+bool link_draw(void);
 const char *host_version_string(void);  // "PokeRogue Vita 0.18 (abc1234)"
 
 // Bytes held by decoded-image objects: compressed files kept, and decoded pixels currently alive.

@@ -43,3 +43,10 @@ for f in minimp3.h minimp3_ex.h; do
   [ -f "third_party/minimp3/$f" ] || curl -sfL "https://raw.githubusercontent.com/lieff/minimp3/$MINIMP3/$f" -o "third_party/minimp3/$f"
 done
 [ -f third_party/minimp3/minimp4.h ] || curl -sfL "https://raw.githubusercontent.com/lieff/minimp4/$MINIMP4/minimp4.h" -o third_party/minimp3/minimp4.h
+
+# QR codes for links the game opens (shown on screen to scan): Nayuki's QR-Code-generator, MIT.
+QRCODEGEN=3c6d0b3cefb4e049dc337e82237c9644399716a8
+mkdir -p third_party/qrcodegen
+for f in qrcodegen.c qrcodegen.h; do
+  [ -f "third_party/qrcodegen/$f" ] || curl -sfL "https://raw.githubusercontent.com/nayuki/QR-Code-generator/$QRCODEGEN/c/$f" -o "third_party/qrcodegen/$f"
+done

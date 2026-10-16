@@ -371,7 +371,7 @@ static JSValue n_write_file(JSContext *ctx, JSValueConst this_val, int argc, JSV
 static JSValue n_gamepads(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     plat_gamepad pads[4];
     int n = plat_gamepads(pads, 4);
-    if (osk_mutes_pad()) // the built-in keyboard has the controls
+    if (osk_mutes_pad() || link_mutes_pad()) // the built-in keyboard or a shown link has the controls
         for (int i = 0; i < n; i++) memset(pads[i].axes, 0, sizeof pads[i].axes), memset(pads[i].buttons, 0, sizeof pads[i].buttons);
     JSValue arr = JS_NewArray(ctx);
     for (int i = 0; i < n; i++) {
@@ -634,6 +634,16 @@ static JSValue n_show_message(JSContext *ctx, JSValueConst this_val, int argc, J
     return JS_UNDEFINED;
 }
 
+// showLink(url, caption): a link the game opens, as a QR code over the game (linkqr.c)
+static JSValue n_show_link(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    const char *url = JS_ToCString(ctx, argv[0]);
+    const char *cap = argc > 1 ? JS_ToCString(ctx, argv[1]) : NULL;
+    if (url) link_show(url, cap ? cap : "");
+    JS_FreeCString(ctx, url);
+    JS_FreeCString(ctx, cap);
+    return JS_UNDEFINED;
+}
+
 // randomBytes(n) -> ArrayBuffer of cryptographically secure random bytes
 static JSValue n_random_bytes(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     uint32_t n = 0;
@@ -648,6 +658,7 @@ static JSValue n_random_bytes(JSContext *ctx, JSValueConst this_val, int argc, J
 
 static const JSCFunctionListEntry native_funcs[] = {
     JS_CFUNC_DEF("randomBytes", 1, n_random_bytes),
+    JS_CFUNC_DEF("showLink", 2, n_show_link),
     JS_CFUNC_DEF("showMessage", 1, n_show_message),
     JS_CFUNC_DEF("memoryUsage", 0, n_memory_usage),
     JS_CFUNC_DEF("imeOpen", 4, n_ime_open),

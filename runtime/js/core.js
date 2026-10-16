@@ -121,7 +121,15 @@
   rt.frameHooks = [];
   rt.onFrame = function (nowAbs) {
     const now = nowAbs;
-    // Timers due by now, in due order. New timers scheduled meanwhile wait for the next frame.
+    for (const h of rt.frameHooks) { try { h(now); } catch (e) { report(e); } }
+    const q = rafQueue;
+    rafQueue = [];
+    const ts = now - start;
+    for (const r of q) { try { r.fn(ts); } catch (e) { report(e); } }
+    // Timers due by the frame's start, in due order, after the game's frame: when a frame runs
+    // long, the game sees released buttons (in its frame) before its button-repeat intervals fire;
+    // run first, those repeated a press the player had already let go of (cursor skipping an entry
+    // after a slow frame). New timers scheduled meanwhile wait for the next frame.
     const due = [];
     for (const [id, t] of pending) if (t.at <= now) due.push([id, t]);
     due.sort((a, b) => a[1].at - b[1].at);
@@ -130,11 +138,6 @@
       if (t.interval) t.at = now + t.interval; else pending.delete(id);
       try { typeof t.fn === "function" ? t.fn(...t.args) : (0, eval)(String(t.fn)); } catch (e) { report(e); }
     }
-    for (const h of rt.frameHooks) { try { h(now); } catch (e) { report(e); } }
-    const q = rafQueue;
-    rafQueue = [];
-    const ts = now - start;
-    for (const r of q) { try { r.fn(ts); } catch (e) { report(e); } }
   };
 
   // ---------------------------------------------------------------- events

@@ -384,10 +384,11 @@ static void draw_hud(JSContext *ctx, double js_ms) {
 
 // Native drawing over the game's frame: the built-in keyboard and the debug line.
 static void draw_over_game(JSContext *ctx, double js_ms) {
-    if (!osk_active() && !g_cfg.hud && !fields_draw_pending()) return;
+    if (!osk_active() && !link_active() && !g_cfg.hud && !fields_draw_pending()) return;
     host_call_rt(ctx, "beforeExternalGL", 0, NULL);
     fields_draw();
     osk_draw();
+    link_draw();
     if (g_cfg.hud) draw_hud(ctx, js_ms);
     host_call_rt(ctx, "afterExternalGL", 0, NULL);
 }
@@ -657,7 +658,7 @@ int main(int argc, char **argv) {
                 g_cfg.hud = !g_cfg.hud;
                 continue;
             }
-            if (osk_event(&ev)) continue;
+            if (link_event(&ev) || osk_event(&ev)) continue;
             static const char *names[] = {"keydown", "keyup", "pointerdown", "pointermove", "pointerup"};
             JSValue args[7] = {
                 JS_NewString(ctx, names[ev.type]),
@@ -673,7 +674,9 @@ int main(int argc, char **argv) {
         }
         {
             plat_gamepad pad;
-            osk_frame(plat_gamepads(&pad, 1) > 0 ? &pad : NULL);
+            int np = plat_gamepads(&pad, 1);
+            osk_frame(np > 0 ? &pad : NULL);
+            link_frame(np > 0 ? &pad : NULL);
         }
         set_phase("control channel");
         control_poll(ctx, &quit);

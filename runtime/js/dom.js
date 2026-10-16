@@ -782,7 +782,17 @@
     matchMedia: media,
     getComputedStyle: (el) => el && el.style ? el.style : makeStyle({}),
     scrollTo() {}, scrollBy() {}, scroll() {}, focus() {}, blur() {}, print() {}, stop() {}, moveTo() {}, resizeTo() {},
-    open(url) { N.log("[window] open ignored: " + url); return null; },
+    // Links can't be followed here: shown as a QR code to open on a phone (src/linkqr.c).
+    // Discord / Google sign-in would log in that other device, not this one.
+    open(url) {
+      url = String(url == null ? "" : url);
+      const abs = url && N.resolveURL ? N.resolveURL(g.location.href, url) : url;
+      if (!/^https?:/i.test(abs) || !N.showLink) { N.log("[window] open ignored: " + url); return null; }
+      const signIn = /discord\.com\/(api\/)?oauth2|accounts\.google\.com/i.test(abs);
+      N.showLink(abs, signIn ? "Signing in with Discord or Google can't be done on the Vita: please log in with your PokeRogue username and password. (This link only signs in the device that opens it.)"
+        : "This link opens in a web browser. Scan the code with your phone to open it there:");
+      return null;
+    },
     close() {},
     alert(m) { N.log("[alert] " + m); },
     confirm(m) { N.log("[confirm] " + m); return true; },

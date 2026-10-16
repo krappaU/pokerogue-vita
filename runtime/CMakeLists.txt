@@ -46,10 +46,12 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS VERSION)
 
 add_library(miniz STATIC third_party/miniz/miniz.c)
 target_include_directories(miniz PUBLIC third_party/miniz)
+add_library(qrcodegen STATIC third_party/qrcodegen/qrcodegen.c)
+target_include_directories(qrcodegen PUBLIC third_party/qrcodegen)
 target_compile_definitions(miniz PUBLIC MINIZ_NO_TIME)  # changes struct layouts: users must agree
 target_compile_options(miniz PRIVATE -w)
 
-set(RT_SRC src/main.c src/js_host.c src/net.c src/gl.c src/canvas2d.c src/fastpath.c src/overlay.c src/osk.c src/profiler.c src/launcher.c src/offline_install.c src/audio.c src/audio_m4a.c src/savecrypt.c)
+set(RT_SRC src/main.c src/js_host.c src/net.c src/gl.c src/canvas2d.c src/fastpath.c src/overlay.c src/osk.c src/profiler.c src/launcher.c src/offline_install.c src/audio.c src/audio_m4a.c src/savecrypt.c src/linkqr.c)
 
 if(VITA)
   # NDEBUG: without it QuickJS keeps ~140 internal assert checks, some on hot paths (atoms, shapes,
@@ -66,7 +68,7 @@ if(VITA)
   target_link_directories(pokerogue-rt BEFORE PRIVATE third_party/vita-vitagl/lib)
   target_include_directories(pokerogue-rt PRIVATE src third_party/stb third_party)
   target_compile_options(pokerogue-rt PRIVATE -Wall -Wno-unused-function -Wno-missing-braces -Wno-unused-variable)
-  target_link_libraries(pokerogue-rt quickjs plutovg miniz
+  target_link_libraries(pokerogue-rt quickjs plutovg miniz qrcodegen
     curl ssl crypto z zstd
     vitaGL vitashark SceShaccCgExt mathneon taihen_stub SceShaccCg_stub
     SceKernelDmacMgr_stub SceGxm_stub SceDisplay_stub SceAppMgr_stub SceCommonDialog_stub SceIme_stub
@@ -100,7 +102,7 @@ else()
   pkg_check_modules(GLES REQUIRED glesv2)
   pkg_check_modules(SSL REQUIRED openssl)
   target_include_directories(pokerogue-rt PRIVATE ${SDL2_INCLUDE_DIRS} ${CURL_INCLUDE_DIRS} ${GLES_INCLUDE_DIRS} ${SSL_INCLUDE_DIRS})
-  target_link_libraries(pokerogue-rt quickjs plutovg miniz ${SDL2_LIBRARIES} faad ${CURL_LIBRARIES} ${GLES_LIBRARIES} ${SSL_LIBRARIES} m pthread)
+  target_link_libraries(pokerogue-rt quickjs plutovg miniz qrcodegen ${SDL2_LIBRARIES} faad ${CURL_LIBRARIES} ${GLES_LIBRARIES} ${SSL_LIBRARIES} m pthread)
 endif()
 
 target_compile_definitions(pokerogue-rt PRIVATE PKR_VERSION="${PKR_VERSION}" PKR_COMMIT="${PKR_COMMIT}")

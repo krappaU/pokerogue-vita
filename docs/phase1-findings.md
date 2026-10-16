@@ -277,3 +277,14 @@ Vita's 0.5-0.8 s battle hitches are GPU waits too.
   (same family first), which also fixes mixed CJK text. A face registered again for the same family,
   style and unicode-range replaces the earlier one (browser precedence).
 - The [perf] JS time now includes the promise jobs before the frame (fetched files are handled there).
+
+### Input repeat after slow frames, links (runtime 0.40, 2026-10-16)
+- Some list entries (e.g. a move with a long description in the "forget a move" list) couldn't be
+  selected: the cursor jumped past them. PokeRogue repeats a held button with a 250 ms setInterval
+  that stops when the game sees the button released (in Phaser's frame, from the Gamepad API). The
+  runtime ran due timers before the frame, so after a frame longer than 250 ms the repeat fired
+  before the release was seen. Timers now run after the game's frame. Checked with a scripted pad
+  (one-frame press, 400 ms frame): cursor moved 2 entries before, 1 after; holding still repeats.
+- window.open (the menu's Wiki/Discord/GitHub/Reddit/donate links) shows the link as a QR code with
+  the address (src/linkqr.c, Nayuki's qrcodegen); Discord/Google sign-in gets an explanation that it
+  can't be done on the Vita.
