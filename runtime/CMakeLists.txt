@@ -15,6 +15,12 @@ set(QJS third_party/quickjs)
 add_library(quickjs STATIC ${QJS}/quickjs.c ${QJS}/libregexp.c ${QJS}/libunicode.c ${QJS}/dtoa.c)
 target_include_directories(quickjs PUBLIC ${QJS})
 target_compile_definitions(quickjs PRIVATE _GNU_SOURCE)
+# PKR_PROFILE_RATE=1000: the interrupt handler (and the built-in profiler) every 1,000 operations
+# instead of 10,000, for detailed desktop profiles. Not for builds handed out.
+set(PKR_PROFILE_RATE "" CACHE STRING "QuickJS operations between interrupt checks (empty: default)")
+if(PKR_PROFILE_RATE)
+  target_compile_definitions(quickjs PRIVATE JS_INTERRUPT_COUNTER_INIT=${PKR_PROFILE_RATE})
+endif()
 target_compile_options(quickjs PRIVATE -w)
 
 file(GLOB PLUTOVG_SRC third_party/plutovg/source/*.c)

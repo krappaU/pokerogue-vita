@@ -25,6 +25,7 @@ typedef struct {
     bool net_trace;          // config.txt nettrace=1: log API request headers
     bool osk;                // always use the built-in keyboard (config.txt osk=1)
     bool hud;                // debug line over the game (config.txt hud=1; SELECT while holding L+R)
+    bool sample;             // profiler sampling without the debug line (control channel "profile")
     int interrupt_after_s;   // 0 = never interrupt long-running JS (config.txt interrupt=N)
 } host_config;
 
