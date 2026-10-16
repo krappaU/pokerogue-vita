@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Checks the native render fast paths (js/fastpath.js, src/fastpath.c) against Phaser's own code on
 // a still scene built from what PokeRogue draws: containers (nested, scrolled, with alpha), images
-// and sprites from an atlas (flips, tints, rotation, per-corner alpha), text, nine-slices, and a
-// sprite pipeline that sets uniforms per object (as PokeRogue's sprite pipelines do).
+// and sprites from an atlas (flips, tints, rotation, per-corner alpha), text, nine-slices, Graphics,
+// rectangles, geometry masks, and a sprite pipeline that sets uniforms per object (as PokeRogue's
+// sprite pipelines do).
 // It runs the repo's verification probes (scripts/probe_verify_*.js, copied next to this page by the
 // runner), which alternate native and Phaser code frame by frame and compare vertex data, uniform
 // calls, draw calls and texture binds. Logs "[test] PASS/FAIL" lines and "[test] DONE ...".
@@ -108,6 +109,22 @@ class TestScene extends Phaser.Scene {
     box.add(this.add.nineslice(200, 10, "atlas", "panel", 120, 40, 4, 4, 4, 4));
     this.add.nineslice(500, 300, "atlas", "panel", 200, 60, 6, 6, 6, 6).setTint(0x88ccff);
 
+    // Graphics and shapes (fast paths 15, 16): fill/line styles + fillRect as PokeRogue's masks and
+    // bars use them, a gradient, a path (Phaser's renderer), rectangles, and geometry masks on a
+    // container and a sprite, nested.
+    this.add.graphics().fillStyle(0x44aa66, 0.8).fillRect(760, 260, 60, 20).lineStyle(2, 0xffffff, 1)
+      .fillGradientStyle(0xff0000, 0x00ff00, 0x0000ff, 0xffffff, 1, 0.8, 0.6, 0.4).fillRect(830, 260, 60, 20);
+    this.add.graphics().lineStyle(2, 0xffcc00, 1).strokeCircle(800, 330, 20).fillStyle(0x3366ff, 1).fillTriangle(840, 350, 880, 350, 860, 310);
+    this.add.rectangle(760, 380, 50, 16, 0xcc4444, 0.9).setOrigin(0, 0);
+    this.add.rectangle(830, 380, 50, 16, 0x44cccc).setStrokeStyle(2, 0xffffff);
+    const maskShape = this.make.graphics().fillStyle(0xffffff).fillRect(40, 380, 200, 30);
+    const masked = this.add.container(40, 370);
+    for (let i = 0; i < 12; i++) masked.add(this.add.image(i * 20, 10 + (i % 3) * 8, "atlas", "f" + (i % 8)));
+    masked.setMask(maskShape.createGeometryMask());
+    const inner = this.make.graphics().fillStyle(0xffffff).fillRect(100, 385, 60, 40);
+    masked.add(this.add.container(0, 0, [this.add.image(80, 20, "atlas", "f3").setScale(3).setMask(inner.createGeometryMask())]));
+    this.add.image(300, 400, "atlas", "f5").setScale(4).setMask(this.make.graphics().fillRect(290, 390, 20, 20).createGeometryMask().setInvertAlpha(true));
+
     this.cameras.main.setScroll(4, 2);
     this.frames = 0;
     this.game.events.on("postrender", () => this.frames++);
@@ -121,16 +138,17 @@ const nextFrames = (game, n) => new Promise((res) => {
   game.events.on("postrender", f);
 });
 
-async function probe(game, file, fn) {
+async function probe(game, file, fn, label) {
   const src = await (await fetch(file)).text();
   const armed = (0, eval)(src);
-  if (armed !== "armed") return report(file, false, String(armed));
+  const name = label ? file + " (" + label + ")" : file;
+  if (armed !== "armed") return report(name, false, String(armed));
   await nextFrames(game, 14);
   const out = globalThis[fn]();
   // Every compared pair must be identical (and not empty, e.g. "identical (0 calls)" is suspicious).
-  const parts = out.split(" | ");
+  const parts = out.split(" | ").filter((p) => !/^\d+ functions$/.test(p));
   const bad = parts.filter((p) => !/: identical( \((\d+) calls\))?$/.test(p) || / \(0 calls\)$/.test(p));
-  report(file, bad.length === 0 && parts.length === 4, bad.length ? out : parts[0]);
+  report(name, bad.length === 0 && parts.length === 4, bad.length ? out : parts[0]);
 }
 
 async function run() {
@@ -159,6 +177,13 @@ async function run() {
   await probe(game, "probe_verify_render.js", "__vfy");
   await probe(game, "probe_verify_batching.js", "__vfb");
   await probe(game, "probe_verify_uniforms.js", "__vfu");
+  report("phaser: native pipeline machinery and shapes active",
+    !!(rt.pipelineSwaps && rt.graphicsSwap && rt.nineSliceSwap && rt.shapesSwap),
+    ["pipelineSwaps", "graphicsSwap", "nineSliceSwap", "shapesSwap"].filter((k) => !rt[k]).join(" "));
+  for (const which of ["pipeline", "graphics", "nineslice", "shapes"]) {
+    globalThis.__vfpWhich = which;
+    await probe(game, "probe_verify_pipeline.js", "__vfp", which);
+  }
   done();
 }
 
