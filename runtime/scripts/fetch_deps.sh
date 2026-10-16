@@ -8,7 +8,7 @@ clone() { # name url tag
   [ -d "third_party/$1" ] || git -c advice.detachedHead=false clone -q --depth 1 --branch "$3" "$2" "third_party/$1"
 }
 clone quickjs https://github.com/quickjs-ng/quickjs v0.17.0
-# Our patches (patches/quickjs-*.patch): a stack sampler for the built-in profiler.
+# Our patches (patches/quickjs-*.patch): a stack sampler for the built-in profiler, faster array paths.
 git -C third_party/quickjs checkout -q -- .
 for p in patches/quickjs-*.patch; do git -C third_party/quickjs apply "$PWD/$p"; done
 clone plutovg https://github.com/sammycage/plutovg v1.3.3

@@ -1,0 +1,55 @@
+Faster array paths in QuickJS-ng, with the same results (PokeRogue's sprite pipelines call
+`arr.splice(arr.length, 0, ...src)` and `map` hundreds of times per frame):
+- f(a, ...arr) with a plain array and the built-in iterator: elements are copied directly instead
+  of through an iterator object, and appended straight into the argument array.
+- ArraySpeciesCreate (splice, map, filter, slice, flat...): when the species is this realm's Array,
+  the array is created directly instead of through a generic constructor call.
+QuickJS-ng's tests/*.js give the same results with and without this patch.
+
+--- a/quickjs.c
++++ b/quickjs.c
+@@ -17340,6 +17340,30 @@
+                                        JS_ITERATOR_KIND_VALUE);
+     JS_FreeValue(ctx, iterator);
+ 
++    /* PKR: a fast array with the built-in iterator and %ArrayIteratorPrototype%.next is copied
++       without creating the iterator object (f(a, ...arr) in hot code paid ~1.5 us for it) */
++    if (is_array_iterator && js_get_fast_array(ctx, sp[-1], &arrp, &count32)) {
++        JSValue next = JS_GetProperty(ctx, ctx->class_proto[JS_CLASS_ARRAY_ITERATOR], JS_ATOM_next);
++        JSCFunctionType ftn = { .iterator_next = js_array_iterator_next };
++        bool builtin_next = JS_IsCFunction(ctx, next, ftn.generic, 0);
++        JS_FreeValue(ctx, next);
++        uint32_t len;
++        if (builtin_next && !js_get_length32(ctx, &len, sp[-1]) && len == count32 &&
++            js_get_fast_array(ctx, sp[-1], &arrp, &count32) && len == count32) {
++            JSObject *dst = JS_VALUE_GET_TAG(sp[-3]) == JS_TAG_OBJECT ? JS_VALUE_GET_OBJ(sp[-3]) : NULL;
++            bool append = dst && dst->class_id == JS_CLASS_ARRAY && dst->fast_array && dst->u.array.count == pos;
++            for (i = 0; i < count32; i++) {
++                int e = append ? add_fast_array_element(ctx, dst, js_dup(arrp[i]), JS_PROP_THROW)
++                               : JS_DefinePropertyValueUint32(ctx, sp[-3], pos, js_dup(arrp[i]), JS_PROP_C_W_E);
++                pos++;
++                if (e < 0)
++                    return -1;
++            }
++            sp[-2] = js_int32(pos);
++            return 0;
++        }
++    }
++
+     enumobj = JS_GetIterator(ctx, sp[-1], false);
+     if (JS_IsException(enumobj))
+         return -1;
+@@ -43296,6 +43320,13 @@
+     }
+     if (JS_IsUndefined(ctor)) {
+         return js_array_constructor(ctx, JS_UNDEFINED, 1, &len_val);
++    } else if (JS_VALUE_GET_TAG(ctor) == JS_TAG_OBJECT &&
++               JS_VALUE_GET_TAG(ctx->array_ctor) == JS_TAG_OBJECT &&
++               JS_VALUE_GET_OBJ(ctor) == JS_VALUE_GET_OBJ(ctx->array_ctor)) {
++        /* PKR: species is this realm's Array: same as `new Array(len)`, without the generic
++           constructor call (splice, map, filter and slice create their result arrays here) */
++        JS_FreeValue(ctx, ctor);
++        return js_array_constructor(ctx, JS_UNDEFINED, 1, &len_val);
+     } else {
+         ret = JS_CallConstructor(ctx, ctor, 1, &len_val);
+         JS_FreeValue(ctx, ctor);
