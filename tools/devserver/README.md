@@ -22,3 +22,7 @@ downloaded CI builds to `builds/` next to it.
 With `--logs-key L` (or `DEVSERVER_LOGS_KEY`), `GET /logs/?key=L` lists the saved logs and
 `GET /logs/latest.txt?key=L` returns one. That key only reads logs, so it can be given to Claude
 sessions on other machines (the project chat) without letting them upload or fetch builds.
+
+Cloud sessions can't reach that port. If `<dir>/gist-id` holds the id of a (secret) GitHub gist, each
+uploaded log is also copied into it as `latest.txt` and `latest-prev.txt` using `gh api`, whose login
+must be available to the service (`gh gist create latest.txt latest-prev.txt` makes the gist).
