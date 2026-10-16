@@ -39,9 +39,9 @@ show "dev" after the version.
 `tools/devserver/devserver.py` (Python standard library only) runs on any machine the console can
 reach, the internet included: the console opens every connection, so nothing on the home network
 is exposed. Once it is set up, after one install from VitaShell:
-- **New builds:** before the start screen the app asks the server for its newest build: the latest
-  CI dev `.vpk` (push runs; any branch, or the one in `devbranch=`), or with `--vpk` one built on that
-  machine. If it isn't the one running, the app asks, downloads it, replaces its own files in
+- **New builds:** before the start screen the app asks the server for the newest *published* build,
+  whatever branch it is from (see "Publishing" below), or, with `devbranch=<branch>` in `config.txt`,
+  the newest CI dev build of that branch. If it isn't the one running, the app asks, downloads it, replaces its own files in
   `ux0:app/PKRV00001` (eboot.bin, js/, cacert.pem) and restarts. `sce_sys/` (LiveArea, param.sfo)
   is left alone, so changes there still need an install from VitaShell. If installing fails, the
   download stays in `ux0:data/pokerogue/dev-update.vpk` for VitaShell. A build that was declined
@@ -53,9 +53,8 @@ is exposed. Once it is set up, after one install from VitaShell:
   that only reads logs, sessions elsewhere can fetch them too: `GET /logs/latest.txt?key=<logs key>`.
 
 Setup:
-1. On the server: `DEVSERVER_KEY=<secret> tools/devserver/devserver.py` (port 8765; `--vpk
-   runtime/build-vita-dev` to serve dev builds made there instead of CI's). CI builds need a GitHub token
-   (`gh auth login`, or `GITHUB_TOKEN`). Make a key with
+1. On the server: `DEVSERVER_KEY=<secret> tools/devserver/devserver.py` (port 8765). Publishing a
+   CI run and `devbranch=` need a GitHub token (`gh auth login`, or `GITHUB_TOKEN`). Make a key with
    `python3 -c 'import secrets; print(secrets.token_urlsafe(16))'`.
 2. In `ux0:data/pokerogue/config.txt` on the console:
    ```
@@ -66,6 +65,16 @@ Setup:
    nginx) and use an `https://` URL to avoid that.
 
 Even a dev build does nothing of this without `devserver=`.
+
+Publishing: consoles are offered only what was published on purpose, never a plain push or CI run,
+so work in progress on a branch can't replace the build being tested. On the server:
+```
+tools/devserver/publish.sh 38906897929 "native renderer: test the title screen"   # a CI run's dev artifact
+tools/devserver/publish.sh runtime/build-vita-dev/pokerogue-0.42-dev.vpk "label" --commit abc1234 --branch my-branch
+```
+The newest published build wins, so publishing an older one again is a rollback. The label (what to
+test) is shown on the console when it offers the update. Only `pokerogue-<version>-dev.vpk` files
+are accepted: a normal build can't update itself, so publishing one would end the update chain.
 
 ## Vita gotchas
 - CMake needs `-DCMAKE_TOOLCHAIN_FILE=$VITASDK/share/vita.toolchain.cmake`.
