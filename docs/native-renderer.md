@@ -46,9 +46,28 @@ calls into can be made cheaper, and everything around it can move to C.
      saving is mostly the JS calls and bytecode around them.
    - Making desktop test runs reach a battle reliably: `scripts/run_saved_battle.sh` (starts from
      a saved run, presses through by the game's UI mode).
-3. **Remaining game-object renderers:** Graphics (the HP/EXP bars, overlays), BitmapText,
-   Rectangle and other shapes, TileSprite, RenderTexture; Text in the cases the current fast path
-   skips.
+3. **Remaining game-object renderers. Done for what PokeRogue draws** (`src/fastpath.c`
+   "Graphics", "NineSlice", "Rectangle, GeometryMask"; `js/fastpath.js` parts 5, 15, 16):
+   - `Graphics.renderWebGL` for command buffers of fill/line styles and `fillRect` (all of the
+     game's Graphics in battles and menus are mask rectangles like that); paths, arcs and
+     transforms keep Phaser's renderer. Installed only if `Graphics` still writes 3.90's
+     command numbers.
+   - `NineSlice.renderWebGL` (window frames) wholly in C; before, only its vertex loop was.
+   - `Rectangle.renderWebGL` without stroke or rounded corners, and `GeometryMask`'s
+     `preRenderWebGL`/`applyStencil`/`postRenderWebGL`.
+   - Not done: BitmapText, TileSprite, RenderTexture, the other shapes. None of them showed up in
+     the battle or menu screens measured (`scripts/probe_costs.js`, which times each renderer
+     and the game's pipeline callbacks with draw calls skipped).
+   - Measured costs (desktop, draw calls skipped, 2026-10-16), before -> after, ms per frame:
+     pause menu over a battle: NineSlice 0.155 -> 0.108, Rectangle 0.050 -> 0.024, Graphics
+     0.052 -> 0.021. GeometryMask stays ~0.12: its time is the flush and the stencil clear, i.e.
+     GL work. Render time per frame, steps 2+3 against the code they replace
+     (`scripts/probe_pipeline_time.js`, ~1,600 frames each): pause menu 2.24 -> 2.04 ms, battle
+     command menu 2.20 -> 2.03 ms (-8 to -9%).
+   - Checked with `scripts/probe_verify_pipeline.js` (all 54 replaced functions, and each group
+     alone): identical WebGL calls in the battle command menu, during a move, the pause menu,
+     the settings screen. Of what's left of the render time, about half is the game's own
+     pipeline callbacks (`onBind`/`onBatch`/`batchQuad` of its sprite pipelines).
 4. **The render walk itself:** `WebGLRenderer.render` (cameras, display list, render lists,
    `preRender`/`postRender`), so the per-frame tree walk happens in C end to end.
 5. **Updates:** Tween and animation stepping for the common cases (numeric properties, standard

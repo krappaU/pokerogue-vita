@@ -366,6 +366,15 @@
     pipeline.currentBatch.count = pipeline.vertexCount - pipeline.currentBatch.start;
     renderer.pipelines.postBatch(src);
   }
+  // All of it in C when available (src/fastpath.c "NineSlice"); localStorage PKR_NATIVE_NINESLICE=0
+  // keeps the version above.
+  let nineSliceFast = nineSliceRender;
+  try {
+    if (g.__native.nineSliceSetup && GetCalcMatrix && g.localStorage.getItem("PKR_NATIVE_NINESLICE") !== "0") {
+      nineSliceFast = g.__native.nineSliceSetup(origNineSlice);
+      g.__rt.nineSliceSwap = [[NSP, "renderWebGL", nineSliceRender, nineSliceFast]];
+    }
+  } catch (e) { nineSliceFast = nineSliceRender; }
   NSP.renderWebGL = nineSliceRender;
 
   // 6. CanvasPool.create / remove: Phaser keeps one array of pooled canvases and scans all of it
@@ -780,12 +789,60 @@
     for (const [o, k, , f] of g.__rt.pipelineSwaps) o[k] = f;
   }
 
+  // 15. Graphics.renderWebGL in C for command buffers of fill/line styles and fillRect (PokeRogue's
+  //     masks and bars; src/fastpath.c "Graphics"), Phaser's renderer for anything else. Only if
+  //     Graphics still writes Phaser 3.90's command numbers and the renderer looks like 3.90's.
+  //     localStorage PKR_NATIVE_GRAPHICS=0 keeps Phaser's; __rt.graphicsSwap for the probes.
+  const GP = Phaser.GameObjects.Graphics && Phaser.GameObjects.Graphics.prototype;
+  let nativeGraphics = !!(GP && g.__native.graphicsSetup && MP.batchFillRect);
+  try { if (g.localStorage.getItem("PKR_NATIVE_GRAPHICS") === "0") nativeGraphics = false; } catch (e) { /* keep */ }
+  if (nativeGraphics) {
+    const fake = { commandBuffer: [] };
+    try {
+      GP.beginPath.call(fake); GP.fillStyle.call(fake, 0x123456, 0.5); GP.fillRect.call(fake, 1, 2, 3, 4);
+      GP.lineStyle.call(fake, 2, 0x654321, 0.25); GP.fillGradientStyle.call(fake, 1, 2, 3, 4, 0.1, 0.2, 0.3, 0.4);
+      GP.lineGradientStyle.call(fake, 3, 5, 6, 7, 8, 0.6); GP.closePath.call(fake);
+    } catch (e) { fake.commandBuffer = null; }
+    const want = [1, 7, 0x123456, 0.5, 3, 1, 2, 3, 4, 6, 2, 0x654321, 0.25, 21, 0.1, 0.2, 0.3, 0.4, 1, 2, 3, 4, 22, 3, 0.6, 5, 6, 7, 8, 2];
+    const rs = String(GP.renderWebGL), fr = String(MP.batchFillRect);
+    nativeGraphics = !!fake.commandBuffer && fake.commandBuffer.join() === want.join() &&
+      /commandBuffer[\s\S]*getTintAppendFloatAlpha[\s\S]*FILL_RECT[\s\S]*batchFillRect/.test(rs) &&
+      /pipelines\.set\(this\)[\s\S]*multiply[\s\S]*setQuad[\s\S]*batchQuad\(null/.test(fr);
+  }
+  if (nativeGraphics) {
+    const nat = g.__native.graphicsSetup({ render: GP.renderWebGL, batchFillRect: MP.batchFillRect });
+    g.__rt.graphicsSwap = [[GP, "renderWebGL", GP.renderWebGL, nat]];
+    GP.renderWebGL = nat;
+  }
+
+  // 16. Rectangle.renderWebGL (fill only) and GeometryMask's stencil handling in C (src/fastpath.c
+  //     "Rectangle, GeometryMask"), if their code still looks like Phaser 3.90's.
+  //     localStorage PKR_NATIVE_SHAPES=0 keeps Phaser's; __rt.shapesSwap for the probes.
+  const RP2 = Phaser.GameObjects.Rectangle && Phaser.GameObjects.Rectangle.prototype;
+  const GMP = Phaser.Display.Masks.GeometryMask && Phaser.Display.Masks.GeometryMask.prototype;
+  let nativeShapes = !!(RP2 && GMP && g.__native.shapesSetup && MP.batchFillRect);
+  try { if (g.localStorage.getItem("PKR_NATIVE_SHAPES") === "0") nativeShapes = false; } catch (e) { /* keep */ }
+  if (nativeShapes) {
+    const ok = (f, re) => typeof f === "function" && re.test(String(f));
+    nativeShapes = ok(RP2.renderWebGL, /isRounded[\s\S]*isFilled[\s\S]*fillTint[\s\S]*batchFillRect[\s\S]*isStroked/) &&
+      ok(GMP.preRenderWebGL, /STENCIL_TEST[\s\S]*maskCount[\s\S]*currentCameraMask[\s\S]*maskStack\.push[\s\S]*applyStencil/) &&
+      ok(GMP.applyStencil, /colorMask[\s\S]*INCR[\s\S]*DECR[\s\S]*renderWebGL[\s\S]*invertAlpha/) &&
+      ok(GMP.postRenderWebGL, /maskStack\.pop[\s\S]*STENCIL_TEST[\s\S]*applyStencil/);
+  }
+  if (nativeShapes) {
+    const n = g.__native.shapesSetup({ rectRender: RP2.renderWebGL });
+    g.__rt.shapesSwap = [[RP2, "renderWebGL", n.rectRender], [GMP, "preRenderWebGL", n.gmPreRender],
+      [GMP, "postRenderWebGL", n.gmPostRender], [GMP, "applyStencil", n.gmApplyStencil]].map(([o, k, f]) => [o, k, o[k], f]);
+    for (const [o, k, , f] of g.__rt.shapesSwap) o[k] = f;
+  }
+
   g.__rt.fastpath = g.__fastpath = {
     available: typeof nbs === "function",
     set(on) {
       on = !!(on && nbs);
       enabled = on;
       MP.batchSprite = on ? fastBatchSprite : origSprite;
+      NSP.renderWebGL = on ? nineSliceFast : origNineSlice;
       Container.renderWebGL = on ? containerRender : origContainerRender;
     },
   };

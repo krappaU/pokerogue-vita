@@ -1,13 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Checks the C pipeline machinery (js/fastpath.js part 14: pipeline switching, setProgram,
-// setBlendMode, attribute pointers, the set1f... uniform wrappers) against Phaser's: with tweens,
-// animations and the game clock frozen, frames alternate between the two and every WebGL call
-// (arguments, objects numbered by first use) is recorded, each draw call with a hash of the
-// drawing pipeline's vertex bytes. Run: scripts/drive.sh "evalfile scripts/probe_verify_pipeline.js",
-// wait a few seconds, then "eval __vfp()".
+// Checks the C versions of Phaser code against Phaser's (or, for NineSlice, the JS fast path's):
+// the pipeline machinery (js/fastpath.js part 14: pipeline switching, setProgram, setBlendMode,
+// attribute pointers, the set1f... uniform wrappers), the Graphics renderer (part 15), the
+// NineSlice renderer (part 5), Rectangle and GeometryMask (part 16). globalThis.__vfpWhich =
+// "pipeline", "graphics", "nineslice" or "shapes" checks one of them. With tweens, animations and
+// the game clock frozen, frames alternate between the two and every WebGL call (arguments, objects
+// numbered by first use) is recorded, each draw call with a hash of the drawing pipeline's vertex
+// bytes. Run: scripts/drive.sh "evalfile scripts/probe_verify_pipeline.js", wait a few seconds,
+// then "eval __vfp()".
 (() => {
-  const game = __rt.renderer.game, gl = __rt.renderer.gl, swaps = __rt.pipelineSwaps;
-  if (!swaps) return "native pipeline machinery not active";
+  const game = __rt.renderer.game, gl = __rt.renderer.gl;
+  // which natives to alternate: "pipeline", "graphics", "nineslice", "shapes" or (default) all
+  const which = globalThis.__vfpWhich || "all";
+  const pick = (k) => which === "all" || which === k;
+  const swaps = [].concat(pick("pipeline") && __rt.pipelineSwaps || [], pick("graphics") && __rt.graphicsSwap || [],
+    pick("nineslice") && __rt.nineSliceSwap || [], pick("shapes") && __rt.shapesSwap || []);
+  if (!swaps.length) return "no native swaps active";
   const scene = game.scene.getScenes(true)[0];
   scene.tweens.pauseAll(); scene.anims.pauseAll();
   const t0 = game.getTime(), origGetTime = game.getTime;

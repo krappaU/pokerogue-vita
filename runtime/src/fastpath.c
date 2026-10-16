@@ -6,6 +6,7 @@
 // Utils.getTintAppendFloatAlpha and MultiPipeline.batchQuad. Matrices are float32 like Phaser's.
 
 #include <math.h>
+#include <stdlib.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -52,7 +53,9 @@ typedef struct {
 
 // The sprite's corners (MultiPipeline.batchSprite's matrix math and calcMatrix.setQuad), as
 // x0, y0, x1, y1, x2, y2, x3, y3 in float32 like Phaser's quad array.
-static void sprite_corners(float *out, const float *cam, const float *par, const sprite_quad *q) {
+// GetCalcMatrix's calc: camera (* parent, with the scroll offset) * the object's own matrix, from
+// q's gx, gy, rot, sx, sy, offX, offY. out: a, b, c, d, e, f as float32 like Phaser's matrices.
+static void calc_from(float *out, const float *cam, const float *par, const sprite_quad *q) {
     // Phaser's TransformMatrix math is done in doubles and stored in Float32Arrays: same here, so
     // that every stored value rounds exactly like Phaser's.
     // spriteMatrix.applyITRS(gx, gy, rotation, sx, sy)
@@ -85,6 +88,13 @@ static void sprite_corners(float *out, const float *cam, const float *par, const
     float d = (float)((double)sc * m[1] + (double)sd * m[3]);
     float e = (float)((double)se * m[0] + (double)sf * m[2] + m[4]);
     float f = (float)((double)se * m[1] + (double)sf * m[3] + m[5]);
+    out[0] = a, out[1] = b, out[2] = cc, out[3] = d, out[4] = e, out[5] = f;
+}
+
+static void sprite_corners(float *out, const float *cam, const float *par, const sprite_quad *q) {
+    float k[6];
+    calc_from(k, cam, par, q);
+    float a = k[0], b = k[1], cc = k[2], d = k[3], e = k[4], f = k[5];
 
     // setQuad
     double x = q->x, y = q->y, xw = q->x + q->w, yh = q->y + q->h;
@@ -157,24 +167,15 @@ static JSValue js_batch_sprite(JSContext *ctx, JSValueConst this_val, int argc, 
 //   vertices: [{vx, vy, u, v}], roundPixels, unit, tintEffect, tint) -> vertices written
 // The vertex loop of Phaser 3.90's NineSliceWebGLRenderer: TransformMatrix.getXRound/getYRound
 // per vertex (float64 math, Math.round), one shared tint.
-static JSValue js_batch_verts(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+// Writes n vertices {vx, vy, u, v} of `verts` at vf, transformed by m (a..f).
+static void write_verts(JSContext *ctx, float *vf, JSValueConst verts, int64_t n, const float *m, bool round,
+                        float unit, float effect, uint32_t t) {
     static JSAtom a_vx, a_vy, a_u, a_v;
     if (!a_vx) a_vx = JS_NewAtom(ctx, "vx"), a_vy = JS_NewAtom(ctx, "vy"), a_u = JS_NewAtom(ctx, "u"), a_v = JS_NewAtom(ctx, "v");
-    size_t size;
-    uint8_t *vb = JS_GetArrayBuffer(ctx, &size, argv[0]);
-    float *m = f32(ctx, argv[2]);
-    int64_t n = 0;
-    if (!vb || !m || JS_GetLength(ctx, argv[3], &n) < 0) return JS_ThrowTypeError(ctx, "batchVerts: bad arguments");
-    int64_t off = (int64_t)num(ctx, argv[1]);
-    if (off < 0 || (size_t)(off + n * 7) * 4 > size) return JS_ThrowRangeError(ctx, "batchVerts: vertex buffer too small");
-    bool round = JS_ToBool(ctx, argv[4]);
-    float unit = (float)num(ctx, argv[5]), effect = (float)num(ctx, argv[6]);
-    uint32_t t = (uint32_t)(int64_t)num(ctx, argv[7]);
     double a = m[0], b = m[1], c = m[2], d = m[3], e = m[4], f = m[5];
-    float *vf = (float *)vb + off;
-    uint32_t *vu = (uint32_t *)vb + off;
+    uint32_t *vu = (uint32_t *)vf;
     for (int64_t i = 0; i < n; i++) {
-        JSValue v = JS_GetPropertyInt64(ctx, argv[3], i);
+        JSValue v = JS_GetPropertyInt64(ctx, verts, i);
         JSValue jx = JS_GetProperty(ctx, v, a_vx), jy = JS_GetProperty(ctx, v, a_vy);
         JSValue ju = JS_GetProperty(ctx, v, a_u), jv = JS_GetProperty(ctx, v, a_v);
         double vx = num(ctx, jx), vy = num(ctx, jy);
@@ -185,6 +186,17 @@ static JSValue js_batch_verts(JSContext *ctx, JSValueConst this_val, int argc, J
         vf += 7, vu += 7;
         JS_FreeValue(ctx, jx), JS_FreeValue(ctx, jy), JS_FreeValue(ctx, ju), JS_FreeValue(ctx, jv), JS_FreeValue(ctx, v);
     }
+}
+static JSValue js_batch_verts(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    size_t size;
+    uint8_t *vb = JS_GetArrayBuffer(ctx, &size, argv[0]);
+    float *m = f32(ctx, argv[2]);
+    int64_t n = 0;
+    if (!vb || !m || JS_GetLength(ctx, argv[3], &n) < 0) return JS_ThrowTypeError(ctx, "batchVerts: bad arguments");
+    int64_t off = (int64_t)num(ctx, argv[1]);
+    if (off < 0 || (size_t)(off + n * 7) * 4 > size) return JS_ThrowRangeError(ctx, "batchVerts: vertex buffer too small");
+    write_verts(ctx, (float *)vb + off, argv[3], n, m, JS_ToBool(ctx, argv[4]), (float)num(ctx, argv[5]),
+                (float)num(ctx, argv[6]), (uint32_t)(int64_t)num(ctx, argv[7]));
     return JS_NewInt64(ctx, n);
 }
 
@@ -235,7 +247,7 @@ enum {
     A_setProgram, A_batch, A_activeTextures, A_texture, A_maxUnit, A_webGLTexture, A_topology, A_bytes, A_vertexSize,
     A_vertexBuffer, A_activeBuffer, A_setVertexBuffer, A_webGLBuffer, A__events, A_emit, A_onBeforeFlush, A_onAfterFlush,
     A_bufferData, A_activeTexture, A_bindTexture, A_drawArrays, A_bindBuffer, A_createBatch, A_unit, A_maxTextures,
-    A_setScrollFactorC, A_COUNT
+    A_setScrollFactorC, A_isStroked, A_isFilled, A_isRounded, A_fillColor, A_fillAlpha, A_maskCount, A_COUNT
 };
 static const char *atom_names[A_COUNT] = {
     "list", "length", "localTransform", "matrix", "x", "y", "_rotation", "_scaleX", "_scaleY", "hasPostPipeline",
@@ -256,7 +268,7 @@ static const char *atom_names[A_COUNT] = {
     "setProgram", "batch", "activeTextures", "texture", "maxUnit", "webGLTexture", "topology", "bytes", "vertexSize",
     "vertexBuffer", "activeBuffer", "setVertexBuffer", "webGLBuffer", "_events", "emit", "onBeforeFlush", "onAfterFlush",
     "bufferData", "activeTexture", "bindTexture", "drawArrays", "bindBuffer", "createBatch", "unit", "maxTextures",
-    "setScrollFactor",
+    "setScrollFactor", "isStroked", "isFilled", "isRounded", "fillColor", "fillAlpha", "maskCount",
 };
 static JSAtom AT[A_COUNT];
 
@@ -1702,6 +1714,500 @@ fail:
     return JS_EXCEPTION;
 }
 
+
+// ---------------------------------------------------------------- Graphics
+// Phaser 3.90's GraphicsWebGLRenderer for command buffers made only of fill/line styles and
+// fillRect (begin/closePath allowed): what PokeRogue's masks and bars use. Anything else (paths,
+// arcs, transforms) runs Phaser's renderer. The commands' values are Phaser 3.90's Commands,
+// checked by js/fastpath.js before this is installed.
+enum { GC_BEGIN_PATH = 1, GC_CLOSE_PATH = 2, GC_FILL_RECT = 3, GC_LINE_STYLE = 6, GC_FILL_STYLE = 7,
+       GC_GRADIENT_FILL_STYLE = 21, GC_GRADIENT_LINE_STYLE = 22 };
+static struct {
+    bool ready;
+    JSValue orig_render, mp_batch_fill_rect;
+    JSAtom commandBuffer, rotation, scaleX, scaleY, fillTint, strokeTint, TL, TR, BL, BR, calcMatrix, quad,
+        batchFillRect, vertices, tint, applyStencil, geometryMask, colorMask, stencilFunc, stencilOp, level,
+        invertAlpha, maskStack, clear, currentCameraMask, currentMask, camera, push, pop, disable;
+    JSValue ns_orig_render, rect_orig_render, gm_apply_stencil;
+} GR;
+
+static void gr_init(JSContext *ctx) {
+    if (!AT[0])
+        for (int i = 0; i < A_COUNT; i++) AT[i] = JS_NewAtom(ctx, atom_names[i]);
+    if (!PM.ready) pm_atoms(ctx), PM.ready = true;
+    if (GR.ready) return;
+#define X(n) GR.n = JS_NewAtom(ctx, #n);
+    X(commandBuffer) X(rotation) X(scaleX) X(scaleY) X(fillTint) X(strokeTint) X(TL) X(TR) X(BL) X(BR)
+    X(calcMatrix) X(quad) X(batchFillRect) X(vertices) X(tint) X(applyStencil) X(geometryMask) X(colorMask)
+    X(stencilFunc) X(stencilOp) X(level) X(invertAlpha) X(maskStack) X(clear) X(currentCameraMask) X(currentMask)
+    X(camera) X(push) X(pop) X(disable)
+#undef X
+    GR.ready = true;
+}
+
+// GetCalcMatrix(src, camera, parentMatrix).calc
+static int calc_matrix(JSContext *ctx, JSValueConst src, JSValueConst camera, JSValueConst parent, float *out) {
+    JSValue cm = G(camera, A_matrix), cmm = G(cm, A_matrix);
+    float *cam = f32(ctx, cmm);
+    JS_FreeValue(ctx, cm), JS_FreeValue(ctx, cmm);
+    float *par = NULL;
+    JSValue pm = JS_UNDEFINED;
+    if (JS_ToBool(ctx, parent) > 0) {
+        pm = G(parent, A_matrix);
+        par = f32(ctx, pm);
+    }
+    JS_FreeValue(ctx, pm); // the TransformMatrix keeps its array alive
+    if (!cam || (JS_ToBool(ctx, parent) > 0 && !par)) return -1;
+    double sx = gnum(ctx, camera, A_scrollX) * gnum(ctx, src, A_scrollFactorX);
+    double sy = gnum(ctx, camera, A_scrollY) * gnum(ctx, src, A_scrollFactorY);
+    double v;
+    JSValue t;
+#define NUMA(a) (t = JS_GetProperty(ctx, src, a), v = num(ctx, t), JS_FreeValue(ctx, t), v)
+    sprite_quad q = {.offX = -sx, .offY = -sy, .gx = gnum(ctx, src, A_x), .gy = gnum(ctx, src, A_y),
+                     .rot = NUMA(GR.rotation), .sx = NUMA(GR.scaleX), .sy = NUMA(GR.scaleY)};
+#undef NUMA
+    calc_from(out, cam, par, &q);
+    return 0;
+}
+
+static int set_tint4(JSContext *ctx, JSValueConst o, const uint32_t *t) {
+    JSAtom k[4] = {GR.TL, GR.TR, GR.BL, GR.BR};
+    for (int i = 0; i < 4; i++)
+        if (JS_SetProperty(ctx, o, k[i], JS_NewUint32(ctx, t[i])) < 0) return -1;
+    return 0;
+}
+
+// MultiPipeline.batchFillRect(x, y, w, h, currentMatrix, parentMatrix) on pipeline p (Phaser's, checked by
+// the caller): pipelines.set(this); with `calc`, calcMatrix = calc * identity (Graphics), else the
+// calcMatrix as it is (Rectangle); quad = calcMatrix.setQuad(...); batchQuad(null, quad, 0, 0, 1, 1,
+// fillTint.TL/TR/BL/BR, 2)
+static int fill_rect(JSContext *ctx, JSValueConst mgr, JSValueConst p, JSValueConst fill, double x, double y,
+                     double w, double h, const float *calc) {
+    if (call0(ctx, mgr, A_set, 1, &p)) return -1;
+    JSValue cmo = JS_GetProperty(ctx, p, GR.calcMatrix), cmm = G(cmo, A_matrix), quad = JS_GetProperty(ctx, cmo, GR.quad);
+    float *m = f32(ctx, cmm), *qd = f32(ctx, quad);
+    JS_FreeValue(ctx, cmo), JS_FreeValue(ctx, cmm), JS_FreeValue(ctx, quad); // the pipeline keeps them
+    if (!m || !qd) {
+        if (!JS_HasException(ctx)) JS_ThrowTypeError(ctx, "batchFillRect: bad calcMatrix");
+        return -1;
+    }
+    if (calc) {
+        static const float id[6] = {1, 0, 0, 1, 0, 0};
+        m[0] = (double)id[0] * calc[0] + (double)id[1] * calc[2];
+        m[1] = (double)id[0] * calc[1] + (double)id[1] * calc[3];
+        m[2] = (double)id[2] * calc[0] + (double)id[3] * calc[2];
+        m[3] = (double)id[2] * calc[1] + (double)id[3] * calc[3];
+        m[4] = (double)id[4] * calc[0] + (double)id[5] * calc[2] + calc[4];
+        m[5] = (double)id[4] * calc[1] + (double)id[5] * calc[3] + calc[5];
+    }
+    double xw = x + w, yh = y + h, a = m[0], b = m[1], cc = m[2], d = m[3], e = m[4], f = m[5];
+    qd[0] = x * a + y * cc + e, qd[1] = x * b + y * d + f;
+    qd[2] = x * a + yh * cc + e, qd[3] = x * b + yh * d + f;
+    qd[4] = xw * a + yh * cc + e, qd[5] = xw * b + yh * d + f;
+    qd[6] = xw * a + y * cc + e, qd[7] = xw * b + y * d + f;
+    JSValueConst args[18];
+    args[0] = JS_NULL;
+    for (int k = 0; k < 8; k++) args[1 + k] = JS_NewFloat64(ctx, qd[k]);
+    args[9] = JS_NewInt32(ctx, 0), args[10] = JS_NewInt32(ctx, 0), args[11] = JS_NewInt32(ctx, 1), args[12] = JS_NewInt32(ctx, 1);
+    JSAtom tk[4] = {GR.TL, GR.TR, GR.BL, GR.BR};
+    for (int k = 0; k < 4; k++) args[13 + k] = JS_GetProperty(ctx, fill, tk[k]);
+    args[17] = JS_NewInt32(ctx, 2);
+    int e2 = call0(ctx, p, A_batchQuad, 18, args);
+    for (int k = 0; k < 4; k++) JS_FreeValue(ctx, (JSValue)args[13 + k]);
+    return e2;
+}
+
+// renderWebGL(renderer, src, camera, parentMatrix)
+static JSValue js_graphics_render(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    JSValueConst renderer = argv[0], src = argv[1], camera = argv[2], parent = argv[3];
+    JSValue cmds = JS_GetProperty(ctx, src, GR.commandBuffer);
+    int64_t n = 0;
+    if (JS_IsException(cmds) || JS_GetLength(ctx, cmds, &n) < 0) {
+        JS_FreeValue(ctx, cmds);
+        return JS_EXCEPTION;
+    }
+    if (n == 0) {
+        JS_FreeValue(ctx, cmds);
+        return JS_UNDEFINED;
+    }
+    // Command words and their arguments, as doubles; anything unusual goes to Phaser's renderer.
+    double stack_buf[64], *c = n <= 64 ? stack_buf : malloc(n * sizeof(double));
+    bool simple = c != NULL;
+    for (int64_t i = 0; simple && i < n; i++) {
+        JSValue e = JS_GetPropertyInt64(ctx, cmds, i);
+        simple = JS_IsNumber(e);
+        if (simple) c[i] = num(ctx, e);
+        JS_FreeValue(ctx, e);
+    }
+    JS_FreeValue(ctx, cmds);
+    for (int64_t i = 0; simple && i < n; i++) {
+        int args;
+        switch ((int)c[i] == c[i] ? (int)c[i] : -1) {
+        case GC_BEGIN_PATH: case GC_CLOSE_PATH: args = 0; break;
+        case GC_FILL_RECT: args = 4; break;
+        case GC_LINE_STYLE: args = 3; break;
+        case GC_FILL_STYLE: args = 2; break;
+        case GC_GRADIENT_FILL_STYLE: args = 8; break;
+        case GC_GRADIENT_LINE_STYLE: args = 6; break;
+        default: args = -1;
+        }
+        if (args < 0 || i + args >= n) simple = false;
+        i += args > 0 ? args : 0;
+    }
+    // a pipeline with its own batchFillRect (or a post-FX one): Phaser's renderer
+    if (simple) {
+        JSValue sp = G(src, A_pipeline);
+        simple = JS_IsObject(sp) && psame(ctx, sp, GR.batchFillRect, GR.mp_batch_fill_rect);
+        JS_FreeValue(ctx, sp);
+    }
+    if (!simple) {
+        if (c != stack_buf) free(c);
+        return JS_Call(ctx, GR.orig_render, this_val, argc, argv);
+    }
+    JSValue mgr = JS_UNDEFINED, p = JS_UNDEFINED, fill = JS_UNDEFINED, stroke = JS_UNDEFINED;
+    JSValue ret = JS_EXCEPTION;
+    if (call0(ctx, camera, A_addToRenderList, 1, &src)) goto out;
+    mgr = JS_GetProperty(ctx, renderer, PA_pipelines);
+    {
+        JSValue sp = G(src, A_pipeline);
+        JSValueConst args[2] = {sp, src};
+        p = call(ctx, mgr, A_set, 2, args);
+        JS_FreeValue(ctx, sp);
+        if (JS_IsException(p)) goto out;
+    }
+    if (call0(ctx, mgr, A_preBatch, 1, &src)) goto out;
+    float calc[6];
+    if (calc_matrix(ctx, src, camera, parent, calc)) {
+        if (!JS_HasException(ctx)) JS_ThrowTypeError(ctx, "Graphics: bad matrices");
+        goto out;
+    }
+    double alpha = gnum(ctx, camera, A_alpha) * gnum(ctx, src, A_alpha);
+    fill = JS_GetProperty(ctx, p, GR.fillTint);
+    stroke = JS_GetProperty(ctx, p, GR.strokeTint);
+    if (JS_IsException(fill) || JS_IsException(stroke)) goto out;
+    for (int64_t i = 0; i < n; i++) {
+        uint32_t t[4];
+        switch ((int)c[i]) {
+        case GC_LINE_STYLE:
+            t[0] = t[1] = t[2] = t[3] = tint(c[i + 2], c[i + 3] * alpha);
+            if (set_tint4(ctx, stroke, t)) goto out;
+            i += 3;
+            break;
+        case GC_FILL_STYLE:
+            t[0] = t[1] = t[2] = t[3] = tint(c[i + 1], c[i + 2] * alpha);
+            if (set_tint4(ctx, fill, t)) goto out;
+            i += 2;
+            break;
+        case GC_GRADIENT_FILL_STYLE:
+            for (int k = 0; k < 4; k++) t[k] = tint(c[i + 5 + k], c[i + 1 + k] * alpha);
+            if (set_tint4(ctx, fill, t)) goto out;
+            i += 8;
+            break;
+        case GC_GRADIENT_LINE_STYLE:
+            for (int k = 0; k < 4; k++) t[k] = tint(c[i + 3 + k], c[i + 2] * alpha);
+            if (set_tint4(ctx, stroke, t)) goto out;
+            i += 6;
+            break;
+        case GC_FILL_RECT: {
+            double x = c[i + 1], y = c[i + 2], w = c[i + 3], h = c[i + 4];
+            i += 4;
+            if (fill_rect(ctx, mgr, p, fill, x, y, w, h, calc)) goto out;
+            break;
+        }
+        default: // begin/closePath: nothing to do without path commands
+            break;
+        }
+    }
+    if (call0(ctx, mgr, A_postBatch, 1, &src)) goto out;
+    ret = JS_UNDEFINED;
+out:
+    if (c != stack_buf) free(c);
+    JS_FreeValue(ctx, mgr), JS_FreeValue(ctx, p), JS_FreeValue(ctx, fill), JS_FreeValue(ctx, stroke);
+    return ret;
+}
+
+// graphicsSetup({render: Phaser's renderWebGL, batchFillRect: MultiPipeline's}) -> the native renderWebGL
+static JSValue js_graphics_setup(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    if (!AT[0])
+        for (int i = 0; i < A_COUNT; i++) AT[i] = JS_NewAtom(ctx, atom_names[i]);
+    gr_init(ctx);
+    JS_FreeValue(ctx, GR.orig_render), JS_FreeValue(ctx, GR.mp_batch_fill_rect);
+    GR.orig_render = JS_GetPropertyStr(ctx, argv[0], "render");
+    GR.mp_batch_fill_rect = JS_GetPropertyStr(ctx, argv[0], "batchFillRect");
+    return JS_NewCFunction(ctx, js_graphics_render, "renderWebGL", 4);
+}
+
+// ---------------------------------------------------------------- NineSlice
+// NineSlice.renderWebGL (the game's window frames, 54 vertices each): Phaser 3.90's
+// NineSliceWebGLRenderer, except that a batch without room for all vertices is flushed first
+// instead of mid-way (as js/fastpath.js part 5 did). Pipelines with another vertex layout or
+// too small a buffer use Phaser's.
+static JSValue js_nineslice_render(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    JSValueConst renderer = argv[0], src = argv[1], camera = argv[2], parent = argv[3];
+    JSValue verts = JS_GetProperty(ctx, src, GR.vertices);
+    int64_t n = 0;
+    if (JS_IsException(verts) || JS_GetLength(ctx, verts, &n) < 0) {
+        JS_FreeValue(ctx, verts);
+        return JS_EXCEPTION;
+    }
+    if (n == 0) {
+        JS_FreeValue(ctx, verts);
+        return JS_UNDEFINED;
+    }
+    JSValue sp = G(src, A_pipeline), mgr = JS_UNDEFINED, p = JS_UNDEFINED, ret = JS_EXCEPTION;
+    bool fast = false;
+    if (JS_IsObject(sp)) {
+        JSValue sh = G(sp, A_currentShader);
+        fast = JS_IsObject(sh) && gnum(ctx, sh, A_vertexComponentCount) == 7 && gnum(ctx, sp, A_vertexCapacity) >= n;
+        JS_FreeValue(ctx, sh);
+    }
+    if (!fast) {
+        JS_FreeValue(ctx, verts), JS_FreeValue(ctx, sp);
+        return JS_Call(ctx, GR.ns_orig_render, this_val, argc, argv);
+    }
+    if (call0(ctx, camera, A_addToRenderList, 1, &src)) goto out;
+    mgr = JS_GetProperty(ctx, renderer, PA_pipelines);
+    {
+        JSValueConst args[2] = {sp, src};
+        p = call(ctx, mgr, A_set, 2, args);
+        if (JS_IsException(p)) goto out;
+    }
+    float calc[6];
+    if (calc_matrix(ctx, src, camera, parent, calc)) {
+        if (!JS_HasException(ctx)) JS_ThrowTypeError(ctx, "NineSlice: bad matrices");
+        goto out;
+    }
+    if (call0(ctx, mgr, A_preBatch, 1, &src)) goto out;
+    if (gnum(ctx, p, A_vertexCapacity) - gnum(ctx, p, A_vertexCount) < n && call0(ctx, p, A_flush, 0, NULL)) goto out;
+    JSValue unitv;
+    if (gsame(ctx, p, A_setGameObject, H.wp_set_game_object)) { // pushBatch(src.frame.source.glTexture)
+        JSValue fr = G(src, A_frame), so = G(fr, A_source), tex = G(so, A_glTexture);
+        unitv = JS_IsException(tex) ? JS_EXCEPTION : push_batch(ctx, p, tex);
+        JS_FreeValue(ctx, fr), JS_FreeValue(ctx, so), JS_FreeValue(ctx, tex);
+    } else {
+        unitv = call(ctx, p, A_setGameObject, 1, &src);
+    }
+    if (JS_IsException(unitv)) goto out;
+    double unit = num(ctx, unitv);
+    JS_FreeValue(ctx, unitv);
+    JSValue tv = JS_GetProperty(ctx, src, GR.tint);
+    double tintv = num(ctx, tv);
+    JS_FreeValue(ctx, tv);
+    uint32_t t = tint(tintv, gnum(ctx, camera, A_alpha) * gnum(ctx, src, A_alpha));
+    JSValue vd = G(p, A_vertexData), cam_round = G(camera, A_roundPixels), effect = G(src, A_tintFill);
+    size_t size = 0;
+    uint8_t *vb = JS_GetArrayBuffer(ctx, &size, vd);
+    double count = gnum(ctx, p, A_vertexCount);
+    bool ok = vb && (size_t)((count + n) * 7 * 4) <= size;
+    if (ok)
+        write_verts(ctx, (float *)vb + (int64_t)count * 7, verts, n, calc, JS_ToBool(ctx, cam_round) > 0, (float)unit,
+                    (float)num(ctx, effect), t);
+    JS_FreeValue(ctx, vd), JS_FreeValue(ctx, cam_round), JS_FreeValue(ctx, effect);
+    if (!ok) {
+        JS_ThrowRangeError(ctx, "NineSlice: vertex buffer too small");
+        goto out;
+    }
+    count += n;
+    sset(ctx, p, A_vertexCount, JS_NewInt64(ctx, (int64_t)count));
+    JSValue cb = G(p, A_currentBatch);
+    if (JS_IsObject(cb)) sset(ctx, cb, A_count, JS_NewInt64(ctx, (int64_t)(count - gnum(ctx, cb, A_start))));
+    JS_FreeValue(ctx, cb);
+    if (call0(ctx, mgr, A_postBatch, 1, &src)) goto out;
+    ret = JS_UNDEFINED;
+out:
+    JS_FreeValue(ctx, verts), JS_FreeValue(ctx, sp), JS_FreeValue(ctx, mgr), JS_FreeValue(ctx, p);
+    return ret;
+}
+// nineSliceSetup(Phaser's renderWebGL) -> the native renderWebGL
+static JSValue js_nineslice_setup(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    gr_init(ctx);
+    JS_FreeValue(ctx, GR.ns_orig_render);
+    GR.ns_orig_render = JS_DupValue(ctx, argv[0]);
+    return JS_NewCFunction(ctx, js_nineslice_render, "renderWebGL", 4);
+}
+
+// ---------------------------------------------------------------- Rectangle, GeometryMask
+// Rectangle.renderWebGL for a filled or empty rectangle without stroke or rounded corners (Phaser
+// 3.90's RectangleWebGLRenderer), Phaser's renderer otherwise.
+static JSValue js_rect_render(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    JSValueConst renderer = argv[0], src = argv[1], camera = argv[2], parent = argv[3];
+    bool stroked = gbool(ctx, src, A_isStroked), filled = gbool(ctx, src, A_isFilled);
+    bool rounded = filled && gbool(ctx, src, A_isRounded);
+    JSValue sp = G(src, A_pipeline);
+    bool fast = !stroked && !rounded && JS_IsObject(sp) && psame(ctx, sp, GR.batchFillRect, GR.mp_batch_fill_rect);
+    JS_FreeValue(ctx, sp);
+    if (!fast) return JS_Call(ctx, GR.rect_orig_render, this_val, argc, argv);
+    JSValue mgr = JS_UNDEFINED, p = JS_UNDEFINED, fill = JS_UNDEFINED, ret = JS_EXCEPTION;
+    if (call0(ctx, camera, A_addToRenderList, 1, &src)) goto out;
+    mgr = JS_GetProperty(ctx, renderer, PA_pipelines);
+    sp = G(src, A_pipeline);
+    p = call(ctx, mgr, A_set, 1, (JSValueConst *)&sp); // renderer.pipelines.set(src.pipeline)
+    JS_FreeValue(ctx, sp);
+    if (JS_IsException(p)) goto out;
+    float calc[6];
+    if (calc_matrix(ctx, src, camera, parent, calc)) {
+        if (!JS_HasException(ctx)) JS_ThrowTypeError(ctx, "Rectangle: bad matrices");
+        goto out;
+    }
+    { // pipeline.calcMatrix.copyFrom(calc)
+        JSValue cmo = JS_GetProperty(ctx, p, GR.calcMatrix), cmm = G(cmo, A_matrix);
+        float *m = f32(ctx, cmm);
+        JS_FreeValue(ctx, cmo), JS_FreeValue(ctx, cmm);
+        if (!m) {
+            if (!JS_HasException(ctx)) JS_ThrowTypeError(ctx, "Rectangle: bad calcMatrix");
+            goto out;
+        }
+        memcpy(m, calc, sizeof calc);
+    }
+    double dx = gnum(ctx, src, A__displayOriginX), dy = gnum(ctx, src, A__displayOriginY);
+    double alpha = gnum(ctx, camera, A_alpha) * gnum(ctx, src, A_alpha);
+    if (call0(ctx, mgr, A_preBatch, 1, &src)) goto out;
+    if (filled) {
+        fill = JS_GetProperty(ctx, p, GR.fillTint);
+        if (JS_IsException(fill)) goto out;
+        uint32_t t[4];
+        t[0] = t[1] = t[2] = t[3] = tint(gnum(ctx, src, A_fillColor), gnum(ctx, src, A_fillAlpha) * alpha);
+        if (set_tint4(ctx, fill, t)) goto out;
+        if (fill_rect(ctx, mgr, p, fill, -dx, -dy, gnum(ctx, src, A_width), gnum(ctx, src, A_height), NULL)) goto out;
+    }
+    if (call0(ctx, mgr, A_postBatch, 1, &src)) goto out;
+    ret = JS_UNDEFINED;
+out:
+    JS_FreeValue(ctx, mgr), JS_FreeValue(ctx, p), JS_FreeValue(ctx, fill);
+    return ret;
+}
+
+// GeometryMask.applyStencil(renderer, camera, inc)
+static int apply_stencil(JSContext *ctx, JSValueConst mask, JSValueConst renderer, JSValueConst camera, bool inc) {
+    if (!psame(ctx, mask, GR.applyStencil, GR.gm_apply_stencil)) {
+        JSValueConst args[3] = {renderer, camera, JS_NewBool(ctx, inc)};
+        return pcall0(ctx, mask, GR.applyStencil, 3, args);
+    }
+    JSValue gl = G(renderer, A_gl), gm = JS_GetProperty(ctx, mask, GR.geometryMask);
+    double level = gnum(ctx, renderer, A_maskCount);
+    int e = -1;
+    JSValueConst f4[4] = {JS_FALSE, JS_FALSE, JS_FALSE, JS_FALSE}, t4[4] = {JS_TRUE, JS_TRUE, JS_TRUE, JS_TRUE};
+    if (pcall0(ctx, gl, GR.colorMask, 4, f4)) goto out;
+    {
+        JSValueConst fa[3] = {JS_NewInt32(ctx, 0x0202), JS_NewFloat64(ctx, inc ? level : level + 1), JS_NewInt32(ctx, 0xff)};
+        JSValueConst oa[3] = {JS_NewInt32(ctx, 0x1E00), JS_NewInt32(ctx, 0x1E00), JS_NewInt32(ctx, inc ? 0x1E02 : 0x1E03)};
+        if (pcall0(ctx, gl, GR.stencilFunc, 3, fa) || pcall0(ctx, gl, GR.stencilOp, 3, oa)) goto out;
+    }
+    if (inc) level++;
+    if (JS_SetProperty(ctx, mask, GR.level, JS_NewFloat64(ctx, level)) < 0) goto out;
+    {
+        JSValueConst args[3] = {renderer, gm, camera};
+        if (call0(ctx, gm, A_renderWebGL, 3, args)) goto out;
+    }
+    if (renderer_flush(ctx, renderer)) goto out;
+    if (pcall0(ctx, gl, GR.colorMask, 4, t4)) goto out;
+    {
+        JSValueConst oa[3] = {JS_NewInt32(ctx, 0x1E00), JS_NewInt32(ctx, 0x1E00), JS_NewInt32(ctx, 0x1E00)};
+        if (pcall0(ctx, gl, GR.stencilOp, 3, oa)) goto out;
+        JSValue inv = JS_GetProperty(ctx, mask, GR.invertAlpha);
+        bool invert = JS_ToBool(ctx, inv) > 0;
+        JS_FreeValue(ctx, inv);
+        JSValueConst fa[3] = {JS_NewInt32(ctx, invert ? 0x0205 : 0x0202), JS_NewFloat64(ctx, level), JS_NewInt32(ctx, 0xff)};
+        if (pcall0(ctx, gl, GR.stencilFunc, 3, fa)) goto out;
+    }
+    e = 0;
+out:
+    JS_FreeValue(ctx, gl), JS_FreeValue(ctx, gm);
+    return e;
+}
+static JSValue js_gm_apply_stencil(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    return apply_stencil(ctx, this_val, argv[0], argv[1], JS_ToBool(ctx, argv[2]) > 0) ? JS_EXCEPTION : JS_UNDEFINED;
+}
+static int add_count(JSContext *ctx, JSValueConst renderer, int d) {
+    return JS_SetProperty(ctx, renderer, AT[A_maskCount], JS_NewFloat64(ctx, gnum(ctx, renderer, A_maskCount) + d)) < 0 ? -1 : 0;
+}
+// GeometryMask.preRenderWebGL(renderer, child, camera)
+static JSValue js_gm_pre_render(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    JSValueConst renderer = argv[0], camera = argv[2];
+    JSValue gl = G(renderer, A_gl), stack = JS_UNDEFINED, ccm = JS_UNDEFINED, cm = JS_UNDEFINED, ccmm = JS_UNDEFINED;
+    JSValue ret = JS_EXCEPTION;
+    int64_t n = 0;
+    if (renderer_flush(ctx, renderer)) goto out;
+    stack = JS_GetProperty(ctx, renderer, GR.maskStack);
+    if (JS_IsException(stack) || JS_GetLength(ctx, stack, &n) < 0) goto out;
+    if (n == 0) {
+        JSValueConst st = JS_NewInt32(ctx, 0x0B90), bit = JS_NewInt32(ctx, 0x400);
+        if (pcall0(ctx, gl, PA_enable, 1, &st) || pcall0(ctx, gl, GR.clear, 1, &bit)) goto out;
+        if (JS_SetProperty(ctx, renderer, AT[A_maskCount], JS_NewInt32(ctx, 0)) < 0) goto out;
+    }
+    ccm = JS_GetProperty(ctx, renderer, GR.currentCameraMask);
+    ccmm = JS_IsException(ccm) ? JS_EXCEPTION : G(ccm, A_mask);
+    if (JS_IsException(ccmm)) goto out;
+    if (!JS_IsStrictEqual(ctx, ccmm, this_val)) {
+        cm = JS_GetProperty(ctx, renderer, GR.currentMask);
+        if (JS_IsException(cm) || JS_SetProperty(ctx, cm, AT[A_mask], JS_DupValue(ctx, this_val)) < 0) goto out;
+    }
+    {
+        JSValue entry = JS_NewObject(ctx);
+        JS_SetProperty(ctx, entry, AT[A_mask], JS_DupValue(ctx, this_val));
+        JS_SetProperty(ctx, entry, GR.camera, JS_DupValue(ctx, camera));
+        int e = pcall0(ctx, stack, GR.push, 1, (JSValueConst *)&entry);
+        JS_FreeValue(ctx, entry);
+        if (e) goto out;
+    }
+    if (apply_stencil(ctx, this_val, renderer, camera, true) || add_count(ctx, renderer, 1)) goto out;
+    ret = JS_UNDEFINED;
+out:
+    JS_FreeValue(ctx, gl), JS_FreeValue(ctx, stack), JS_FreeValue(ctx, ccm), JS_FreeValue(ctx, ccmm), JS_FreeValue(ctx, cm);
+    return ret;
+}
+// GeometryMask.postRenderWebGL(renderer)
+static JSValue js_gm_post_render(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    JSValueConst renderer = argv[0];
+    JSValue gl = G(renderer, A_gl), stack = JS_UNDEFINED, cur = JS_UNDEFINED, prev = JS_UNDEFINED, pm = JS_UNDEFINED,
+            pc = JS_UNDEFINED, ccm = JS_UNDEFINED, ccmm = JS_UNDEFINED;
+    JSValue ret = JS_EXCEPTION;
+    int64_t n = 0;
+    stack = JS_GetProperty(ctx, renderer, GR.maskStack);
+    if (JS_IsException(stack) || pcall0(ctx, stack, GR.pop, 0, NULL)) goto out;
+    if (add_count(ctx, renderer, -1) || renderer_flush(ctx, renderer)) goto out;
+    cur = JS_GetProperty(ctx, renderer, GR.currentMask);
+    if (JS_IsException(cur) || JS_GetLength(ctx, stack, &n) < 0) goto out;
+    if (n == 0) {
+        if (JS_SetProperty(ctx, cur, AT[A_mask], JS_NULL) < 0) goto out;
+        JSValueConst st = JS_NewInt32(ctx, 0x0B90);
+        if (pcall0(ctx, gl, GR.disable, 1, &st)) goto out;
+    } else {
+        prev = JS_GetPropertyInt64(ctx, stack, n - 1);
+        pm = G(prev, A_mask);
+        pc = JS_GetProperty(ctx, prev, GR.camera);
+        if (JS_IsException(pm) || JS_IsException(pc)) goto out;
+        if (apply_stencil(ctx, pm, renderer, pc, false)) goto out;
+        ccm = JS_GetProperty(ctx, renderer, GR.currentCameraMask);
+        ccmm = JS_IsException(ccm) ? JS_EXCEPTION : G(ccm, A_mask);
+        if (JS_IsException(ccmm)) goto out;
+        if (!JS_IsStrictEqual(ctx, ccmm, pm)) {
+            if (JS_SetProperty(ctx, cur, AT[A_mask], JS_DupValue(ctx, pm)) < 0 ||
+                JS_SetProperty(ctx, cur, GR.camera, JS_DupValue(ctx, pc)) < 0)
+                goto out;
+        } else if (JS_SetProperty(ctx, cur, AT[A_mask], JS_NULL) < 0) {
+            goto out;
+        }
+    }
+    ret = JS_UNDEFINED;
+out:
+    JS_FreeValue(ctx, gl), JS_FreeValue(ctx, stack), JS_FreeValue(ctx, cur), JS_FreeValue(ctx, prev);
+    JS_FreeValue(ctx, pm), JS_FreeValue(ctx, pc), JS_FreeValue(ctx, ccm), JS_FreeValue(ctx, ccmm);
+    return ret;
+}
+// shapesSetup({rectRender}) -> {rectRender, gmPreRender, gmPostRender, gmApplyStencil}
+static JSValue js_shapes_setup(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    gr_init(ctx);
+    JS_FreeValue(ctx, GR.rect_orig_render);
+    GR.rect_orig_render = JS_GetPropertyStr(ctx, argv[0], "rectRender");
+    JSValue out = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, out, "rectRender", JS_NewCFunction(ctx, js_rect_render, "renderWebGL", 4));
+    JS_SetPropertyStr(ctx, out, "gmPreRender", JS_NewCFunction(ctx, js_gm_pre_render, "preRenderWebGL", 3));
+    JS_SetPropertyStr(ctx, out, "gmPostRender", JS_NewCFunction(ctx, js_gm_post_render, "postRenderWebGL", 1));
+    JS_SetPropertyStr(ctx, out, "gmApplyStencil", keep(ctx, &GR.gm_apply_stencil, JS_NewCFunction(ctx, js_gm_apply_stencil, "applyStencil", 3)));
+    return out;
+}
+
 // ---------------------------------------------------------------- UUID
 // Phaser names every Text's canvas texture with Utils.String.UUID():
 //   'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => random hex digit)
@@ -1779,6 +2285,9 @@ void fastpath_register(JSContext *ctx, JSValue native) {
         JS_SetPropertyStr(ctx, native, name, keep(ctx, &PM.set_uniform_fn[n],
             JS_NewCFunctionMagic(ctx, js_set_uniform, name, 3 + n, JS_CFUNC_generic_magic, n)));
     }
+    JS_SetPropertyStr(ctx, native, "shapesSetup", JS_NewCFunction(ctx, js_shapes_setup, "shapesSetup", 1));
+    JS_SetPropertyStr(ctx, native, "nineSliceSetup", JS_NewCFunction(ctx, js_nineslice_setup, "nineSliceSetup", 1));
+    JS_SetPropertyStr(ctx, native, "graphicsSetup", JS_NewCFunction(ctx, js_graphics_setup, "graphicsSetup", 1));
     JS_SetPropertyStr(ctx, native, "pipelineSetup", JS_NewCFunction(ctx, js_pipeline_setup, "pipelineSetup", 1));
     JS_SetPropertyStr(ctx, native, "batchSprite", JS_NewCFunction(ctx, js_batch_sprite, "batchSprite", 30));
     JS_SetPropertyStr(ctx, native, "batchVerts", JS_NewCFunction(ctx, js_batch_verts, "batchVerts", 8));
