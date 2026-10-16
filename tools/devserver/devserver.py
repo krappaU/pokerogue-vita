@@ -9,10 +9,16 @@ the internet. Only the Python standard library is needed.
   GET  /build.json?key=K[&branch=B]  the newest test build: {"id", "commit", "label", "size"}
   GET  /build.vpk?key=K&id=ID        that build's .vpk (supports resuming with Range)
   POST /log?key=K&kind=prev|now      a log from the console, saved under <dir>/logs/
+  GET  /logs/[NAME]?key=K|L          the saved logs (newest first), or one of them; L is --logs-key, a
+                                     second key that only reads logs, for sharing with Claude sessions
 
-Builds come from the newest CI run (push events) that uploaded a dev .vpk artifact, on any branch or
-on --branch / the console's devbranch=. With --vpk, a local file (or the newest .vpk in a folder,
-e.g. runtime/build-vita) is served instead, for builds made on this machine.
+Consoles are offered the newest *published* build, whatever branch it came from. Publishing is an
+explicit step (publish.sh): it copies a dev .vpk, from a CI run or a file built on this machine, into
+<dir>/published/ with a label saying what to test. Plain pushes and CI runs are never offered, so
+work in progress on a branch can't replace the build under test. A console with devbranch=B in
+config.txt (or the server's --branch B) gets the newest CI dev build of that branch instead.
+
+  publish.sh RUN_ID|RUN_URL|FILE.vpk ["what to test"] [--commit SHA] [--branch B]
 """
 
 import argparse
@@ -37,6 +43,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 API = "https://api.github.com"
 MAX_LOG = 64 << 20
 CACHE_S = 60  # how long the newest-build answer is reused
+LOG_NAME = re.compile(r"(\d{8}-\d{6}-(prev|now)|latest(-prev|-now)?)\.txt")
 
 
 def log(msg):
@@ -121,32 +128,99 @@ class GitHub:
             os.replace(tmp, build["path"])
 
 
-class LocalVpk:
-    """A .vpk built on this machine: a file, or the newest .vpk in a folder."""
+class Published:
+    """Builds put in <dir>/published/ by `publish`: <id>.vpk with <id>.json (label, commit, ...)."""
 
-    def __init__(self, path):
-        self.path = path
+    def __init__(self, folder):
+        self.dir = folder
 
     def newest(self, branch):
-        p = self.path
-        if os.path.isdir(p):
-            vpks = [os.path.join(p, n) for n in os.listdir(p) if n.endswith(".vpk")]
-            if not vpks:
-                return None
-            p = max(vpks, key=os.path.getmtime)
-        if not os.path.isfile(p):
-            return None
+        best = None
+        for n in os.listdir(self.dir):
+            if not n.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(self.dir, n)) as f:
+                    meta = json.load(f)
+                meta["id"] = n[:-5]  # from the file name, never from its content
+                vpk = os.path.join(self.dir, meta["id"] + ".vpk")
+                if os.path.isfile(vpk) and (best is None or meta["published_at"] > best["published_at"]):
+                    best = {**meta, "path": vpk, "size": os.path.getsize(vpk)}
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+        return best
+
+
+class Sources:
+    """Published builds by default; CI builds of a branch when one is asked for."""
+
+    def __init__(self, published, github):
+        self.published, self.github = published, github
+
+    def newest(self, branch):
+        if branch:
+            return self.github.newest(branch) if self.github else None
+        return self.published.newest(None)
+
+
+def one_line(text, n=150):
+    """The console's JSON reader has no escapes: plain printable ASCII only."""
+    return re.sub(r"[^ -~]", "?", text).replace('"', "'").replace("\\", "/")[:n]
+
+
+def publish_main(argv):
+    ap = argparse.ArgumentParser(prog="publish.sh", description="Publish a dev build: consoles are offered the newest published one.")
+    ap.add_argument("src", help="CI run id or URL (its pokerogue-dev-* artifact), or a pokerogue-<version>-dev.vpk file")
+    ap.add_argument("label", nargs="*", help="what to test, shown on the console")
+    ap.add_argument("--commit", help="commit of a local file (CI runs know theirs)")
+    ap.add_argument("--branch", help="branch of a local file (CI runs know theirs)")
+    ap.add_argument("--dir", default=os.path.expanduser("~/pokerogue-devserver"))
+    ap.add_argument("--repo", default="krappaU/pokerogue-vita")
+    a = ap.parse_args(argv)
+    pub = os.path.join(a.dir, "published")
+    builds = os.path.join(a.dir, "builds")
+    os.makedirs(pub, exist_ok=True)
+    os.makedirs(builds, exist_ok=True)
+    m = re.fullmatch(r"(\d+)", a.src) or re.search(r"/actions/runs/(\d+)", a.src)
+    if m and not os.path.exists(a.src):
+        tok = github_token()
+        if not tok:
+            sys.exit("a CI run needs a GitHub token: set GITHUB_TOKEN or log in with `gh auth login`")
+        gh = GitHub(a.repo, tok, builds)
+        run_id = m.group(1)
+        run = json.load(gh.get(f"/repos/{a.repo}/actions/runs/{run_id}"))
+        arts = json.load(gh.get(f"/repos/{a.repo}/actions/runs/{run_id}/artifacts"))["artifacts"]
+        art = next((x for x in arts if x["name"].startswith("pokerogue-dev-") and not x.get("expired")), None)
+        if not art:
+            sys.exit(f"run {run_id} has no pokerogue-dev-* artifact (is it finished? has it expired?)")
+        build = {"id": f"run{run_id}", "label": art["name"], "path": os.path.join(builds, f"run{run_id}.vpk"), "artifact": art["id"]}
+        gh._download(build)
+        src, bid, version = build["path"], build["id"], art["name"].split("-")[2]
+        commit, branch = run["head_sha"][:7], run["head_branch"]
+    else:
+        base = os.path.basename(a.src)
+        m = re.fullmatch(r"pokerogue-(\d+\.\d+)-dev\.vpk", base)
+        if not os.path.isfile(a.src) or not m:
+            sys.exit(f"{a.src}: not a run id and not a pokerogue-<version>-dev.vpk file (normal builds can't update themselves)")
         h = hashlib.sha256()
-        with open(p, "rb") as f:
+        with open(a.src, "rb") as f:
             for chunk in iter(lambda: f.read(1 << 20), b""):
                 h.update(chunk)
-        stamp = datetime.fromtimestamp(os.path.getmtime(p)).strftime("%Y-%m-%d %H:%M")
-        # No commit: the console recognises the build by its id once installed.
-        return {"id": "local" + h.hexdigest()[:12], "commit": "", "label": f"{os.path.basename(p)} built {stamp}",
-                "path": p, "size": os.path.getsize(p)}
+        src, bid, version = a.src, "local" + h.hexdigest()[:12], m.group(1)
+        commit, branch = (a.commit or "")[:7], a.branch or ""
+    head = " ".join(x for x in (version, branch, commit) if x)
+    label = one_line(head + (" - " + " ".join(a.label) if a.label else ""))
+    tmp = os.path.join(pub, bid + ".vpk.part")
+    shutil.copyfile(src, tmp)
+    os.replace(tmp, os.path.join(pub, bid + ".vpk"))
+    meta = {"commit": commit, "branch": branch, "version": version, "label": label, "published_at": time.time()}
+    with open(os.path.join(pub, bid + ".json"), "w") as f:
+        json.dump(meta, f)
+    print(f"published {bid}: {label}")
+    print("consoles are now offered it at their next start")
 
 
-def make_handler(key, source, logs_dir, default_branch):
+def make_handler(key, source, logs_dir, default_branch, logs_key=None):
     offered = {}  # id -> build, for the download that follows build.json
 
     class Handler(BaseHTTPRequestHandler):
@@ -174,6 +248,11 @@ def make_handler(key, source, logs_dir, default_branch):
             return u.path, q
 
         def do_GET(self):
+            u = urllib.parse.urlsplit(self.path)
+            if u.path.startswith("/logs/") and logs_key:
+                given = self.headers.get("X-Dev-Key") or urllib.parse.parse_qs(u.query).get("key", [""])[0]
+                if hmac.compare_digest(given.encode(), logs_key.encode()):
+                    return self.send_log(u.path[len("/logs/"):])
             path, q = self.parse()
             if path is None:
                 return
@@ -193,7 +272,21 @@ def make_handler(key, source, logs_dir, default_branch):
                 if not build or not os.path.isfile(build["path"]):
                     return self.reply(404, {"error": "unknown build; ask build.json first"})
                 return self.send_file(build["path"])
+            if path.startswith("/logs/"):
+                return self.send_log(path[len("/logs/"):])
             self.reply(404, {"error": "unknown path"})
+
+        def send_log(self, name):
+            names = sorted((n for n in os.listdir(logs_dir) if LOG_NAME.fullmatch(n)), reverse=True)
+            if not name:
+                aliases = [n for n in names if n.startswith("latest")]
+                index = "".join(f"{n}\n" for n in aliases + [n for n in names if n not in aliases])
+                return self.reply(200, index.encode(), "text/plain; charset=utf-8")
+            if name not in names:  # only names listed above, so no path tricks
+                return self.reply(404, {"error": "no such log"})
+            with open(os.path.join(logs_dir, name), "rb") as f:
+                self.reply(200, f.read(), "text/plain; charset=utf-8")
+            log(f"sent log {name} to {self.client_address[0]}")
 
         def send_file(self, p):
             size = os.path.getsize(p)
@@ -259,33 +352,36 @@ def github_token():
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "publish":
+        return publish_main(sys.argv[2:])
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--bind", default="0.0.0.0")
     ap.add_argument("--key", default=os.environ.get("DEVSERVER_KEY"), help="shared secret (or DEVSERVER_KEY)")
     ap.add_argument("--dir", default=os.path.expanduser("~/pokerogue-devserver"), help="logs/ and builds/ go here")
     ap.add_argument("--repo", default="krappaU/pokerogue-vita")
-    ap.add_argument("--branch", help="only builds of this branch, unless the console asks for another")
-    ap.add_argument("--vpk", help="serve this .vpk (or the newest .vpk in this folder) instead of CI builds")
+    ap.add_argument("--branch", help="offer the newest CI dev build of this branch, not the published one (a console can ask for another with devbranch=)")
+    ap.add_argument("--logs-key", default=os.environ.get("DEVSERVER_LOGS_KEY"),
+                    help="a second key that can only read the logs at /logs/ (or DEVSERVER_LOGS_KEY)")
     a = ap.parse_args()
     if not a.key or len(a.key) < 12 or not re.fullmatch(r"[A-Za-z0-9_-]+", a.key):
         sys.exit("give a key of 12+ letters, digits, - or _ with --key or DEVSERVER_KEY, e.g.:\n"
                  "  python3 -c 'import secrets; print(secrets.token_urlsafe(16))'")
-    logs_dir, builds_dir = os.path.join(a.dir, "logs"), os.path.join(a.dir, "builds")
-    os.makedirs(logs_dir, exist_ok=True)
-    os.makedirs(builds_dir, exist_ok=True)
-    if a.vpk:
-        source = LocalVpk(os.path.abspath(a.vpk))
-        log(f"serving local builds from {source.path}")
-    else:
-        tok = github_token()
-        if not tok:
-            sys.exit("CI builds need a GitHub token: set GITHUB_TOKEN, log in with `gh auth login`, or use --vpk")
-        source = GitHub(a.repo, tok, builds_dir)
-        log(f"serving CI builds of {a.repo}" + (f", branch {a.branch}" if a.branch else ""))
+    if a.logs_key and (len(a.logs_key) < 12 or not re.fullmatch(r"[A-Za-z0-9_-]+", a.logs_key) or a.logs_key == a.key):
+        sys.exit("--logs-key needs 12+ letters, digits, - or _, and must differ from the key")
+    logs_dir, builds_dir, pub_dir = (os.path.join(a.dir, n) for n in ("logs", "builds", "published"))
+    for d in (logs_dir, builds_dir, pub_dir):
+        os.makedirs(d, exist_ok=True)
+    tok = github_token()
+    gh = GitHub(a.repo, tok, builds_dir) if tok else None
+    if a.branch and not gh:
+        sys.exit("--branch serves CI builds, which need a GitHub token: set GITHUB_TOKEN or log in with `gh auth login`")
+    source = Sources(Published(pub_dir), gh)
+    log(f"offering " + (f"CI dev builds of branch {a.branch}" if a.branch else "the newest published build") +
+        f" (publish with publish.sh; {'CI branches on request' if gh else 'no GitHub token: devbranch= is ignored'})")
     log(f"logs go to {logs_dir}")
     log(f"listening on {a.bind}:{a.port}")
-    ThreadingHTTPServer((a.bind, a.port), make_handler(a.key, source, logs_dir, a.branch)).serve_forever()
+    ThreadingHTTPServer((a.bind, a.port), make_handler(a.key, source, logs_dir, a.branch, a.logs_key)).serve_forever()
 
 
 if __name__ == "__main__":
