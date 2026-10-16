@@ -165,6 +165,32 @@ of API requests. Don't test logins in a loop from a server: Cloudflare starts bl
   to the Cg compiler (after GLSL translation) to `<data>/shaders/`
   (`runtime/patches/vitagl-0002-*.patch`).
 
+## Tests
+CI (`.github/workflows/ci.yml`) runs on every push and pull request; the same scripts run locally:
+
+| script | what it checks |
+|---|---|
+| `runtime/scripts/lint.sh` | JS syntax (`node --check`), shellcheck, SPDX headers, `VERSION` format, no Sony modules committed |
+| `runtime/scripts/test_linux.sh` | the test pages on the desktop runtime (build with `build_linux.sh` first) |
+| `runtime/scripts/test_vita3k.sh` | the test pages on the .vpk in Vita3K (build with `build_vita.sh` first) |
+
+Test pages are folders in `runtime/tests/`, loaded by the runtime as an offline game (no network,
+no start screen). They log `[test] PASS/FAIL <name>` lines and finally `[test] DONE passed=N
+failed=M`; `tests/run_page.sh` (desktop) and `tests/run_vita3k_page.sh` (Vita3K) wait for that line
+and fail on any failed check, uncaught JS error or timeout. Logs and screenshots go to
+`.cache/test/<name>/` and `.cache/test-vita3k/<name>/` (CI uploads them as artifacts).
+- `tests/smoke/`: the browser shim: DOM, timers, fetch/XHR, `import()`, storage, PNG decoding,
+  Canvas 2D, WebGL (incl. the Cg identifier renaming), WAV decoding.
+- `tests/phaser/`: a still Phaser 3.90 scene built from what PokeRogue draws, checked with the
+  `scripts/probe_verify_*.js` probes (native fast paths against Phaser's own code). Phaser comes
+  from npm (`tests/fetch_test_deps.sh`, pinned hash).
+
+In Vita3K the pages need a shader compiler: your own copy in `runtime/.cache/private/libshacccg.suprx`
+(without it only the boot is checked: the eboot loads, links and runs `main()`). CI uses the PSM
+runtime's copy from AnimMouse/SceShaccCg, pinned to a commit and hash-checked, only inside the job.
+Vita3K doesn't write its rendering back to the Vita's memory, so `readPixels` returns zeros there;
+the smoke test skips pixel comparisons on the Vita's GPU.
+
 ## Measuring the real game
 See [tools/measure/README.md](../tools/measure/README.md): headless Chrome running a local dev
 build of PokeRogue, with hooks that count what Phaser draws each frame.

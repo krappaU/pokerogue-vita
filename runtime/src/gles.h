@@ -41,6 +41,12 @@ static inline void glGetShaderPrecisionFormat(GLenum st, GLenum pt, GLint *range
 }
 static inline void glGetTexParameteriv(GLenum t, GLenum p, GLint *v) { (void)t, (void)p, *v = 0; }
 static inline void glGetRenderbufferParameteriv(GLenum t, GLenum p, GLint *v) { (void)t, (void)p, *v = 0; }
+// vitaGL's glPixelStorei knows only GL_UNPACK_ROW_LENGTH (it always reads rows tightly packed) and
+// sets GL_INVALID_ENUM for anything else: every texture upload left an error for glGetError.
+static inline void gl_pixel_store(GLenum p, GLint v) {
+    if (p == GL_UNPACK_ROW_LENGTH) glPixelStorei(p, v);
+}
 #else
 #include <GLES2/gl2.h>
+static inline void gl_pixel_store(GLenum p, GLint v) { glPixelStorei(p, v); }
 #endif

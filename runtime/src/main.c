@@ -480,7 +480,7 @@ static void save_screenshot(const char *path) {
     plat_drawable_size(&w, &h);
     uint8_t *px = malloc((size_t)w * h * 4);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    gl_pixel_store(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
     stbi_flip_vertically_on_write(1);
     for (size_t i = 0; i < (size_t)w * h; i++) px[i * 4 + 3] = 255;

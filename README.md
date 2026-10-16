@@ -29,18 +29,21 @@ Phaser's rendering, and some of the game's own heavy work (save encryption), run
 The game itself is never modified.
 
 The design is in [docs/PLAN.md](docs/PLAN.md); measurements and decisions are in
-[docs/phase1-findings.md](docs/phase1-findings.md).
+[docs/phase1-findings.md](docs/phase1-findings.md); the latest project review is
+[docs/review-2026-10.md](docs/review-2026-10.md).
 
 ## Repository layout
 | path | contents |
 |---|---|
 | `runtime/` | the app: C host (QuickJS, WebGL, Canvas 2D, HTTP, audio) and JS browser shim |
-| `docs/` | plan, findings log, development guide |
+| `docs/` | plan, findings log, development guide, project review |
 | `tools/measure/` | runs the real game in headless Chrome (reference renders, per-frame counts) |
 | `archive/phase0/` | the original feasibility benchmark (history only) |
 
 ## Building
 See [docs/development.md](docs/development.md) and [runtime/README.md](runtime/README.md).
+CI builds the desktop runtime and the .vpk on every push, runs the tests on both (the .vpk in
+Vita3K), and keeps each commit's .vpk as a downloadable artifact.
 Everything builds in Docker (VitaSDK for the Vita, Debian for the desktop version used for development).
 
 ## License

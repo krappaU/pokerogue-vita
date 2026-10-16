@@ -306,7 +306,7 @@ FN(w_pixelStorei) {
     else if (p == 0x9243) { /* colorspace conversion: no-op */ }
     else {
         if (p == GL_UNPACK_ALIGNMENT) st.unpack_align = v;
-        glPixelStorei(p, v);
+        gl_pixel_store(p, v);
     }
     return JS_UNDEFINED;
 }
@@ -602,7 +602,7 @@ static void tex_restore(JSContext *ctx, GLuint id) {
     st.flip_y = t->flip, st.premultiply = t->premul;
     const uint8_t *up = unpack(px, w, h, owned, &fr);
     st.flip_y = sf, st.premultiply = sp;
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    gl_pixel_store(GL_UNPACK_ALIGNMENT, 4);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, up);
     tex_account(id, (size_t)w * h * 4);
     if (fr) free((void *)up);
@@ -1080,7 +1080,7 @@ FN(w_texImage2D) {
             return JS_UNDEFINED;
         }
         const uint8_t *up = unpack(px, w, h, owned, &fr);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        gl_pixel_store(GL_UNPACK_ALIGNMENT, 4);
         glTexImage2D(target, level, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, up);
         if (level == 0) {
             tex_account(bound_tex_id(), (size_t)w * h * 4);
@@ -1357,7 +1357,7 @@ void gl_restore_state(void) {
     glBlendEquationSeparate(st.blend_eq[0], st.blend_eq[1]);
     glColorMask(st.color_mask[0], st.color_mask[1], st.color_mask[2], st.color_mask[3]);
     glClearColor(st.clear_color[0], st.clear_color[1], st.clear_color[2], st.clear_color[3]);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, st.unpack_align);
+    gl_pixel_store(GL_UNPACK_ALIGNMENT, st.unpack_align);
     glUseProgram(oid(st.bound_program));
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, oid(st.bound_texture[0]));
