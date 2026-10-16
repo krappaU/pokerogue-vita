@@ -13,3 +13,7 @@ tools/devserver/devserver.py --vpk runtime/build-vita-dev # dev builds made on t
 
 Logs go to `~/pokerogue-devserver/logs/` (`--dir` to change); CI builds are cached in
 `~/pokerogue-devserver/builds/`.
+
+With `--logs-key L` (or `DEVSERVER_LOGS_KEY`), `GET /logs/?key=L` lists the saved logs and
+`GET /logs/latest.txt?key=L` returns one. That key only reads logs, so it can be given to Claude
+sessions on other machines (the project chat) without letting them upload or fetch builds.

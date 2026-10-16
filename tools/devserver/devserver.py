@@ -9,6 +9,8 @@ the internet. Only the Python standard library is needed.
   GET  /build.json?key=K[&branch=B]  the newest test build: {"id", "commit", "label", "size"}
   GET  /build.vpk?key=K&id=ID        that build's .vpk (supports resuming with Range)
   POST /log?key=K&kind=prev|now      a log from the console, saved under <dir>/logs/
+  GET  /logs/[NAME]?key=K|L          the saved logs (newest first), or one of them; L is --logs-key, a
+                                     second key that only reads logs, for sharing with Claude sessions
 
 Builds come from the newest CI run (push events) that uploaded a dev .vpk artifact, on any branch or
 on --branch / the console's devbranch=. With --vpk, a local file (or the newest .vpk in a folder,
@@ -37,6 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 API = "https://api.github.com"
 MAX_LOG = 64 << 20
 CACHE_S = 60  # how long the newest-build answer is reused
+LOG_NAME = re.compile(r"(\d{8}-\d{6}-(prev|now)|latest(-prev|-now)?)\.txt")
 
 
 def log(msg):
@@ -146,7 +149,7 @@ class LocalVpk:
                 "path": p, "size": os.path.getsize(p)}
 
 
-def make_handler(key, source, logs_dir, default_branch):
+def make_handler(key, source, logs_dir, default_branch, logs_key=None):
     offered = {}  # id -> build, for the download that follows build.json
 
     class Handler(BaseHTTPRequestHandler):
@@ -174,6 +177,11 @@ def make_handler(key, source, logs_dir, default_branch):
             return u.path, q
 
         def do_GET(self):
+            u = urllib.parse.urlsplit(self.path)
+            if u.path.startswith("/logs/") and logs_key:
+                given = self.headers.get("X-Dev-Key") or urllib.parse.parse_qs(u.query).get("key", [""])[0]
+                if hmac.compare_digest(given.encode(), logs_key.encode()):
+                    return self.send_log(u.path[len("/logs/"):])
             path, q = self.parse()
             if path is None:
                 return
@@ -193,7 +201,21 @@ def make_handler(key, source, logs_dir, default_branch):
                 if not build or not os.path.isfile(build["path"]):
                     return self.reply(404, {"error": "unknown build; ask build.json first"})
                 return self.send_file(build["path"])
+            if path.startswith("/logs/"):
+                return self.send_log(path[len("/logs/"):])
             self.reply(404, {"error": "unknown path"})
+
+        def send_log(self, name):
+            names = sorted((n for n in os.listdir(logs_dir) if LOG_NAME.fullmatch(n)), reverse=True)
+            if not name:
+                aliases = [n for n in names if n.startswith("latest")]
+                index = "".join(f"{n}\n" for n in aliases + [n for n in names if n not in aliases])
+                return self.reply(200, index.encode(), "text/plain; charset=utf-8")
+            if name not in names:  # only names listed above, so no path tricks
+                return self.reply(404, {"error": "no such log"})
+            with open(os.path.join(logs_dir, name), "rb") as f:
+                self.reply(200, f.read(), "text/plain; charset=utf-8")
+            log(f"sent log {name} to {self.client_address[0]}")
 
         def send_file(self, p):
             size = os.path.getsize(p)
@@ -266,11 +288,15 @@ def main():
     ap.add_argument("--dir", default=os.path.expanduser("~/pokerogue-devserver"), help="logs/ and builds/ go here")
     ap.add_argument("--repo", default="krappaU/pokerogue-vita")
     ap.add_argument("--branch", help="only builds of this branch, unless the console asks for another")
+    ap.add_argument("--logs-key", default=os.environ.get("DEVSERVER_LOGS_KEY"),
+                    help="a second key that can only read the logs at /logs/ (or DEVSERVER_LOGS_KEY)")
     ap.add_argument("--vpk", help="serve this .vpk (or the newest .vpk in this folder) instead of CI builds")
     a = ap.parse_args()
     if not a.key or len(a.key) < 12 or not re.fullmatch(r"[A-Za-z0-9_-]+", a.key):
         sys.exit("give a key of 12+ letters, digits, - or _ with --key or DEVSERVER_KEY, e.g.:\n"
                  "  python3 -c 'import secrets; print(secrets.token_urlsafe(16))'")
+    if a.logs_key and (len(a.logs_key) < 12 or not re.fullmatch(r"[A-Za-z0-9_-]+", a.logs_key) or a.logs_key == a.key):
+        sys.exit("--logs-key needs 12+ letters, digits, - or _, and must differ from the key")
     logs_dir, builds_dir = os.path.join(a.dir, "logs"), os.path.join(a.dir, "builds")
     os.makedirs(logs_dir, exist_ok=True)
     os.makedirs(builds_dir, exist_ok=True)
@@ -285,7 +311,7 @@ def main():
         log(f"serving CI builds of {a.repo}" + (f", branch {a.branch}" if a.branch else ""))
     log(f"logs go to {logs_dir}")
     log(f"listening on {a.bind}:{a.port}")
-    ThreadingHTTPServer((a.bind, a.port), make_handler(a.key, source, logs_dir, a.branch)).serve_forever()
+    ThreadingHTTPServer((a.bind, a.port), make_handler(a.key, source, logs_dir, a.branch, a.logs_key)).serve_forever()
 
 
 if __name__ == "__main__":

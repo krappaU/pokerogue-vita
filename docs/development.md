@@ -49,7 +49,8 @@ is exposed. Once it is set up, after one install from VitaShell:
 - **Logs:** each start uploads the previous run's log (kept as `log-prev.txt`, so the log of a
   crash is sent by the next start), and L + R + START in game uploads the current one. They land in
   `<dir>/logs/` on the server (`latest.txt` is the newest; `latest-prev.txt` the newest of a run
-  that ended), where a Claude session on that machine can read them.
+  that ended), where a Claude session on that machine can read them. With `--logs-key`, a second key
+  that only reads logs, sessions elsewhere can fetch them too: `GET /logs/latest.txt?key=<logs key>`.
 
 Setup:
 1. On the server: `DEVSERVER_KEY=<secret> tools/devserver/devserver.py` (port 8765; `--vpk
