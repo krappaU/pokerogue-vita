@@ -10,6 +10,7 @@
 //   evalfile <path>  evaluate a JS file in the page and log the result
 //   ime <text>       answer an open text-entry request (Linux stand-in for the Vita keyboard)
 //   ime-cancel       cancel it
+//   sendlog          upload the log to the dev server (L + R + START on the Vita; devtools.c)
 //   quit
 
 #include <errno.h>
@@ -207,6 +208,8 @@ static void control_line(JSContext *ctx, char *line, bool *quit) {
         g_cfg.sample = !g_cfg.sample;
     } else if (!strcmp(line, "hud")) {
         g_cfg.hud = !g_cfg.hud;
+    } else if (!strcmp(line, "sendlog")) {
+        dev_send_log();
     } else if (!strcmp(line, "quit")) {
         *quit = true;
     } else if (line[0]) {
@@ -262,7 +265,13 @@ static void control_poll(JSContext *ctx, bool *quit) {
 #define PKR_COMMIT "unknown"
 #endif
 
-const char *host_version_string(void) { return "PokeRogue Vita " PKR_VERSION " (" PKR_COMMIT ")"; }
+#ifdef PKR_DEV
+#define PKR_FLAVOR " dev"
+#else
+#define PKR_FLAVOR ""
+#endif
+
+const char *host_version_string(void) { return "PokeRogue Vita " PKR_VERSION PKR_FLAVOR " (" PKR_COMMIT ")"; }
 
 // ---------------------------------------------------------------- frame stats
 
@@ -422,7 +431,7 @@ static void draw_hud(JSContext *ctx, double js_ms) {
     if (now - t0 >= 500 || !text[0]) {
         struct mallinfo mi = mallinfo();
         double secs = (now - t0) / 1000.0;
-        snprintf(text, sizeof text, "v%s %s | %.0f fps | JS %.1f ms | %.0f MB", PKR_VERSION, PKR_COMMIT,
+        snprintf(text, sizeof text, "v%s%s %s | %.0f fps | JS %.1f ms | %.0f MB", PKR_VERSION, PKR_FLAVOR, PKR_COMMIT,
                  secs > 0 ? frames / secs : 0, frames ? js_sum / frames : 0, (unsigned)mi.uordblks / 1048576.0);
         t0 = now, js_sum = 0, frames = 0;
     }
@@ -504,6 +513,8 @@ static void save_screenshot(const char *path) {
 //   local=game                      play an offline build of the game from <data>/game (no login,
 //                                   saves stay on the console); automatic if <data>/game exists
 //   online=1                        play the live site even if <data>/game exists
+//   devserver=http://host:8765/     dev builds only: dev server for test builds and log upload
+//   devkey=<secret>                 (devtools.c, tools/devserver); devbranch=<branch>: that branch's builds
 // Is an offline build of the game in <data>/game? The start screen offers it (unless config.txt
 // decides: online=1, or local=<dir>).
 static char offline_dir[600], offline_version[64] = "?";
@@ -587,6 +598,12 @@ static void load_config_file(void) {
             g_cfg.no_audio = atoi(v) == 0;
         } else if (!strcmp(k, "busy")) {
             g_cfg.busy_after_ms = atoi(v);
+        } else if (!strcmp(k, "devserver") && v[0]) {
+            g_cfg.dev_server = strdup(v);
+        } else if (!strcmp(k, "devkey") && v[0]) {
+            g_cfg.dev_key = strdup(v);
+        } else if (!strcmp(k, "devbranch") && v[0]) {
+            g_cfg.dev_branch = strdup(v);
         }
     }
     fclose(f);
@@ -650,8 +667,12 @@ int main(int argc, char **argv) {
         }
     }
     mkdirs(g_cfg.data_dir);
-    char path[512];
+    char path[512], prev_log[512];
     snprintf(path, sizeof path, "%s/log.txt", g_cfg.data_dir);
+    // The previous run's log is kept: after a crash it is the one that matters.
+    snprintf(prev_log, sizeof prev_log, "%s/log-prev.txt", g_cfg.data_dir);
+    remove(prev_log);
+    rename(path, prev_log);
     log_fp = fopen(path, "w");
     host_log("%s, built %s | QuickJS-ng %s | page %s", host_version_string(), __DATE__, JS_GetVersion(), g_cfg.base_url);
 
@@ -662,6 +683,7 @@ int main(int argc, char **argv) {
 
     net_init();
     mem_report("after network init");
+    dev_start(prev_log);
     if (!g_cfg.no_audio) audio_init();
 
     // Online or offline: the start screen, unless config.txt decided. It can also download the
@@ -669,6 +691,7 @@ int main(int argc, char **argv) {
     bool have_offline = offline_installed();
     char again[16];
     relaunch_mode(again, sizeof again);
+    if (!again[0]) dev_offer_update(); // a newer test build on the dev server (restarts the app)
     if (!strcmp(again, "offline") && have_offline && !g_cfg.local_dir) {
         g_cfg.local_dir = offline_dir;
         g_cfg.base_url = LOCAL_ORIGIN "/";
@@ -743,6 +766,10 @@ int main(int argc, char **argv) {
                 g_cfg.hud = !g_cfg.hud;
                 continue;
             }
+            if (ev.type == PEV_SEND_LOG) {
+                dev_send_log();
+                continue;
+            }
             if (link_event(&ev) || osk_event(&ev)) continue;
             static const char *names[] = {"keydown", "keyup", "pointerdown", "pointermove", "pointerup"};
             JSValue args[7] = {
@@ -765,6 +792,7 @@ int main(int argc, char **argv) {
         }
         set_phase("control channel");
         control_poll(ctx, &quit);
+        dev_frame();
         set_phase("network");
         net_poll(ctx);
         set_phase("promise jobs");

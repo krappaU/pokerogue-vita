@@ -15,3 +15,6 @@ node_modules/
 runtime/build-*/
 runtime/third_party/
 runtime/.cache/
+
+# Python bytecode (tools/devserver)
+__pycache__/

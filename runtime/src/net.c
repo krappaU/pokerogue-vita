@@ -567,6 +567,32 @@ char *net_get_threadsafe(const char *url, size_t *len, long *status) {
     return b.data;
 }
 
+// POSTs body to url with extra header lines (NULL-terminated list); returns the HTTP status, or 0
+// if the request failed (err gets curl's message).
+long net_post_threadsafe(const char *url, const char *const *headers, const void *body, size_t len, char *err, size_t errn) {
+    CURL *e = make_easy(url);
+    if (!e) return 0;
+    struct curl_slist *h = NULL;
+    for (int i = 0; headers && headers[i]; i++) h = curl_slist_append(h, headers[i]);
+    buf b = {0};
+    char errbuf[CURL_ERROR_SIZE] = "";
+    curl_easy_setopt(e, CURLOPT_HTTPHEADER, h);
+    curl_easy_setopt(e, CURLOPT_POSTFIELDS, body);
+    curl_easy_setopt(e, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)len);
+    curl_easy_setopt(e, CURLOPT_WRITEFUNCTION, on_write);
+    curl_easy_setopt(e, CURLOPT_WRITEDATA, &b);
+    curl_easy_setopt(e, CURLOPT_ERRORBUFFER, errbuf);
+    curl_easy_setopt(e, CURLOPT_TIMEOUT, 120L);
+    CURLcode rc = curl_easy_perform(e);
+    long status = 0;
+    if (rc == CURLE_OK) curl_easy_getinfo(e, CURLINFO_RESPONSE_CODE, &status);
+    else snprintf(err, errn, "%s", errbuf[0] ? errbuf : curl_easy_strerror(rc));
+    curl_slist_free_all(h);
+    curl_easy_cleanup(e);
+    free(b.data);
+    return status;
+}
+
 char *net_get_sync(const char *url, size_t *len, long *status) {
     if (net_is_local(url)) {
         char *d = local_read(url, len);
