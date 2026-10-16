@@ -99,6 +99,10 @@ The game's text fields are HTML `<input>` elements over the canvas; `js/input.js
   busiest functions and how the main loop's time splits (game JS, swap/GPU wait, drawing...);
   `<data>/profile.txt` gets all stacks in collapsed form for flame graph tools. In Vita3K, sampling
   during normal play caused one-second stalls, hence the opt-in.
+- On the desktop, `PKR_PROFILE_RATE=1000 scripts/build_linux.sh` builds with ten times as many
+  samples, and the control command `profile` samples without the debug line (whose drawing makes
+  Phaser rebuild its GL state every frame, which then shows in the profile). `<data>/profile.txt`
+  is rewritten every 30 s: copy it in between to keep more than one window.
 - `scripts/probe_phases.js` (update vs render time per frame), `probe_selfprof.js` (per-function
   self time on desktop; its wrappers inflate the totals) and `probe_textcost.js` complement it.
 - Compiled game code is cached in `<data>/bytecode/` (key: URL, source, QuickJS version). On the
