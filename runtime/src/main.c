@@ -289,6 +289,13 @@ static double perf_t0;
 static int perf_gc;
 static double perf_gc_max;
 static double perf_swap_ms, perf_after_ms, perf_draw_ms; // non-JS parts of the frames in the window
+// Time per main-loop step over the current [perf] window (steps other than JS, drawing and the
+// swap are listed there when they take noticeable time).
+#define N_PHASE_STATS 16
+static struct {
+    const char *name;
+    double ms;
+} phase_stats[N_PHASE_STATS];
 
 static int cmp_d(const void *a, const void *b) {
     double x = *(const double *)a, y = *(const double *)b;
@@ -309,15 +316,26 @@ static void perf_add(double js_ms) {
     net_stats(net, sizeof net);
     char gc[64] = "";
     if (perf_gc) snprintf(gc, sizeof gc, " | GC in %d frames (up to %.0f ms)", perf_gc, perf_gc_max);
+    char other[160] = "";
+    size_t olen = 0;
+    static const char *counted[] = {"promise jobs", "game frame (JS)", "promise jobs after frame", "drawing", "swap"};
+    for (int i = 0; i < N_PHASE_STATS && phase_stats[i].name; i++) {
+        bool skip = false;
+        for (size_t k = 0; k < sizeof counted / sizeof *counted; k++) skip |= !strcmp(phase_stats[i].name, counted[k]);
+        double per = phase_stats[i].ms / perf_n;
+        if (!skip && per >= 2 && olen < sizeof other - 48)
+            olen += snprintf(other + olen, sizeof other - olen, "%s%s %.0f", olen ? ", " : " | also (ms/frame): ", phase_stats[i].name, per);
+        phase_stats[i].ms = 0;
+    }
     double gl_total, gl_max;
     int restores;
     gl_draw_stats(&gl_total, &gl_max, &restores);
     char glx[96] = "";
     if (restores) snprintf(glx, sizeof glx, ", %d textures re-uploaded", restores);
     host_log("[perf] %.1f fps | JS per frame: avg %.2f ms, p50 %.2f, p95 %.2f, max %.2f%s | draw %.1f, swap %.1f, after %.1f ms | "
-             "in GL draw calls %.1f ms/frame (max %.0f)%s | net: %s",
+             "in GL draw calls %.1f ms/frame (max %.0f)%s%s | net: %s",
              perf_n / secs, sum / perf_n, perf_js[perf_n / 2], perf_js[perf_n * 95 / 100], perf_js[perf_n - 1], gc,
-             perf_draw_ms / perf_n, perf_swap_ms / perf_n, perf_after_ms / perf_n, gl_total / perf_n, gl_max, glx, net);
+             perf_draw_ms / perf_n, perf_swap_ms / perf_n, perf_after_ms / perf_n, gl_total / perf_n, gl_max, glx, other, net);
     perf_gc = 0;
     perf_gc_max = 0;
     perf_swap_ms = perf_after_ms = perf_draw_ms = 0;
@@ -337,6 +355,12 @@ static volatile bool in_frame_js;
 static void set_phase(const char *name) {
     double now = host_now_ms();
     prof_phase(loop_phase, now - phase_t0);
+    for (int i = 0; i < N_PHASE_STATS; i++)
+        if (phase_stats[i].name == loop_phase || !phase_stats[i].name) {
+            phase_stats[i].name = loop_phase;
+            phase_stats[i].ms += now - phase_t0;
+            break;
+        }
     loop_phase = name;
     phase_t0 = now;
 }
@@ -552,6 +576,38 @@ static void usage(void) {
             "usage: pokerogue-rt [--url URL] [--js DIR] [--data DIR] [--control FILE] [--frames N] [--size WxH]\n");
 }
 
+bool g_relaunch;
+
+// location.reload: the game asks for it after importing save data. The app restarts and goes
+// straight back to the same game (online or offline) instead of the start screen.
+static void relaunch(JSContext *ctx, int argc, char **argv) {
+    host_call_rt(ctx, "flushStorage", 0, NULL);
+    char path[600];
+    snprintf(path, sizeof path, "%s/relaunch.txt", g_cfg.data_dir);
+    FILE *f = fopen(path, "w");
+    if (f) {
+        fputs(g_cfg.local_dir ? "offline" : "online", f);
+        fclose(f);
+    }
+    host_log("[app] restarting (the game asked to reload the page)");
+    if (log_fp) fflush(log_fp);
+    plat_relaunch(argc, argv);
+    host_log("[app] restart failed; carrying on");
+    g_relaunch = false;
+}
+
+// After a relaunch: the mode to go back to ("online"/"offline"), or "" for the start screen.
+static void relaunch_mode(char *out, size_t n) {
+    char path[600];
+    snprintf(path, sizeof path, "%s/relaunch.txt", g_cfg.data_dir);
+    out[0] = 0;
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    if (fgets(out, (int)n, f)) out[strcspn(out, "\r\n")] = 0;
+    fclose(f);
+    remove(path);
+}
+
 int main(int argc, char **argv) {
     // The data dir may come from the command line; the config file lives inside it.
     for (int i = 1; i + 1 < argc; i++)
@@ -588,7 +644,13 @@ int main(int argc, char **argv) {
     // Online or offline: the start screen, unless config.txt decided. It can also download the
     // offline game.
     bool have_offline = offline_installed();
-    while (!g_cfg.local_dir && !g_cfg.force_online) {
+    char again[16];
+    relaunch_mode(again, sizeof again);
+    if (!strcmp(again, "offline") && have_offline && !g_cfg.local_dir) {
+        g_cfg.local_dir = offline_dir;
+        g_cfg.base_url = LOCAL_ORIGIN "/";
+    }
+    while (!g_cfg.local_dir && !g_cfg.force_online && strcmp(again, "online")) {
         int choice = launcher_run(have_offline, offline_version, launcher_poll);
         if (choice < 0) return 0;
         if (choice == 0) break;
@@ -723,6 +785,7 @@ int main(int argc, char **argv) {
         perf_draw_ms += t_swap - t_draw, perf_swap_ms += t_after - t_swap, perf_after_ms += host_now_ms() - t_after;
         set_phase("input");
         frame_no++;
+        if (g_relaunch) relaunch(ctx, argc, argv);
         if (g_cfg.exit_after_frames && frame_no >= g_cfg.exit_after_frames) quit = true;
 
 #ifndef __vita__

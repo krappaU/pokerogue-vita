@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <psp2/appmgr.h>
 #include <psp2/apputil.h>
 #include <psp2/audioout.h>
 #include <psp2/kernel/threadmgr.h>
@@ -353,6 +354,11 @@ bool plat_audio_start(int rate, void (*mix)(int16_t *out, int frames)) {
         return false;
     }
     return true;
+}
+
+void plat_relaunch(int argc, char **argv) {
+    (void)argc, (void)argv;
+    sceAppMgrLoadExec("app0:eboot.bin", NULL, NULL);
 }
 
 void plat_thread_setup(const char *name, int core, int priority) {

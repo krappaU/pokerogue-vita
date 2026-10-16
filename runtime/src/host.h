@@ -176,13 +176,19 @@ bool osk_event(const plat_event *ev); // true if the keyboard consumed the event
 void osk_frame(const plat_gamepad *pad); // buttons and stick, once per frame
 bool osk_draw(void);                  // draws the keyboard if open (caller wraps GL state for Phaser)
 
-// Links the game opens, shown as a QR code (linkqr.c).
+// Links the game opens, shown as a QR code (dialogs.c).
 void link_show(const char *url, const char *caption);
 bool link_active(void);
 bool link_mutes_pad(void);             // game input muted (code shown, or its closing button still held)
 bool link_event(const plat_event *ev); // true if consumed
 void link_frame(const plat_gamepad *pad);
 bool link_draw(void);
+void dialog_notice(const char *text);
+void dialog_pick_open(const char *title, const char *dir, const char *exts);
+int dialog_pick_poll(const char **path); // 0 nothing, 1 chosen, -1 cancelled (reported once)
+// Restarts the app (location.reload), straight back into the online or offline game.
+void plat_relaunch(int argc, char **argv);
+extern bool g_relaunch;
 const char *host_version_string(void);  // "PokeRogue Vita 0.18 (abc1234)"
 
 // Bytes held by decoded-image objects: compressed files kept, and decoded pixels currently alive.

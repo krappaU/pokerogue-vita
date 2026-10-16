@@ -286,13 +286,63 @@
     setSelectionRange(a, b) { this.selectionStart = a; this.selectionEnd = b; }
     // Focus is where the Vita's system keyboard will open (Phase 3). For now, report it.
     focus() { super.focus(); if (rt.onInputFocus) rt.onInputFocus(this); }
+    get accept() { return this._attrs.accept || ""; }
+    set accept(v) { this.setAttribute("accept", v); }
+    // <input type=file>: the game's "import data". A file picker over the game lists the memory
+    // card's exports folder (src/dialogs.c); the chosen file arrives as in a browser: input.files
+    // and a "change" event.
+    click() {
+      super.click();
+      if (this.type !== "file" || this.disabled || !N.pickFile) return;
+      N.pickFile("Import: choose a file from " + N.dataDir + "/" + EXPORT_DIR + "/ (exports from this app go there; " +
+        "files can also be copied there with VitaShell)", EXPORT_DIR, this.accept);
+      const input = this;
+      const hook = () => {
+        const r = N.pickPoll();
+        if (r === undefined) return;
+        rt.frameHooks.splice(rt.frameHooks.indexOf(hook), 1);
+        if (r === null) { input.dispatchEvent(new Event("cancel", { bubbles: true })); return; }
+        const file = new g.File([r[1]], r[0], { type: /\.json$/i.test(r[0]) ? "application/json" : "text/plain" });
+        const list = [file];
+        list.item = (i) => list[i] || null;
+        Object.defineProperty(input, "files", { value: list, configurable: true, writable: true });
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      };
+      rt.frameHooks.push(hook);
+    }
   }
+  // Where exported saves go, relative to the data folder (ux0:data/pokerogue on the Vita).
+  const EXPORT_DIR = "exports";
   class HTMLTextAreaElement extends HTMLInputElement {}
   class HTMLButtonElement extends HTMLElement {}
   class HTMLFormElement extends HTMLElement { submit() {} reset() {} }
   class HTMLAnchorElement extends HTMLElement {
     get href() { return this._attrs.href ? N.resolveURL(g.location.href, this._attrs.href) : ""; }
     set href(v) { this.setAttribute("href", v); }
+    get download() { return this._attrs.download ?? ""; }
+    set download(v) { this.setAttribute("download", v); }
+    // <a download href=blob:...>.click(): the game's "export data". The file goes to the memory
+    // card's exports folder, and a notice says where.
+    click() {
+      super.click();
+      const href = this._attrs.href || "";
+      if (!this.hasAttribute("download") || !href) return;
+      let bytes = null;
+      const blob = rt.blobs && rt.blobs.get(href);
+      if (blob) bytes = blob._bytes;
+      else if (/^data:/i.test(href)) {
+        const comma = href.indexOf(","), meta = href.slice(5, comma);
+        const body = href.slice(comma + 1);
+        bytes = /;base64/i.test(meta) ? Uint8Array.from(g.atob(body), (c) => c.charCodeAt(0)) : new Uint8Array(N.utf8Encode(decodeURIComponent(body)));
+      }
+      if (!bytes) { N.log("[download] can't save " + href.slice(0, 80)); return; }
+      const name = (this.download || "download").replace(/[\\/:*?"<>|]/g, "_");
+      const ok = N.writeFile(EXPORT_DIR + "/" + name, bytes);
+      N.log("[download] " + name + " (" + bytes.length + " bytes) " + (ok ? "saved" : "could not be saved"));
+      N.notice(ok ? "Saved " + name + "\nto " + N.dataDir + "/" + EXPORT_DIR + "/\n\nImport it from the game's Manage Data menu " +
+        "(also in the other game mode: online / offline), or copy it to a PC with VitaShell." : "Could not save " + name + " to the memory card.");
+    }
   }
   class HTMLIFrameElement extends HTMLElement { get contentWindow() { return null; } }
 
@@ -746,7 +796,8 @@
     get hash() { return loc.hash; }, set hash(v) { loc.hash = v; }, get origin() { return loc.origin; },
     assign(v) { N.log("[location] navigation ignored: " + v); },
     replace(v) { N.log("[location] navigation ignored: " + v); },
-    reload() { N.log("[location] reload requested"); rt.reloadRequested = true; },
+    // The app restarts and returns to the same game (src/main.c relaunch); storage is saved first.
+    reload() { N.log("[location] reload requested"); if (rt.flushStorage) rt.flushStorage(); if (N.relaunch) N.relaunch(); },
     toString() { return loc.href; },
   }, "location");
   const history = { length: 1, state: null, pushState(s) { this.state = s; }, replaceState(s) { this.state = s; }, back() {}, forward() {}, go() {} };
@@ -782,7 +833,7 @@
     matchMedia: media,
     getComputedStyle: (el) => el && el.style ? el.style : makeStyle({}),
     scrollTo() {}, scrollBy() {}, scroll() {}, focus() {}, blur() {}, print() {}, stop() {}, moveTo() {}, resizeTo() {},
-    // Links can't be followed here: shown as a QR code to open on a phone (src/linkqr.c).
+    // Links can't be followed here: shown as a QR code to open on a phone (src/dialogs.c).
     // Discord / Google sign-in would log in that other device, not this one.
     open(url) {
       url = String(url == null ? "" : url);

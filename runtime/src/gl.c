@@ -550,6 +550,7 @@ static void tex_account(GLuint id, size_t bytes) {
 #define TEX_MAX 16384 // vitaGL's texture name limit
 #define TEX_BUDGET (64u * 1024 * 1024)
 #define TEX_IDLE_FRAMES 600 // about 20 s at 30 fps
+#define TEX_PRESSURE_IDLE_FRAMES 90 // when memory is short (see memory_pressure)
 typedef struct {
     JSValue src;         // Bitmap the texture was uploaded from, or JS_UNDEFINED (not evictable)
     uint32_t last_used;  // frame number
@@ -634,6 +635,16 @@ static void textures_for_draw(JSContext *ctx) {
 }
 
 // Once per frame: over budget -> evict the textures idle longest (oldest first, a few per frame).
+static bool memory_pressure(void) {
+    // Well over budget, or vitaGL's GPU pools nearly full (it then puts textures in the main heap,
+    // which the game needs): evict by idle time alone, however often a texture came back.
+    if (tex_total > TEX_BUDGET + TEX_BUDGET / 2) return true;
+#ifdef __vita__
+    if (vglMemFree(VGL_MEM_VRAM) + vglMemFree(VGL_MEM_RAM) < 16u * 1024 * 1024) return true;
+#endif
+    return false;
+}
+
 static void textures_evict(void) {
     static uint32_t next_scan;
     gl_frame++;
@@ -641,6 +652,7 @@ static void textures_evict(void) {
     if (draw_ms_frame > draw_ms_max_frame) draw_ms_max_frame = draw_ms_frame;
     draw_ms_frame = 0;
     if (tex_total <= TEX_BUDGET || evictable_bytes == 0 || gl_frame < next_scan) return;
+    bool pressure = memory_pressure();
     for (int round = 0; round < 8 && tex_total > TEX_BUDGET; round++) {
         GLuint victim = 0;
         uint32_t oldest = gl_frame;
@@ -649,7 +661,8 @@ static void textures_evict(void) {
             if (!t->has_src || t->evicted) continue;
             // Textures used every few waves (the shop, per-wave UI) would otherwise be evicted and
             // decoded again each time: 20-30 at once froze the game for half a second.
-            if (gl_frame - t->last_used < ((uint32_t)TEX_IDLE_FRAMES << t->restores)) continue;
+            uint32_t idle = pressure ? TEX_PRESSURE_IDLE_FRAMES : (uint32_t)TEX_IDLE_FRAMES << t->restores;
+            if (gl_frame - t->last_used < idle) continue;
             if (t->last_used < oldest) oldest = t->last_used, victim = id;
         }
         if (!victim) {

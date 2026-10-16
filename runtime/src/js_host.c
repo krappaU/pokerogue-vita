@@ -346,19 +346,47 @@ static JSValue n_read_file(JSContext *ctx, JSValueConst this_val, int argc, JSVa
     return v;
 }
 
-// writeFile(relPath, string) -> bool. Writes to a temp file and renames, so a crash never leaves half a file.
+// writeFile(relPath, string | ArrayBuffer | TypedArray) -> bool. Writes to a temp file and
+// renames, so a crash never leaves half a file. Missing folders on the way are created.
 static JSValue n_write_file(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     const char *rel = JS_ToCString(ctx, argv[0]);
-    size_t len;
-    const char *s = JS_ToCStringLen(ctx, &len, argv[1]);
+    size_t len = 0;
+    const char *s = NULL, *bin = NULL;
+    if (JS_IsString(argv[1])) {
+        s = JS_ToCStringLen(ctx, &len, argv[1]);
+    } else {
+        bin = (const char *)JS_GetArrayBuffer(ctx, &len, argv[1]);
+        if (!bin) {
+            JS_FreeValue(ctx, JS_GetException(ctx));
+            size_t off, tlen, bpe, total;
+            JSValue ab = JS_GetTypedArrayBuffer(ctx, argv[1], &off, &tlen, &bpe);
+            if (!JS_IsException(ab)) {
+                const char *base = (const char *)JS_GetArrayBuffer(ctx, &total, ab);
+                if (base) bin = base + off, len = tlen;
+            } else {
+                JS_FreeValue(ctx, JS_GetException(ctx));
+            }
+            JS_FreeValue(ctx, ab);
+        }
+    }
+    const char *data = s ? s : bin;
+    if (rel && data && !strstr(rel, "..")) { // parent folders
+        char dir[1024];
+        snprintf(dir, sizeof dir, "%s/%s", g_cfg.data_dir, rel);
+        for (char *p = dir + strlen(g_cfg.data_dir) + 1; (p = strchr(p, '/')); p++) {
+            *p = 0;
+            mkdir(dir, 0777);
+            *p = '/';
+        }
+    }
     bool ok = false;
-    if (rel && s && !strstr(rel, "..")) {
+    if (rel && data && !strstr(rel, "..")) {
         char path[1024], tmp[1100];
         snprintf(path, sizeof path, "%s/%s", g_cfg.data_dir, rel);
         snprintf(tmp, sizeof tmp, "%s.tmp", path);
         FILE *f = fopen(tmp, "wb");
         if (f) {
-            ok = fwrite(s, 1, len, f) == len;
+            ok = fwrite(data, 1, len, f) == len;
             ok &= fclose(f) == 0;
             if (ok) ok = rename(tmp, path) == 0;
         }
@@ -634,13 +662,65 @@ static JSValue n_show_message(JSContext *ctx, JSValueConst this_val, int argc, J
     return JS_UNDEFINED;
 }
 
-// showLink(url, caption): a link the game opens, as a QR code over the game (linkqr.c)
+// showLink(url, caption): a link the game opens, as a QR code over the game (dialogs.c)
 static JSValue n_show_link(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     const char *url = JS_ToCString(ctx, argv[0]);
     const char *cap = argc > 1 ? JS_ToCString(ctx, argv[1]) : NULL;
     if (url) link_show(url, cap ? cap : "");
     JS_FreeCString(ctx, url);
     JS_FreeCString(ctx, cap);
+    return JS_UNDEFINED;
+}
+
+// notice(text): a message over the game until a button is pressed (dialogs.c)
+static JSValue n_notice(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    const char *t = JS_ToCString(ctx, argv[0]);
+    if (t) dialog_notice(t);
+    JS_FreeCString(ctx, t);
+    return JS_UNDEFINED;
+}
+
+// pickFile(title, relDir, extensions): file picker over the game on <data>/relDir (dialogs.c)
+static JSValue n_pick_file(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    const char *title = JS_ToCString(ctx, argv[0]), *rel = JS_ToCString(ctx, argv[1]), *ext = JS_ToCString(ctx, argv[2]);
+    if (title && rel && ext && !strstr(rel, "..")) {
+        char dir[1024];
+        snprintf(dir, sizeof dir, "%s/%s", g_cfg.data_dir, rel);
+        mkdir(dir, 0777);
+        dialog_pick_open(title, dir, ext);
+    }
+    JS_FreeCString(ctx, title), JS_FreeCString(ctx, rel), JS_FreeCString(ctx, ext);
+    return JS_UNDEFINED;
+}
+
+// pickPoll() -> undefined (nothing yet) | null (cancelled) | [name, ArrayBuffer]
+static JSValue n_pick_poll(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    const char *path;
+    int r = dialog_pick_poll(&path);
+    if (!r) return JS_UNDEFINED;
+    if (r < 0) return JS_NULL;
+    FILE *f = fopen(path, "rb");
+    if (!f) return JS_NULL;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *buf = malloc(n > 0 ? n : 1);
+    bool ok = buf && fread(buf, 1, n, f) == (size_t)n;
+    fclose(f);
+    JSValue ret = JS_NULL;
+    if (ok) {
+        ret = JS_NewArray(ctx);
+        const char *slash = strrchr(path, '/');
+        JS_SetPropertyUint32(ctx, ret, 0, JS_NewString(ctx, slash ? slash + 1 : path));
+        JS_SetPropertyUint32(ctx, ret, 1, JS_NewArrayBufferCopy(ctx, buf, n));
+    }
+    free(buf);
+    return ret;
+}
+
+// relaunch(): location.reload, done by restarting the app after this frame (main.c)
+static JSValue n_relaunch(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    g_relaunch = true;
     return JS_UNDEFINED;
 }
 
@@ -659,6 +739,10 @@ static JSValue n_random_bytes(JSContext *ctx, JSValueConst this_val, int argc, J
 static const JSCFunctionListEntry native_funcs[] = {
     JS_CFUNC_DEF("randomBytes", 1, n_random_bytes),
     JS_CFUNC_DEF("showLink", 2, n_show_link),
+    JS_CFUNC_DEF("notice", 1, n_notice),
+    JS_CFUNC_DEF("pickFile", 3, n_pick_file),
+    JS_CFUNC_DEF("pickPoll", 0, n_pick_poll),
+    JS_CFUNC_DEF("relaunch", 0, n_relaunch),
     JS_CFUNC_DEF("showMessage", 1, n_show_message),
     JS_CFUNC_DEF("memoryUsage", 0, n_memory_usage),
     JS_CFUNC_DEF("imeOpen", 4, n_ime_open),
@@ -697,6 +781,7 @@ JSContext *host_js_init(void) {
     JS_SetPropertyFunctionList(ctx, native, native_funcs, sizeof native_funcs / sizeof *native_funcs);
     JS_SetPropertyStr(ctx, native, "baseURL", JS_NewString(ctx, g_cfg.base_url));
     JS_SetPropertyStr(ctx, native, "jsDir", JS_NewString(ctx, g_cfg.js_dir));
+    JS_SetPropertyStr(ctx, native, "dataDir", JS_NewString(ctx, g_cfg.data_dir));
     JS_SetPropertyStr(ctx, native, "screenWidth", JS_NewInt32(ctx, g_cfg.win_w));
     JS_SetPropertyStr(ctx, native, "screenHeight", JS_NewInt32(ctx, g_cfg.win_h));
     net_register(ctx, native);

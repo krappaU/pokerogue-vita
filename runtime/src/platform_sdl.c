@@ -6,6 +6,7 @@
 #include <sys/statvfs.h>
 #include <pthread.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <GLES2/gl2.h>
 #include <SDL.h>
@@ -322,3 +323,8 @@ bool plat_audio_start(int rate, void (*mix)(int16_t *out, int frames)) {
 }
 
 void plat_thread_setup(const char *name, int core, int priority) { (void)name, (void)core, (void)priority; }
+
+void plat_relaunch(int argc, char **argv) {
+    (void)argc;
+    execv("/proc/self/exe", argv);
+}

@@ -288,3 +288,17 @@ Vita's 0.5-0.8 s battle hitches are GPU waits too.
 - window.open (the menu's Wiki/Discord/GitHub/Reddit/donate links) shows the link as a QR code with
   the address (src/linkqr.c, Nayuki's qrcodegen); Discord/Google sign-in gets an explanation that it
   can't be done on the Vita.
+
+### Save import/export, page reload, memory pressure (runtime 0.41, 2026-10-16)
+- Export (`<a download href=blob:>`.click()) writes the file to `<data>/exports/` and shows where;
+  import (`<input type=file>`.click()) opens a file picker over the game on that folder and hands
+  the file to the game as `input.files` + "change". Exports from either mode can be imported in the
+  other (online <-> offline). Checked on desktop with the offline game: export, import, confirm.
+- `location.reload()` (the game reloads after an import) restarts the app (execv on Linux,
+  sceAppMgrLoadExec on the Vita) and goes straight back to the same mode via `<data>/relaunch.txt`.
+- 31-log: GPU textures reached 122 MB (budget 64) with the GPU pools full, so vitaGL spilled into
+  the main heap (206 MB in use): 0.39's longer idle time for re-uploaded textures kept them from
+  being evicted. Under memory pressure (textures over 1.5x budget, or under 16 MB free in the
+  pools) textures idle for 90 frames are evicted regardless.
+- The [perf] line lists other main-loop steps taking 2+ ms per frame ("also"): 31-log had
+  loading windows at ~3 fps with only ~29 ms of JS per frame.
