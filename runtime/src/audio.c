@@ -198,7 +198,7 @@ static uint32_t next_job_id = 1;
 
 static void *decode_thread(void *arg) {
     (void)arg;
-    plat_thread_setup("pkr_audio_decode", 2);
+    plat_thread_setup("pkr_audio_decode", 2, 10); // below the main and network threads
     for (;;) {
         pthread_mutex_lock(&jlock);
         while (!jin) pthread_cond_wait(&jcond, &jlock);

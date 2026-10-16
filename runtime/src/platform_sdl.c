@@ -321,4 +321,4 @@ bool plat_audio_start(int rate, void (*mix)(int16_t *out, int frames)) {
     return false;
 }
 
-void plat_thread_setup(const char *name, int core) { (void)name, (void)core; }
+void plat_thread_setup(const char *name, int core, int priority) { (void)name, (void)core, (void)priority; }

@@ -654,7 +654,7 @@ static bool is_aborted(req *r) {
 
 static void *net_thread(void *arg) {
     (void)arg;
-    plat_thread_setup("pkr_net", 2);
+    plat_thread_setup("pkr_net", 1, -10); // core 1: the audio decoder works on core 2
     req *inflight = NULL; // transfers in the multi handle
     for (;;) {
         pthread_mutex_lock(&qlock);

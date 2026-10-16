@@ -67,7 +67,9 @@ typedef struct {
 bool plat_init(int w, int h);
 // Starts the audio output thread: it calls mix(out, frames) for interleaved 16-bit stereo at `rate`.
 bool plat_audio_start(int rate, void (*mix)(int16_t *out, int frames));
-void plat_thread_setup(const char *name, int core); // from inside a worker thread: name it, pin it (Vita)
+// From inside a worker thread: pin it to a CPU core and set its priority relative to the main
+// thread's (negative = more urgent) (Vita).
+void plat_thread_setup(const char *name, int core, int priority);
 void plat_keep_awake(void);                 // reset the console's idle/auto-sleep timer
 long long plat_free_space(const char *path); // free bytes on the storage holding path, -1 if unknown
 bool offline_install(void);                 // offline_install.c: download <data>/game.zip (or an update)

@@ -135,7 +135,7 @@ static bool img_thread_started;
 
 static void *img_thread(void *arg) {
     (void)arg;
-    plat_thread_setup("pkr_image", 1);
+    plat_thread_setup("pkr_image", 1, 10); // below the network thread on the same core
     for (;;) {
         pthread_mutex_lock(&img_lock);
         while (!img_in) pthread_cond_wait(&img_cond, &img_lock);
@@ -254,6 +254,7 @@ typedef struct {
     char family[64];
     bool bold, italic;
     bool latin; // its unicode-range covers basic Latin (CJK-only faces share family names)
+    uint64_t range; // hash of its unicode-range
     plutovg_font_face_t *face;
 } font_entry;
 
@@ -266,6 +267,9 @@ static struct {
     uint64_t hash;
     size_t len;
     plutovg_font_face_t *face;
+    const uint8_t *data; // the font file (owned by the face)
+    uint32_t cmap;       // offset of its format 4 or 12 character map, 0 if none found
+    uint16_t cmap_fmt;
 } font_files[16];
 static int n_font_files;
 static size_t mem_fonts;
@@ -282,13 +286,83 @@ static void lower(char *s) {
 
 static void free_font_data(void *closure) { free(closure); }
 
-// registerFont(family, ArrayBuffer, bold, italic, coversLatin) -> bool
+static inline uint16_t be16(const uint8_t *p) { return (uint16_t)(p[0] << 8 | p[1]); }
+static inline uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
+
+// Finds a Unicode character map (format 12 preferred, else 4) in a TrueType file.
+static void find_cmap(const uint8_t *d, size_t n, uint32_t *off, uint16_t *fmt) {
+    *off = 0, *fmt = 0;
+    if (n < 12) return;
+    uint16_t nt = be16(d + 4);
+    uint32_t cmap = 0;
+    for (uint16_t i = 0; i < nt && 12 + 16u * (i + 1) <= n; i++)
+        if (!memcmp(d + 12 + 16 * i, "cmap", 4)) cmap = be32(d + 12 + 16 * i + 8);
+    if (!cmap || cmap + 4 > n) return;
+    uint16_t ns = be16(d + cmap + 2);
+    for (uint16_t i = 0; i < ns && cmap + 4 + 8u * (i + 1) <= n; i++) {
+        uint16_t pid = be16(d + cmap + 4 + 8 * i), eid = be16(d + cmap + 4 + 8 * i + 2);
+        uint32_t st = cmap + be32(d + cmap + 4 + 8 * i + 4);
+        if (st + 4 > n || !(pid == 0 || (pid == 3 && (eid == 1 || eid == 10)))) continue;
+        uint16_t f = be16(d + st);
+        if (f == 12 && st + 16 <= n) {
+            *off = st, *fmt = 12;
+            return;
+        }
+        if (f == 4 && !*fmt && st + 14 <= n) *off = st, *fmt = 4;
+    }
+}
+
+// Whether the font file maps codepoint cp to a glyph.
+static bool cmap_has(const uint8_t *d, size_t n, uint32_t st, uint16_t fmt, uint32_t cp) {
+    if (fmt == 12) {
+        uint32_t groups = be32(d + st + 12);
+        for (uint32_t lo = 0, hi = groups; lo < hi;) {
+            uint32_t mid = (lo + hi) / 2, g = st + 16 + 12 * mid;
+            if (g + 12 > n) return false;
+            if (cp < be32(d + g)) hi = mid;
+            else if (cp > be32(d + g + 4)) lo = mid + 1;
+            else return be32(d + g + 8) + (cp - be32(d + g)) != 0;
+        }
+        return false;
+    }
+    if (fmt != 4 || cp > 0xFFFF) return false;
+    uint16_t seg = be16(d + st + 6) / 2;
+    uint32_t ends = st + 14, starts = ends + 2u * seg + 2, deltas = starts + 2u * seg, ranges = deltas + 2u * seg;
+    if (ranges + 2u * seg > n) return false;
+    for (uint16_t i = 0; i < seg; i++) {
+        if (cp > be16(d + ends + 2 * i)) continue;
+        uint16_t start = be16(d + starts + 2 * i);
+        if (cp < start) return false;
+        uint16_t ro = be16(d + ranges + 2 * i), glyph;
+        if (!ro) {
+            glyph = (uint16_t)(cp + be16(d + deltas + 2 * i));
+        } else {
+            uint32_t ga = ranges + 2 * i + ro + 2 * (cp - start);
+            if (ga + 2 > n) return false;
+            glyph = be16(d + ga);
+            if (glyph) glyph = (uint16_t)(glyph + be16(d + deltas + 2 * i));
+        }
+        return glyph != 0;
+    }
+    return false;
+}
+
+// Whether face has a glyph for cp (faces whose file isn't known count as having everything).
+static bool face_has(plutovg_font_face_t *face, uint32_t cp) {
+    for (int i = 0; i < n_font_files; i++)
+        if (font_files[i].face == face)
+            return !font_files[i].cmap ||
+                   cmap_has(font_files[i].data, font_files[i].len, font_files[i].cmap, font_files[i].cmap_fmt, cp);
+    return true;
+}
+
+// registerFont(family, ArrayBuffer, bold, italic, coversLatin, unicodeRange) -> bool
 static JSValue n_register_font(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     const char *fam = JS_ToCString(ctx, argv[0]);
     size_t len = 0;
     uint8_t *p = JS_GetArrayBuffer(ctx, &len, argv[1]);
     bool ok = false;
-    if (fam && p && n_fonts < 32) {
+    if (fam && p) {
         uint64_t h = fnv1a(p, len);
         plutovg_font_face_t *face = NULL;
         for (int i = 0; i < n_font_files; i++)
@@ -303,19 +377,38 @@ static JSValue n_register_font(JSContext *ctx, JSValueConst this_val, int argc, 
             if (face && n_font_files < 16) {
                 font_files[n_font_files].hash = h;
                 font_files[n_font_files].len = len;
+                font_files[n_font_files].data = copy;
+                find_cmap(copy, len, &font_files[n_font_files].cmap, &font_files[n_font_files].cmap_fmt);
                 font_files[n_font_files++].face = plutovg_font_face_reference(face);
                 mem_fonts += len;
             }
         }
         if (face) {
-            font_entry *f = &fonts[n_fonts++];
-            snprintf(f->family, sizeof f->family, "%s", fam);
-            lower(f->family);
-            f->bold = argc > 2 && JS_ToBool(ctx, argv[2]);
-            f->italic = argc > 3 && JS_ToBool(ctx, argv[3]);
-            f->latin = argc <= 4 || JS_ToBool(ctx, argv[4]);
-            f->face = face;
-            ok = true;
+            // A face registered again for the same family, style and range replaces the earlier one, as in
+            // browsers, where the face added last wins: the game adds a newer version of its font
+            // file (with the "Lv" glyph at U+F000) after the page's @font-face loaded the old one.
+            font_entry e = {.face = face};
+            snprintf(e.family, sizeof e.family, "%s", fam);
+            lower(e.family);
+            e.bold = argc > 2 && JS_ToBool(ctx, argv[2]);
+            e.italic = argc > 3 && JS_ToBool(ctx, argv[3]);
+            e.latin = argc <= 4 || JS_ToBool(ctx, argv[4]);
+            const char *range = argc > 5 ? JS_ToCString(ctx, argv[5]) : NULL;
+            e.range = range ? fnv1a((const uint8_t *)range, strlen(range)) : 0;
+            JS_FreeCString(ctx, range);
+            font_entry *f = NULL;
+            for (int i = 0; i < n_fonts && !f; i++)
+                if (!strcmp(fonts[i].family, e.family) && fonts[i].bold == e.bold && fonts[i].italic == e.italic &&
+                    fonts[i].range == e.range)
+                    f = &fonts[i];
+            // (the replaced face stays alive: canvases may still be set to it)
+            if (!f && n_fonts < 32) f = &fonts[n_fonts++];
+            if (f) {
+                *f = e;
+                ok = true;
+            } else {
+                plutovg_font_face_destroy(face);
+            }
         }
     }
     if (!ok) JS_FreeValue(ctx, JS_GetException(ctx));
@@ -350,6 +443,7 @@ typedef struct {
     int w, h;
     float fill[4], stroke[4];
     plutovg_font_face_t *face;
+    char family[64]; // lower case, for glyph fallback within the family first
     float font_size;
     // Pixel memory is freed once the canvas has been uploaded to the GPU, unless the canvas is one
     // the game reads back or draws images into ("keep"). Phaser redraws text canvases from scratch
@@ -489,6 +583,8 @@ CFN(c_set_font) {
     const char *fam = JS_ToCString(ctx, argv[0]);
     bool bold = JS_ToBool(ctx, argv[2]), italic = JS_ToBool(ctx, argv[3]);
     plutovg_font_face_t *face = fam ? find_font(fam, bold, italic) : NULL;
+    snprintf(c->family, sizeof c->family, "%s", fam ? fam : "");
+    lower(c->family);
     JS_FreeCString(ctx, fam);
     bool found = face != NULL;
     if (!face && n_fonts) face = fonts[0].face;
@@ -553,6 +649,107 @@ static size_t fix_spaces(char *s, size_t len) {
     return o;
 }
 
+// fontInfo(codepoint) -> "family[b/i/latin] file#k has=0/1; ..." (diagnostics)
+static JSValue n_font_info(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    uint32_t cp = 0;
+    if (argc) JS_ToUint32(ctx, &cp, argv[0]);
+    char out[2048];
+    size_t o = 0;
+    o += snprintf(out + o, sizeof out - o, "%d files, %d faces:", n_font_files, n_fonts);
+    for (int i = 0; i < n_fonts && o < sizeof out - 96; i++) {
+        int k = -1;
+        for (int j = 0; j < n_font_files; j++)
+            if (font_files[j].face == fonts[i].face) k = j;
+        o += snprintf(out + o, sizeof out - o, " %s[%d%d%d] file%d(fmt%d) has=%d;", fonts[i].family, fonts[i].bold, fonts[i].italic,
+                      fonts[i].latin, k, k >= 0 ? font_files[k].cmap_fmt : -1, face_has(fonts[i].face, cp));
+    }
+    return JS_NewString(ctx, out);
+}
+
+// Per-character font fallback, as browsers do: a character the canvas's face has no glyph for is
+// drawn with another registered face that has one, from the same family first (the game's
+// unicode-range faces for CJK, Thai, Devanagari), then any (PokeRogue's text now uses U+F000 for
+// "Lv", which only the newer copy of its font has).
+static plutovg_font_face_t *face_for(c2d *c, uint32_t cp) {
+    if (cp < 0x80 || face_has(c->face, cp)) return c->face; // (ASCII: the game's fonts all have it)
+    for (int pass = 0; pass < 2; pass++)
+        for (int i = n_fonts - 1; i >= 0; i--)
+            if ((pass || !strcmp(fonts[i].family, c->family)) && fonts[i].face != c->face && face_has(fonts[i].face, cp))
+                return fonts[i].face;
+    return c->face;
+}
+
+static uint32_t utf8_next(const char *s, size_t len, size_t *i) {
+    const uint8_t *p = (const uint8_t *)s;
+    uint32_t c = p[*i];
+    int n = c < 0x80 ? 0 : c < 0xE0 ? 1 : c < 0xF0 ? 2 : 3;
+    if (n) c &= 0x3F >> n;
+    (*i)++;
+    for (; n && *i < len; n--, (*i)++) c = c << 6 | (p[*i] & 0x3F);
+    return c;
+}
+
+// Splits s into runs of one face: calls fn(face, start, end, closure) for each; returns false (no
+// call) when the canvas's own face covers it all. Plain ASCII never needs another face.
+typedef void (*run_fn)(c2d *c, plutovg_font_face_t *face, const char *s, size_t n, void *closure);
+static bool for_each_run(c2d *c, const char *s, size_t len, run_fn fn, void *closure) {
+    size_t i = 0;
+    while (i < len && (uint8_t)s[i] < 0x80) i++;
+    if (i == len) return false;
+    bool other = false;
+    for (size_t j = 0; j < len;) {
+        size_t k = j;
+        if (face_for(c, utf8_next(s, len, &k)) != c->face) {
+            other = true;
+            break;
+        }
+        j = k;
+    }
+    if (!other) return false;
+    size_t start = 0;
+    plutovg_font_face_t *cur = NULL;
+    for (size_t j = 0; j < len;) {
+        size_t k = j;
+        plutovg_font_face_t *f = face_for(c, utf8_next(s, len, &k));
+        if (cur && f != cur) {
+            fn(c, cur, s + start, j - start, closure);
+            start = j;
+        }
+        cur = f;
+        j = k;
+    }
+    if (cur) fn(c, cur, s + start, len - start, closure);
+    return true;
+}
+
+typedef struct {
+    float x, y;
+    bool stroke;
+} draw_run_state;
+static void draw_run(c2d *c, plutovg_font_face_t *face, const char *s, size_t n, void *closure) {
+    draw_run_state *st = closure;
+    plutovg_canvas_set_font(c->canvas, face, c->font_size);
+    st->x += st->stroke ? plutovg_canvas_stroke_text(c->canvas, s, (int)n, PLUTOVG_TEXT_ENCODING_UTF8, st->x, st->y)
+                        : plutovg_canvas_fill_text(c->canvas, s, (int)n, PLUTOVG_TEXT_ENCODING_UTF8, st->x, st->y);
+}
+
+typedef struct {
+    float width, minx, maxx;
+    bool any;
+} measure_run_state;
+static void measure_run(c2d *c, plutovg_font_face_t *face, const char *s, size_t n, void *closure) {
+    measure_run_state *st = closure;
+    plutovg_rect_t e = {0};
+    float w = plutovg_font_face_text_extents(face, c->font_size, s, (int)n, PLUTOVG_TEXT_ENCODING_UTF8, &e);
+    if (e.w > 0 || e.h > 0) {
+        float a = st->width + e.x, b = st->width + e.x + e.w;
+        if (!st->any || a < st->minx) st->minx = a;
+        if (!st->any || b > st->maxx) st->maxx = b;
+        st->any = true;
+    }
+    st->width += w;
+}
+
 static JSValue text_op(JSContext *ctx, JSValueConst this_val, JSValueConst *argv, bool stroke) {
     SELF;
     if (!c->face) return JS_UNDEFINED;
@@ -560,8 +757,12 @@ static JSValue text_op(JSContext *ctx, JSValueConst this_val, JSValueConst *argv
     const char *s = JS_ToCStringLen(ctx, &len, argv[0]);
     if (!s) return JS_EXCEPTION;
     len = fix_spaces((char *)s, len);
-    if (stroke) {
-        use_stroke(c);
+    draw_run_state st = {F(1), F(2), stroke};
+    if (stroke) use_stroke(c);
+    else use_fill(c);
+    if (for_each_run(c, s, len, draw_run, &st)) {
+        plutovg_canvas_set_font(c->canvas, c->face, c->font_size);
+    } else if (stroke) {
         plutovg_canvas_stroke_text(c->canvas, s, (int)len, PLUTOVG_TEXT_ENCODING_UTF8, F(1), F(2));
     } else {
         use_fill(c);
@@ -587,7 +788,13 @@ CFN(c_measure_text) {
             return JS_EXCEPTION;
         }
         len = fix_spaces((char *)s, len);
-        width = plutovg_font_face_text_extents(c->face, c->font_size, s, (int)len, PLUTOVG_TEXT_ENCODING_UTF8, &ext);
+        measure_run_state ms = {0};
+        if (for_each_run(c, s, len, measure_run, &ms)) {
+            width = ms.width;
+            ext.x = ms.any ? ms.minx : 0, ext.w = ms.any ? ms.maxx - ms.minx : 0;
+        } else {
+            width = plutovg_font_face_text_extents(c->face, c->font_size, s, (int)len, PLUTOVG_TEXT_ENCODING_UTF8, &ext);
+        }
         plutovg_font_face_get_metrics(c->face, c->font_size, &ascent, &descent, &gap, NULL);
         JS_FreeCString(ctx, s);
     }
@@ -837,6 +1044,7 @@ void canvas_register(JSContext *ctx, JSValue native) {
     canvas_proto = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, canvas_proto, canvas_funcs, sizeof canvas_funcs / sizeof *canvas_funcs);
     JS_SetPropertyStr(ctx, native, "decodeImage", JS_NewCFunction(ctx, n_decode_image, "decodeImage", 1));
+    JS_SetPropertyStr(ctx, native, "fontInfo", JS_NewCFunction(ctx, n_font_info, "fontInfo", 1));
     JS_SetPropertyStr(ctx, native, "decodeImageAsync", JS_NewCFunction(ctx, n_decode_image_async, "decodeImageAsync", 1));
     JS_SetPropertyStr(ctx, native, "decodeImagePoll", JS_NewCFunction(ctx, n_decode_image_poll, "decodeImagePoll", 0));
     JS_SetPropertyStr(ctx, native, "imageMemory", JS_NewCFunction(ctx, n_image_memory, "imageMemory", 0));

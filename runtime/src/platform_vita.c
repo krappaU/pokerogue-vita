@@ -355,8 +355,11 @@ bool plat_audio_start(int rate, void (*mix)(int16_t *out, int frames)) {
     return true;
 }
 
-void plat_thread_setup(const char *name, int core) {
+void plat_thread_setup(const char *name, int core, int priority) {
     (void)name;
     int mask = core == 1 ? SCE_KERNEL_CPU_MASK_USER_1 : core == 2 ? SCE_KERNEL_CPU_MASK_USER_2 : SCE_KERNEL_CPU_MASK_USER_0;
     sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), mask);
+    // The kernel doesn't time-slice threads of equal priority: a busy decoder would keep another
+    // thread on its core from running at all (downloads timed out while sounds were decoded).
+    sceKernelChangeThreadPriority(sceKernelGetThreadId(), 0x10000100 + priority);
 }

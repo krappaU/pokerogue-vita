@@ -694,7 +694,8 @@ int main(int argc, char **argv) {
         in_frame_js = true;
         host_run_jobs(ctx);
         in_frame_js = false;
-        double js_ms = host_now_ms() - t_js;
+        // (promise jobs before the frame count too: during loads, fetched files are handled there)
+        double js_ms = host_now_ms() - t_jobs;
         if (js_ms > 1000) host_log("[perf] slow frame: %.0f ms of JS", js_ms);
         if (JS_GetGCThreshold(JS_GetRuntime(ctx)) != gc_threshold) {
             double all = host_now_ms() - t_jobs;

@@ -259,3 +259,21 @@ Median JS per battle frame on desktop: 3.6 -> 2.9 ms. What remains is mostly the
 code. Desktop's occasional ~75 ms frames are llvmpipe stalling inside drawArrays; the [perf] line
 now reports time inside GL draw calls (and textures re-uploaded after eviction) to see whether the
 Vita's 0.5-0.8 s battle hitches are GPU waits too.
+
+### 29-log (0.38 on the Vita, online session, 2026-10-16)
+- Time inside GL draw calls stayed under 1 ms per frame (max 1 ms): the GPU isn't behind the
+  0.2-0.8 s battle hitches. They come with "N textures re-uploaded" (20-30 at once): textures used
+  every few waves (shop, per-wave UI) are evicted after 600 idle frames (over a minute at 9 fps) and
+  decoded from PNG again on the next use. 0.39 doubles a texture's idle time each time it comes back
+  (up to 16x).
+- Slow rival-battle load: batches of downloads failed after ~16 s with 0 bytes, first seen with 0.36
+  (the network thread). It shared CPU core 2 with the audio decoder at the same priority, and the
+  Vita doesn't time-slice equal priorities, so a busy decoder kept it from running. 0.39 runs it on
+  core 1 above the decoders (image decoding there runs below it).
+- Missing "Lv" glyph: the game's text now uses U+F000, drawn only by the newer pokemon-emerald-pro
+  file the game registers under "pkmnems" for symbol/CJK ranges; the page's own @font-face file,
+  served from Cloudflare's cache since July, lacks it (browsers presumably show a box too). 0.39 has
+  per-character font fallback: a character the font lacks comes from a registered face that has it
+  (same family first), which also fixes mixed CJK text. A face registered again for the same family,
+  style and unicode-range replaces the earlier one (browser precedence).
+- The [perf] JS time now includes the promise jobs before the frame (fetched files are handled there).

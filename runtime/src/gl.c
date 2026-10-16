@@ -555,6 +555,7 @@ typedef struct {
     uint32_t last_used;  // frame number
     uint16_t w, h;
     bool has_src, flip, premul, evicted;
+    uint8_t restores; // times it came back: each doubles the idle time before it can go again
 } tex_rec;
 static tex_rec texrec[TEX_MAX];
 static uint32_t gl_frame;
@@ -607,6 +608,7 @@ static void tex_restore(JSContext *ctx, GLuint id) {
     if (owned && up != px) free((void *)px);
     t->evicted = false;
     evictable_bytes += (size_t)t->w * t->h * 4;
+    if (t->restores < 4) t->restores++;
     n_restores++;
 }
 
@@ -645,7 +647,9 @@ static void textures_evict(void) {
         for (GLuint id = 1; id < TEX_MAX; id++) {
             tex_rec *t = &texrec[id];
             if (!t->has_src || t->evicted) continue;
-            if (gl_frame - t->last_used < TEX_IDLE_FRAMES) continue;
+            // Textures used every few waves (the shop, per-wave UI) would otherwise be evicted and
+            // decoded again each time: 20-30 at once froze the game for half a second.
+            if (gl_frame - t->last_used < ((uint32_t)TEX_IDLE_FRAMES << t->restores)) continue;
             if (t->last_used < oldest) oldest = t->last_used, victim = id;
         }
         if (!victim) {
