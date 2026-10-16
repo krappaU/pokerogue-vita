@@ -471,13 +471,18 @@ FN(w_bufferSubData) {
     int target = gi(ctx, A(0)), offset = gi(ctx, A(1));
     size_t len = 0;
     void *p = buffer_data(ctx, A(2), &len);
-    if (!p) return JS_UNDEFINED;
+    if (p) gl_buffer_sub_data(target, offset, p, len);
+    return JS_UNDEFINED;
+}
+
+// gl.bufferSubData(target, offset, bytes) without a JS view (WebGLPipeline.flush in fastpath.c).
+void gl_buffer_sub_data(int target, int offset, const void *p, size_t len) {
     buf_info *b = buffer_info(bound_buffer(target), false);
     if (b && b->size) {
         if (offset == 0 && !b->partial && len <= b->size) {
             glBufferData(target, len, p, b->usage);
             b->orphaned = true;
-            return JS_UNDEFINED;
+            return;
         }
         if (offset != 0) b->partial = true;
         if (b->orphaned) { // back to the declared size before a partial update
@@ -486,7 +491,6 @@ FN(w_bufferSubData) {
         }
     }
     glBufferSubData(target, offset, len, p);
-    return JS_UNDEFINED;
 }
 
 FN(w_checkFramebufferStatus) { return JS_NewInt32(ctx, glCheckFramebufferStatus(gi(ctx, A(0)))); }
@@ -556,6 +560,7 @@ static tex_rec texrec[TEX_MAX];
 static uint32_t gl_frame;
 static size_t evictable_bytes;
 static int n_evictions, n_restores;
+static double draw_ms_frame, draw_ms_total, draw_ms_max_frame; // see w_drawArrays
 
 static void tex_forget(JSContext *ctx, GLuint id) {
     if (!id || id >= TEX_MAX) return;
@@ -630,6 +635,9 @@ static void textures_for_draw(JSContext *ctx) {
 static void textures_evict(void) {
     static uint32_t next_scan;
     gl_frame++;
+    draw_ms_total += draw_ms_frame;
+    if (draw_ms_frame > draw_ms_max_frame) draw_ms_max_frame = draw_ms_frame;
+    draw_ms_frame = 0;
     if (tex_total <= TEX_BUDGET || evictable_bytes == 0 || gl_frame < next_scan) return;
     for (int round = 0; round < 8 && tex_total > TEX_BUDGET; round++) {
         GLuint victim = 0;
@@ -975,15 +983,29 @@ FN(w_vertexAttrib4f) {
     return JS_UNDEFINED;
 }
 
+// Time spent inside draw calls (a driver that waits for the GPU there shows up as JS time).
 FN(w_drawArrays) {
     textures_for_draw(ctx);
+    double t0 = host_now_ms();
     glDrawArrays(gi(ctx, A(0)), gi(ctx, A(1)), gi(ctx, A(2)));
+    draw_ms_frame += host_now_ms() - t0;
     return JS_UNDEFINED;
 }
 FN(w_drawElements) {
     textures_for_draw(ctx);
+    double t0 = host_now_ms();
     glDrawElements(gi(ctx, A(0)), gi(ctx, A(1)), gi(ctx, A(2)), (const void *)(intptr_t)gi(ctx, A(3)));
+    draw_ms_frame += host_now_ms() - t0;
     return JS_UNDEFINED;
+}
+
+// For the [perf] line: ms spent in the game's draw calls (total and the worst frame) and textures
+// re-uploaded after eviction since the last call.
+void gl_draw_stats(double *total_ms, double *max_frame_ms, int *restores) {
+    static int last_restores;
+    *total_ms = draw_ms_total, *max_frame_ms = draw_ms_max_frame, *restores = n_restores - last_restores;
+    last_restores = n_restores;
+    draw_ms_total = draw_ms_max_frame = 0;
 }
 
 // ---------------------------------------------------------------- textures

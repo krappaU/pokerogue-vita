@@ -134,6 +134,8 @@ bool net_is_local(const char *url);
 // ---------------------------------------------------------------- bindings
 
 void gl_register(JSContext *ctx, JSValue native);        // gl.c
+void gl_buffer_sub_data(int target, int offset, const void *p, size_t len); // gl.c
+void gl_draw_stats(double *total_ms, double *max_frame_ms, int *restores); // gl.c
 void gl_after_frame(void);
 void gl_restore_state(void); // after drawing over the game mid-frame
 void gl_texture_memory(size_t *bytes, size_t *peak, int *count);

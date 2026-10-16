@@ -37,8 +37,16 @@
         if (a[i] === b[i]) continue;
         const x = a[i].split(":")[2].split(","), y = b[i].split(":")[2].split(",");
         const verts = new Set();
-        for (let j = 0; j < Math.max(x.length, y.length); j++) if (x[j] !== y[j]) verts.add(Math.floor(j / 7));
-        out.push("f" + i + ":" + [...verts].join("/"));
+        let first = "";
+        for (let j = 0; j < Math.max(x.length, y.length); j++) {
+          if (x[j] === y[j]) continue;
+          verts.add(Math.floor(j / 7));
+          if (!first) {
+            const f = (u) => new Float32Array(new Uint32Array([+u]).buffer)[0];
+            first = " (vertex " + Math.floor(j / 7) + " field " + (j % 7) + ": " + x[j] + "/" + f(x[j]) + " vs " + y[j] + "/" + f(y[j]) + ")";
+          }
+        }
+        out.push("f" + i + ":" + [...verts].join("/") + first);
       }
       return out.length ? out.join(" ") : "identical";
     };

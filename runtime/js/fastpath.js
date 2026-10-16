@@ -17,6 +17,7 @@
 // 10. Container.renderWebGL in C (src/fastpath.c).
 // 11. TextStyle.setStyle without Phaser's generic GetValue lookups; font metrics remembered.
 // 12. Utils.String.UUID (a texture name for every Text) made in C.
+// 13. WebGLShader.setUniform1..4 in C (PokeRogue's sprite pipelines set ~10 uniforms per sprite).
 //
 // Anything unusual (cropped sprites, custom pivots, masks, post pipelines, pipelines that
 // override batchSprite/batchQuad such as PokeRogue's SpritePipeline) takes Phaser's own path.
@@ -35,7 +36,7 @@
 
   // Returns false if this sprite needs Phaser's own path.
   function canFast(pipeline, go) {
-    return !go.isCropped && !go.frame.customPivot && pipeline.batchQuad === origQuad &&
+    return !go.isCropped && !go.frame.customPivot && pipeline.batchQuad === MP.batchQuad &&
       pipeline.currentShader.vertexComponentCount === 7;
   }
 
@@ -586,12 +587,41 @@
   let useNative = false;
   try { useNative = !!nrc && g.localStorage.getItem("PKR_NATIVE_RENDER") !== "0"; } catch (e) { useNative = !!nrc; }
   if (useNative) {
-    const WP = Phaser.Renderer.WebGL.WebGLPipeline.prototype;
-    g.__native.renderSetup({
-      imageRender, spriteRender, containerRender: nrc, mpBatchSprite: fastBatchSprite, mpBatchQuad: origQuad,
+    const WP = Phaser.Renderer.WebGL.WebGLPipeline.prototype, N = g.__native;
+    // WebGLPipeline.flush / pushBatch and MultiPipeline.batchQuad in C (src/fastpath.c). The C flush
+    // skips emitting its events when eventemitter3 has no listener under the event's name, so only
+    // if listeners are kept under plain names. localStorage PKR_NATIVE_BATCH=0 keeps Phaser's.
+    const PEv = Phaser.Renderer.WebGL.Pipelines && Phaser.Renderer.WebGL.Pipelines.Events;
+    let plainEvents = false;
+    try { const ee = new Phaser.Events.EventEmitter(); ee.on("x", () => {}); plainEvents = !!(ee._events && ee._events.x); } catch (e) { /* no */ }
+    let nativeBatching = !!(N.pipelineFlush && PEv && PEv.BEFORE_FLUSH && PEv.AFTER_FLUSH && plainEvents);
+    try { if (g.localStorage.getItem("PKR_NATIVE_BATCH") === "0") nativeBatching = false; } catch (e) { /* keep */ }
+    if (nativeBatching) {
+      g.__rt.origPipeline = { flush: WP.flush, pushBatch: WP.pushBatch, batchQuad: origQuad };
+      g.__rt.nativePipeline = { flush: N.pipelineFlush, pushBatch: N.pipelinePushBatch, batchQuad: N.makeBatchQuad(origQuad) };
+      WP.flush = g.__rt.nativePipeline.flush;
+      WP.pushBatch = g.__rt.nativePipeline.pushBatch;
+      MP.batchQuad = g.__rt.nativePipeline.batchQuad;
+    }
+    const alphaSingle = Object.getOwnPropertyDescriptor(Phaser.GameObjects.Components.AlphaSingle, "alpha");
+    N.renderSetup({
+      imageRender, spriteRender, containerRender: nrc, mpBatchSprite: fastBatchSprite, mpBatchQuad: MP.batchQuad,
       goWillRender: Phaser.GameObjects.GameObject.prototype.willRender, containerWillRender: Container.willRender,
       wpOnBind: WP.onBind, wpOnBatch: WP.onBatch, wpSetGameObject: WP.setGameObject,
       camAddToRenderList: Phaser.Cameras.Scene2D.BaseCamera.prototype.addToRenderList, textRender,
+      // Recognised on objects and done in C: the setAlpha/setScrollFactor round trip of generic
+      // children, and MultiPipeline.batchSprite for sprites on pipelines with their own batchQuad.
+      alphaSetAlpha: Phaser.GameObjects.Components.Alpha.setAlpha,
+      alphaSingleSetAlpha: Phaser.GameObjects.Components.AlphaSingle.setAlpha,
+      setScrollFactor: Phaser.GameObjects.Components.ScrollFactor.setScrollFactor,
+      mpOrigBatchSprite: origSprite,
+      pmPreBatch: Phaser.Renderer.WebGL.PipelineManager.prototype.preBatch,
+      pmPostBatch: Phaser.Renderer.WebGL.PipelineManager.prototype.postBatch,
+      containerSetScrollFactor: Container.setScrollFactor,
+      alphaSingleSetter: alphaSingle && alphaSingle.value && alphaSingle.value.set,
+      wpPushBatch: WP.pushBatch, wpCreateBatch: WP.createBatch, wpSetVertexBuffer: WP.setVertexBuffer,
+      wpOnBeforeFlush: WP.onBeforeFlush, wpOnAfterFlush: WP.onAfterFlush,
+      evBeforeFlush: PEv ? PEv.BEFORE_FLUSH : "", evAfterFlush: PEv ? PEv.AFTER_FLUSH : "",
     });
   }
   const containerRender = useNative ? nrc : fastContainerRender;
@@ -697,6 +727,19 @@
   if (g.__native.replaceWrap && /xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx/.test(String(Phaser.Utils.String.UUID))) {
     const wrapped = g.__native.replaceWrap(String.prototype.replace);
     Object.defineProperty(String.prototype, "replace", { value: wrapped, writable: true, configurable: true, enumerable: false });
+  }
+
+  // 13. WebGLShader.setUniform1..4: Phaser's code in C (src/fastpath.c js_set_uniform).
+  //     localStorage PKR_NATIVE_UNIFORMS=0 keeps Phaser's.
+  const WS = Phaser.Renderer.WebGL.WebGLShader && Phaser.Renderer.WebGL.WebGLShader.prototype;
+  let nativeUniforms = !!(WS && g.__native.setUniform1);
+  try { if (g.localStorage.getItem("PKR_NATIVE_UNIFORMS") === "0") nativeUniforms = false; } catch (e) { /* keep */ }
+  if (nativeUniforms && /this\.uniforms\[/.test(String(WS.setUniform4))) {
+    g.__rt.origSetUniform = [WS.setUniform1, WS.setUniform2, WS.setUniform3, WS.setUniform4];
+    WS.setUniform1 = g.__native.setUniform1;
+    WS.setUniform2 = g.__native.setUniform2;
+    WS.setUniform3 = g.__native.setUniform3;
+    WS.setUniform4 = g.__native.setUniform4;
   }
 
   g.__rt.fastpath = g.__fastpath = {

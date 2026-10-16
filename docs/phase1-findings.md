@@ -239,3 +239,23 @@ login screen) and in Vita3K (no crash); device timings pending.
 - **Boxes in the shop's price line:** U+00A0 between name and price; text drawing and measuring now
   treat no-break/typographic spaces as spaces and zero-width characters as nothing, as browsers do
   when the font lacks them.
+
+### Battle rendering profile and native pipeline machinery (runtime 0.38, 2026-10-16)
+Desktop profile of an idle battle (offline build, 19,382 JS samples taken every 1,000 interpreter
+operations in a profiling build): rendering 62% of the JS time, updates 27% (16% of it PokeRogue's
+party-icon bob, which moves the 578 starter-select icons every 200 ms / game speed). Of rendering,
+54% was Phaser's own JS and 37% PokeRogue's: its FieldSpritePipeline and SpritePipeline set ~10
+uniforms per sprite in onBind (the sprite pipeline also rebuilds 128-value colour arrays with
+`splice(...spread)`), and flush after every sprite in onBatch, so most objects cost a draw call.
+Moved to C (each checked frame by frame against Phaser with animations and the clock frozen:
+scripts/probe_verify_render.js, probe_verify_uniforms.js, probe_verify_batching.js all identical):
+- the setAlpha/setScrollFactor round trip of every generic container child (Alpha, AlphaSingle,
+  ScrollFactor and Container's versions recognised and written directly);
+- MultiPipeline.batchSprite for sprites on pipelines with their own batchQuad (Pokémon sprites);
+- WebGLShader.setUniform1..4, WebGLPipeline.flush and pushBatch, MultiPipeline.batchQuad.
+The sprite matrix math now rounds exactly like Phaser's (doubles, stored as float32): the float
+version differed by one ulp for sprites with fractional scales.
+Median JS per battle frame on desktop: 3.6 -> 2.9 ms. What remains is mostly the game's pipeline
+code. Desktop's occasional ~75 ms frames are llvmpipe stalling inside drawArrays; the [perf] line
+now reports time inside GL draw calls (and textures re-uploaded after eviction) to see whether the
+Vita's 0.5-0.8 s battle hitches are GPU waits too.

@@ -309,9 +309,15 @@ static void perf_add(double js_ms) {
     net_stats(net, sizeof net);
     char gc[64] = "";
     if (perf_gc) snprintf(gc, sizeof gc, " | GC in %d frames (up to %.0f ms)", perf_gc, perf_gc_max);
-    host_log("[perf] %.1f fps | JS per frame: avg %.2f ms, p50 %.2f, p95 %.2f, max %.2f%s | draw %.1f, swap %.1f, after %.1f ms | net: %s",
+    double gl_total, gl_max;
+    int restores;
+    gl_draw_stats(&gl_total, &gl_max, &restores);
+    char glx[96] = "";
+    if (restores) snprintf(glx, sizeof glx, ", %d textures re-uploaded", restores);
+    host_log("[perf] %.1f fps | JS per frame: avg %.2f ms, p50 %.2f, p95 %.2f, max %.2f%s | draw %.1f, swap %.1f, after %.1f ms | "
+             "in GL draw calls %.1f ms/frame (max %.0f)%s | net: %s",
              perf_n / secs, sum / perf_n, perf_js[perf_n / 2], perf_js[perf_n * 95 / 100], perf_js[perf_n - 1], gc,
-             perf_draw_ms / perf_n, perf_swap_ms / perf_n, perf_after_ms / perf_n, net);
+             perf_draw_ms / perf_n, perf_swap_ms / perf_n, perf_after_ms / perf_n, gl_total / perf_n, gl_max, glx, net);
     perf_gc = 0;
     perf_gc_max = 0;
     perf_swap_ms = perf_after_ms = perf_draw_ms = 0;

@@ -11,6 +11,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "host.h"
 #include "quickjs.h"
 
 static inline double num(JSContext *ctx, JSValueConst v) {
@@ -39,9 +40,9 @@ static inline uint32_t tint(double rgb, double a) {
 }
 
 typedef struct {
-    float offX, offY, gx, gy;
+    double offX, offY, gx, gy;
     double rot;
-    float sx, sy;
+    double sx, sy;
     double x, y, w, h;
     int round;
     float u0, v0, u1, v1;
@@ -49,37 +50,41 @@ typedef struct {
     float tintEffect, unit;
 } sprite_quad;
 
-// Writes one sprite's 6 vertices at vf (MultiPipeline.batchSprite after the property reads).
-static void write_sprite(float *vf, const float *cam, const float *par, const sprite_quad *q) {
+// The sprite's corners (MultiPipeline.batchSprite's matrix math and calcMatrix.setQuad), as
+// x0, y0, x1, y1, x2, y2, x3, y3 in float32 like Phaser's quad array.
+static void sprite_corners(float *out, const float *cam, const float *par, const sprite_quad *q) {
+    // Phaser's TransformMatrix math is done in doubles and stored in Float32Arrays: same here, so
+    // that every stored value rounds exactly like Phaser's.
     // spriteMatrix.applyITRS(gx, gy, rotation, sx, sy)
-    float s = sinf(q->rot), c = cosf(q->rot);
-    float sa = c * q->sx, sb = s * q->sx, sc = -s * q->sy, sd = c * q->sy, se = q->gx, sf = q->gy;
+    double s = sin(q->rot), c = cos(q->rot);
+    float sa = (float)(c * q->sx), sb = (float)(s * q->sx), sc = (float)(-s * q->sy), sd = (float)(c * q->sy);
+    float se = (float)q->gx, sf = (float)q->gy;
 
-    // camMatrix = copy of camera matrix, optionally multiplied with parent (with scroll offset)
+    // camMatrix = copy of camera matrix, optionally multiplied with parent (multiplyWithOffset)
     float m[6];
     memcpy(m, cam, sizeof m);
     if (par) {
-        float pse = q->offX * m[0] + q->offY * m[2] + m[4];
-        float psf = q->offX * m[1] + q->offY * m[3] + m[5];
-        float a0 = m[0], b0 = m[1], c0 = m[2], d0 = m[3];
-        m[0] = par[0] * a0 + par[1] * c0;
-        m[1] = par[0] * b0 + par[1] * d0;
-        m[2] = par[2] * a0 + par[3] * c0;
-        m[3] = par[2] * b0 + par[3] * d0;
-        m[4] = par[4] * a0 + par[5] * c0 + pse;
-        m[5] = par[4] * b0 + par[5] * d0 + psf;
+        double a0 = m[0], b0 = m[1], c0 = m[2], d0 = m[3];
+        double pse = q->offX * a0 + q->offY * c0 + m[4];
+        double psf = q->offX * b0 + q->offY * d0 + m[5];
+        m[0] = (float)((double)par[0] * a0 + (double)par[1] * c0);
+        m[1] = (float)((double)par[0] * b0 + (double)par[1] * d0);
+        m[2] = (float)((double)par[2] * a0 + (double)par[3] * c0);
+        m[3] = (float)((double)par[2] * b0 + (double)par[3] * d0);
+        m[4] = (float)((double)par[4] * a0 + (double)par[5] * c0 + pse);
+        m[5] = (float)((double)par[4] * b0 + (double)par[5] * d0 + psf);
     } else {
-        se += q->offX;
-        sf += q->offY;
+        se = (float)((double)se + q->offX); // spriteMatrix.e -= camera.scrollX * scrollFactorX
+        sf = (float)((double)sf + q->offY);
     }
 
-    // calc = camMatrix * spriteMatrix
-    float a = sa * m[0] + sb * m[2];
-    float b = sa * m[1] + sb * m[3];
-    float cc = sc * m[0] + sd * m[2];
-    float d = sc * m[1] + sd * m[3];
-    float e = se * m[0] + sf * m[2] + m[4];
-    float f = se * m[1] + sf * m[3] + m[5];
+    // calc = camMatrix * spriteMatrix (multiply)
+    float a = (float)((double)sa * m[0] + (double)sb * m[2]);
+    float b = (float)((double)sa * m[1] + (double)sb * m[3]);
+    float cc = (float)((double)sc * m[0] + (double)sd * m[2]);
+    float d = (float)((double)sc * m[1] + (double)sd * m[3]);
+    float e = (float)((double)se * m[0] + (double)sf * m[2] + m[4]);
+    float f = (float)((double)se * m[1] + (double)sf * m[3] + m[5]);
 
     // setQuad
     double x = q->x, y = q->y, xw = q->x + q->w, yh = q->y + q->h;
@@ -95,6 +100,14 @@ static void write_sprite(float *vf, const float *cam, const float *par, const sp
         x2 += dx; y2 += dy;
         x3 += dx; y3 += dy;
     }
+    out[0] = x0, out[1] = y0, out[2] = x1, out[3] = y1, out[4] = x2, out[5] = y2, out[6] = x3, out[7] = y3;
+}
+
+// Writes one sprite's 6 vertices at vf (MultiPipeline.batchSprite after the property reads).
+static void write_sprite(float *vf, const float *cam, const float *par, const sprite_quad *q) {
+    float k[8];
+    sprite_corners(k, cam, par, q);
+    float x0 = k[0], y0 = k[1], x1 = k[2], y1 = k[3], x2 = k[4], y2 = k[5], x3 = k[6], y3 = k[7];
 
     // batchQuad vertex layout: x, y, u, v, unit, tintEffect, tint(u32) x 6 vertices
     uint32_t *vu = (uint32_t *)vf;
@@ -193,6 +206,14 @@ static struct {
     JSValue image_render, sprite_render, container_render, mp_batch_sprite, mp_batch_quad;
     JSValue go_will_render, ct_will_render, wp_on_bind, wp_on_batch, wp_set_game_object, cam_add_to_render_list;
     JSValue text_render;
+    // Phaser's Alpha/AlphaSingle.setAlpha, ScrollFactor.setScrollFactor, MultiPipeline.batchSprite and
+    // PipelineManager.preBatch/postBatch, to recognise them on objects
+    JSValue alpha_set, alpha_single_set, sf_set, mp_orig_batch_sprite, pm_pre_batch, pm_post_batch;
+    // Container.setScrollFactor (x, y, updateChildren), AlphaSingle's alpha setter; WebGLPipeline's
+    // own pushBatch/createBatch/setVertexBuffer/onBeforeFlush/onAfterFlush and its flush events
+    JSValue ct_sf_set, alpha_single_setter, wp_push_batch, wp_create_batch, wp_set_vertex_buffer, wp_on_before_flush,
+        wp_on_after_flush;
+    JSAtom ev_before_flush, ev_after_flush;
 } H;
 
 enum {
@@ -209,7 +230,12 @@ enum {
     A_setTexture2D, A_vertexData, A_start, A_count, A_cutWidth, A_cutHeight, A_u0, A_v0, A_u1, A_v1,
     A_tintTopLeft, A_tintTopRight, A_tintBottomLeft, A_tintBottomRight, A__alphaTL, A__alphaTR, A__alphaBL,
     A__alphaBR, A_tintFill, A_matrixCam, A_scrollX, A_scrollY, A_roundPixels, A_renderRoundPixels, A_renderList,
-    A_addToRenderList, A__pkrTextDirty, A_width, A_height, A_style, A_resolution, A_isRenderTexture, A_COUNT
+    A_addToRenderList, A__pkrTextDirty, A_width, A_height, A_style, A_resolution, A_isRenderTexture,
+    A_uniforms, A_value1, A_value2, A_value3, A_value4, A_setter, A_location, A_webGLUniformLocation, A_renderer, A_gl,
+    A_setProgram, A_batch, A_activeTextures, A_texture, A_maxUnit, A_webGLTexture, A_topology, A_bytes, A_vertexSize,
+    A_vertexBuffer, A_activeBuffer, A_setVertexBuffer, A_webGLBuffer, A__events, A_emit, A_onBeforeFlush, A_onAfterFlush,
+    A_bufferData, A_activeTexture, A_bindTexture, A_drawArrays, A_bindBuffer, A_createBatch, A_unit, A_maxTextures,
+    A_setScrollFactorC, A_COUNT
 };
 static const char *atom_names[A_COUNT] = {
     "list", "length", "localTransform", "matrix", "x", "y", "_rotation", "_scaleX", "_scaleY", "hasPostPipeline",
@@ -226,6 +252,11 @@ static const char *atom_names[A_COUNT] = {
     "tintTopLeft", "tintTopRight", "tintBottomLeft", "tintBottomRight", "_alphaTL", "_alphaTR", "_alphaBL",
     "_alphaBR", "tintFill", "matrix", "scrollX", "scrollY", "roundPixels", "renderRoundPixels", "renderList",
     "addToRenderList", "_pkrTextDirty", "width", "height", "style", "resolution", "isRenderTexture",
+    "uniforms", "value1", "value2", "value3", "value4", "setter", "location", "webGLUniformLocation", "renderer", "gl",
+    "setProgram", "batch", "activeTextures", "texture", "maxUnit", "webGLTexture", "topology", "bytes", "vertexSize",
+    "vertexBuffer", "activeBuffer", "setVertexBuffer", "webGLBuffer", "_events", "emit", "onBeforeFlush", "onAfterFlush",
+    "bufferData", "activeTexture", "bindTexture", "drawArrays", "bindBuffer", "createBatch", "unit", "maxTextures",
+    "setScrollFactor",
 };
 static JSAtom AT[A_COUNT];
 
@@ -266,6 +297,93 @@ static int call0(JSContext *ctx, JSValueConst o, int method, int argc, JSValueCo
     if (JS_IsException(r)) return -1;
     JS_FreeValue(ctx, r);
     return 0;
+}
+
+// Math.max(0, Math.min(1, v)) (Phaser's Clamp), NaN and -0 included
+static double clamp01(double v) {
+    if (v != v) return v;
+    if (v <= 0) return 0;
+    return v > 1 ? 1 : v;
+}
+
+// Whether o's "alpha" accessor is AlphaSingle's (looked up along its prototypes; remembered per
+// prototype object, which only ever gains or keeps that accessor in practice).
+static bool stock_alpha_single(JSContext *ctx, JSValueConst o) {
+    static void *protos[16];
+    static bool answers[16];
+    static int next;
+    if (JS_GetOwnProperty(ctx, NULL, o, AT[A_alpha]) != 0) return false; // own property or error
+    JSValue proto = JS_GetPrototype(ctx, o);
+    void *key = JS_IsObject(proto) ? JS_VALUE_GET_PTR(proto) : NULL;
+    for (int i = 0; i < 16; i++)
+        if (protos[i] == key && key) {
+            JS_FreeValue(ctx, proto);
+            return answers[i];
+        }
+    bool ans = false;
+    for (int depth = 0; depth < 32 && JS_IsObject(proto); depth++) {
+        JSPropertyDescriptor d;
+        int has = JS_GetOwnProperty(ctx, &d, proto, AT[A_alpha]);
+        if (has < 0) {
+            JS_FreeValue(ctx, JS_GetException(ctx));
+            break;
+        }
+        if (has) {
+            ans = (d.flags & JS_PROP_GETSET) && same(d.setter, H.alpha_single_setter);
+            JS_FreeValue(ctx, d.value), JS_FreeValue(ctx, d.getter), JS_FreeValue(ctx, d.setter);
+            break;
+        }
+        JSValue up = JS_GetPrototype(ctx, proto);
+        JS_FreeValue(ctx, proto);
+        proto = up;
+    }
+    JS_FreeValue(ctx, proto);
+    if (key) protos[next] = key, answers[next] = ans, next = (next + 1) % 16;
+    return ans;
+}
+
+// o.setAlpha(tl, tr, bl, br) and o.setScrollFactor(x, y), with Phaser's own versions done here.
+static int set_alpha4(JSContext *ctx, JSValueConst o, double tl, double tr, double bl, double br) {
+    JSValue f = G(o, A_setAlpha);
+    int rc = 0;
+    if (same(f, H.alpha_set)) { // Alpha: four corners, clamped
+        sset(ctx, o, A__alphaTL, JS_NewFloat64(ctx, clamp01(tl)));
+        sset(ctx, o, A__alphaTR, JS_NewFloat64(ctx, clamp01(tr)));
+        sset(ctx, o, A__alphaBL, JS_NewFloat64(ctx, clamp01(bl)));
+        sset(ctx, o, A__alphaBR, JS_NewFloat64(ctx, clamp01(br)));
+    } else if (same(f, H.alpha_single_set)) { // AlphaSingle: this.alpha = tl
+        if (stock_alpha_single(ctx, o)) {
+            // the setter: _alpha = Clamp(v, 0, 1), render flag 2 off at 0 and on otherwise
+            double v = clamp01(tl);
+            sset(ctx, o, A__alpha, JS_NewFloat64(ctx, v));
+            int32_t fl = (int32_t)gnum(ctx, o, A_renderFlags);
+            sset(ctx, o, A_renderFlags, JS_NewInt32(ctx, v == 0 ? fl & ~2 : fl | 2));
+        } else if (JS_SetProperty(ctx, o, AT[A_alpha], JS_NewFloat64(ctx, tl)) < 0) {
+            rc = -1;
+        }
+    } else {
+        JSValueConst al[4] = {JS_NewFloat64(ctx, tl), JS_NewFloat64(ctx, tr), JS_NewFloat64(ctx, bl), JS_NewFloat64(ctx, br)};
+        JSValue r = JS_Call(ctx, f, o, 4, al);
+        if (JS_IsException(r)) rc = -1;
+        JS_FreeValue(ctx, r);
+    }
+    JS_FreeValue(ctx, f);
+    return rc;
+}
+static int set_scroll_factor(JSContext *ctx, JSValueConst o, double x, double y) {
+    JSValue f = G(o, A_setScrollFactor);
+    int rc = 0;
+    if (same(f, H.sf_set) || same(f, H.ct_sf_set)) { // (the container's only does more with updateChildren)
+        sset(ctx, o, A_scrollFactorX, JS_NewFloat64(ctx, x));
+        sset(ctx, o, A_scrollFactorY, JS_NewFloat64(ctx, y));
+    } else {
+        JSValueConst sf[2] = {JS_NewFloat64(ctx, x), JS_NewFloat64(ctx, y)};
+        JSValue r = JS_Call(ctx, f, o, 2, sf);
+        if (JS_IsException(r)) rc = -1;
+        JS_FreeValue(ctx, r);
+    }
+    JS_FreeValue(ctx, f);
+    return rc;
 }
 
 typedef struct {
@@ -319,6 +437,8 @@ static int will_render(JSContext *ctx, rctx *r, JSValueConst child) {
     JS_FreeValue(ctx, wr);
     return res;
 }
+
+static JSValue push_batch(JSContext *ctx, JSValueConst p, JSValueConst tex);
 
 // Whether `pipeline` batches sprites exactly like MultiPipeline (so batch_sprite can do it).
 static bool fast_pipeline(JSContext *ctx, JSValueConst pipeline) {
@@ -393,7 +513,8 @@ static int batch_sprite(JSContext *ctx, rctx *r, JSValueConst pipeline, JSValueC
     if (JS_ToBool(ctx, cb) > 0 && same_tex) {
         unitv = G(pipeline, A_currentUnit);
     } else {
-        unitv = call(ctx, pipeline, A_pushBatch, 1, &tex);
+        unitv = gsame(ctx, pipeline, A_pushBatch, H.wp_push_batch) ? push_batch(ctx, pipeline, tex)
+                                                                   : call(ctx, pipeline, A_pushBatch, 1, &tex);
         if (JS_IsException(unitv)) goto out;
     }
     if (gnum(ctx, pipeline, A_vertexCount) + 6 > gnum(ctx, pipeline, A_vertexCapacity) &&
@@ -509,6 +630,88 @@ static int set_type(JSContext *ctx, rctx *r, JSValueConst list, JSValueConst chi
     return 0;
 }
 
+// A Sprite/Image on a pipeline with Phaser's MultiPipeline.batchSprite that batch_sprite can't take
+// (PokeRogue's SpritePipeline has its own batchQuad): generic_batch_sprite does batchSprite's part.
+static bool generic_sprite_ok(JSContext *ctx, JSValueConst pipeline, JSValueConst bs, JSValueConst go) {
+    if (!JS_IsObject(pipeline) || !(same(bs, H.mp_batch_sprite) || same(bs, H.mp_orig_batch_sprite))) return false;
+    if (gbool(ctx, go, A_isCropped)) return false;
+    JSValue frame = G(go, A_frame);
+    bool ok = JS_IsObject(frame) && !gbool(ctx, frame, A_customPivot);
+    JS_FreeValue(ctx, frame);
+    return ok;
+}
+
+// MultiPipeline.batchSprite(go, camera, parentMatrix) for an uncropped sprite without a custom
+// pivot: the matrix and tint math here, everything else (manager.set and the pipeline's onBind,
+// flush, setGameObject, batchQuad and its onBatch) called as Phaser calls it.
+static int generic_batch_sprite(JSContext *ctx, rctx *r, JSValueConst pipeline, JSValueConst go, JSValueConst tm) {
+    int rc = -1;
+    JSValue frame = JS_UNDEFINED, src = JS_UNDEFINED, tex = JS_UNDEFINED, unitv = JS_UNDEFINED, tmm = JS_UNDEFINED, res = JS_UNDEFINED;
+    {
+        JSValueConst args[2] = {pipeline, go};
+        if (call0(ctx, r->mgr, A_set, 2, args)) goto out;
+    }
+    frame = G(go, A_frame);
+    src = G(frame, A_source);
+    tex = G(src, A_glTexture);
+    double dox = gnum(ctx, go, A__displayOriginX), doy = gnum(ctx, go, A__displayOriginY);
+    double x = -dox + gnum(ctx, frame, A_x), y = -doy + gnum(ctx, frame, A_y), fx = 1, fy = 1;
+    if (gbool(ctx, go, A_flipX)) x += -gnum(ctx, frame, A_realWidth) + dox * 2, fx = -1;
+    if (gbool(ctx, go, A_flipY)) y += -gnum(ctx, frame, A_realHeight) + doy * 2, fy = -1;
+    double gx = gnum(ctx, go, A_x), gy = gnum(ctx, go, A_y);
+    if (r->round_pixels) gx = floor(gx), gy = floor(gy);
+    float *par = NULL;
+    if (JS_IsObject(tm)) {
+        tmm = G(tm, A_matrix);
+        par = f32(ctx, tmm);
+        if (!par) {
+            JS_ThrowTypeError(ctx, "batchSprite: no parent matrix");
+            goto out;
+        }
+    }
+    double a = r->alpha;
+    sprite_quad q = {
+        .offX = -r->scroll_x * gnum(ctx, go, A_scrollFactorX), .offY = -r->scroll_y * gnum(ctx, go, A_scrollFactorY),
+        .gx = gx, .gy = gy, .rot = gnum(ctx, go, A__rotation),
+        .sx = gnum(ctx, go, A__scaleX) * fx, .sy = gnum(ctx, go, A__scaleY) * fy,
+        .x = x, .y = y, .w = gnum(ctx, frame, A_cutWidth), .h = gnum(ctx, frame, A_cutHeight),
+        .round = r->render_round,
+    };
+    float k[8];
+    sprite_corners(k, r->cam_m, par, &q);
+    uint32_t tTL = tint(gnum(ctx, go, A_tintTopLeft), a * gnum(ctx, go, A__alphaTL));
+    uint32_t tTR = tint(gnum(ctx, go, A_tintTopRight), a * gnum(ctx, go, A__alphaTR));
+    uint32_t tBL = tint(gnum(ctx, go, A_tintBottomLeft), a * gnum(ctx, go, A__alphaBL));
+    uint32_t tBR = tint(gnum(ctx, go, A_tintBottomRight), a * gnum(ctx, go, A__alphaBR));
+    if (gnum(ctx, pipeline, A_vertexCount) + 6 > gnum(ctx, pipeline, A_vertexCapacity) && call0(ctx, pipeline, A_flush, 0, NULL))
+        goto out;
+    {
+        JSValueConst args[2] = {go, frame};
+        unitv = call(ctx, pipeline, A_setGameObject, 2, args);
+        if (JS_IsException(unitv)) goto out;
+    }
+    bool post = gbool(ctx, go, A_hasPostPipeline);
+    if ((post || !gsame(ctx, r->mgr, A_preBatch, H.pm_pre_batch)) && call0(ctx, r->mgr, A_preBatch, 1, &go)) goto out;
+    {
+        JSValue args[20];
+        args[0] = go;
+        for (int i = 0; i < 8; i++) args[1 + i] = JS_NewFloat64(ctx, k[i]);
+        args[9] = G(frame, A_u0), args[10] = G(frame, A_v0), args[11] = G(frame, A_u1), args[12] = G(frame, A_v1);
+        args[13] = JS_NewUint32(ctx, tTL), args[14] = JS_NewUint32(ctx, tTR), args[15] = JS_NewUint32(ctx, tBL);
+        args[16] = JS_NewUint32(ctx, tBR), args[17] = G(go, A_tintFill), args[18] = tex, args[19] = unitv;
+        res = call(ctx, pipeline, A_batchQuad, 20, (JSValueConst *)args);
+        for (int i = 9; i < 13; i++) JS_FreeValue(ctx, args[i]);
+        JS_FreeValue(ctx, args[17]);
+        if (JS_IsException(res)) goto out;
+    }
+    if ((post || !gsame(ctx, r->mgr, A_postBatch, H.pm_post_batch)) && call0(ctx, r->mgr, A_postBatch, 1, &go)) goto out;
+    rc = 0;
+out:
+    JS_FreeValue(ctx, frame), JS_FreeValue(ctx, src), JS_FreeValue(ctx, tex), JS_FreeValue(ctx, unitv);
+    JS_FreeValue(ctx, tmm), JS_FreeValue(ctx, res);
+    return rc;
+}
+
 // Phaser's generic per-child path (ContainerWebGLRenderer's loop body after willRender).
 static int render_generic(JSContext *ctx, rctx *r, JSValueConst ct, JSValueConst tm, JSValueConst list, JSValueConst child,
                           int64_t i, int64_t n, double alpha, double sfx, double sfy) {
@@ -530,17 +733,39 @@ static int render_generic(JSContext *ctx, rctx *r, JSValueConst ct, JSValueConst
         if (call0(ctx, mask, A_preRenderWebGL, 3, args)) goto out;
     }
     set_type(ctx, r, list, child, i, n);
+    if (set_scroll_factor(ctx, child, csx * sfx, csy * sfy) || set_alpha4(ctx, child, tl * alpha, tr * alpha, bl * alpha, br * alpha))
+        goto out;
     {
-        JSValueConst sf[2] = {JS_NewFloat64(ctx, csx * sfx), JS_NewFloat64(ctx, csy * sfy)};
-        JSValueConst al[4] = {JS_NewFloat64(ctx, tl * alpha), JS_NewFloat64(ctx, tr * alpha), JS_NewFloat64(ctx, bl * alpha),
-                              JS_NewFloat64(ctx, br * alpha)};
-        if (call0(ctx, child, A_setScrollFactor, 2, sf) || call0(ctx, child, A_setAlpha, 4, al)) goto out;
-        JSValueConst args[5] = {r->renderer, child, r->camera, tm, ct};
-        if (call0(ctx, child, A_renderWebGL, 5, args)) goto out;
-        JSValueConst al2[4] = {JS_NewFloat64(ctx, tl), JS_NewFloat64(ctx, tr), JS_NewFloat64(ctx, bl), JS_NewFloat64(ctx, br)};
-        JSValueConst sf2[2] = {JS_NewFloat64(ctx, csx), JS_NewFloat64(ctx, csy)};
-        if (call0(ctx, child, A_setAlpha, 4, al2) || call0(ctx, child, A_setScrollFactor, 2, sf2)) goto out;
+        JSValue rw = G(child, A_renderWebGL);
+        int e;
+        if (same(rw, H.image_render) || same(rw, H.sprite_render)) {
+            // SpriteWebGLRenderer / ImageWebGLRenderer: camera.addToRenderList(src), then
+            // src.pipeline.batchSprite(src, camera, parentMatrix)
+            e = add_to_render_list(ctx, r, child);
+            JSValue pipeline = e ? JS_UNDEFINED : G(child, A_pipeline);
+            if (!e) {
+                JSValue bs = G(pipeline, A_batchSprite);
+                if (generic_sprite_ok(ctx, pipeline, bs, child)) {
+                    e = generic_batch_sprite(ctx, r, pipeline, child, tm);
+                } else {
+                    JSValueConst args[3] = {child, r->camera, tm};
+                    JSValue v = JS_Call(ctx, bs, pipeline, 3, args);
+                    e = JS_IsException(v) ? -1 : 0;
+                    JS_FreeValue(ctx, v);
+                }
+                JS_FreeValue(ctx, bs);
+            }
+            JS_FreeValue(ctx, pipeline);
+        } else {
+            JSValueConst args[5] = {r->renderer, child, r->camera, tm, ct};
+            JSValue v = JS_Call(ctx, rw, child, 5, args);
+            e = JS_IsException(v) ? -1 : 0;
+            JS_FreeValue(ctx, v);
+        }
+        JS_FreeValue(ctx, rw);
+        if (e) goto out;
     }
+    if (set_alpha4(ctx, child, tl, tr, bl, br) || set_scroll_factor(ctx, child, csx, csy)) goto out;
     if (has_mask) {
         JSValueConst args[2] = {r->renderer, r->camera};
         if (call0(ctx, mask, A_postRenderWebGL, 2, args)) goto out;
@@ -623,16 +848,9 @@ static int render_container(JSContext *ctx, rctx *r, JSValueConst ct, JSValueCon
             set_type(ctx, r, list, child, i, n);
             double csx = gnum(ctx, child, A_scrollFactorX), csy = gnum(ctx, child, A_scrollFactorY);
             double ca = gnum(ctx, child, A__alpha);
-            JSValueConst sf[2] = {JS_NewFloat64(ctx, csx * sfx), JS_NewFloat64(ctx, csy * sfy)};
-            JSValueConst al[4] = {JS_NewFloat64(ctx, ca * alpha), JS_NewFloat64(ctx, ca * alpha), JS_NewFloat64(ctx, ca * alpha),
-                                  JS_NewFloat64(ctx, ca * alpha)};
-            e = call0(ctx, child, A_setScrollFactor, 2, sf) || call0(ctx, child, A_setAlpha, 4, al) ||
+            e = set_scroll_factor(ctx, child, csx * sfx, csy * sfy) || set_alpha4(ctx, child, ca * alpha, ca * alpha, ca * alpha, ca * alpha) ||
                 render_container(ctx, r, child, tm);
-            if (!e) {
-                JSValueConst al2[4] = {JS_NewFloat64(ctx, ca), JS_NewFloat64(ctx, ca), JS_NewFloat64(ctx, ca), JS_NewFloat64(ctx, ca)};
-                JSValueConst sf2[2] = {JS_NewFloat64(ctx, csx), JS_NewFloat64(ctx, csy)};
-                e = call0(ctx, child, A_setAlpha, 4, al2) || call0(ctx, child, A_setScrollFactor, 2, sf2);
-            }
+            if (!e) e = set_alpha4(ctx, child, ca, ca, ca, ca) || set_scroll_factor(ctx, child, csx, csy);
             sset(ctx, r->renderer, A_newType, JS_FALSE);
         } else {
             e = render_generic(ctx, r, ct, tm, list, child, i, n, alpha, sfx, sfy);
@@ -683,10 +901,355 @@ static JSValue js_render_setup(JSContext *ctx, JSValueConst this_val, int argc, 
     HOOK(mp_batch_sprite, "mpBatchSprite") HOOK(mp_batch_quad, "mpBatchQuad") HOOK(go_will_render, "goWillRender")
     HOOK(ct_will_render, "containerWillRender") HOOK(wp_on_bind, "wpOnBind") HOOK(wp_on_batch, "wpOnBatch")
     HOOK(wp_set_game_object, "wpSetGameObject") HOOK(cam_add_to_render_list, "camAddToRenderList")
-    HOOK(text_render, "textRender")
+    HOOK(text_render, "textRender") HOOK(alpha_set, "alphaSetAlpha") HOOK(alpha_single_set, "alphaSingleSetAlpha")
+    HOOK(sf_set, "setScrollFactor") HOOK(mp_orig_batch_sprite, "mpOrigBatchSprite") HOOK(pm_pre_batch, "pmPreBatch")
+    HOOK(pm_post_batch, "pmPostBatch") HOOK(ct_sf_set, "containerSetScrollFactor")
+    HOOK(alpha_single_setter, "alphaSingleSetter") HOOK(wp_push_batch, "wpPushBatch") HOOK(wp_create_batch, "wpCreateBatch")
+    HOOK(wp_set_vertex_buffer, "wpSetVertexBuffer") HOOK(wp_on_before_flush, "wpOnBeforeFlush")
+    HOOK(wp_on_after_flush, "wpOnAfterFlush")
 #undef HOOK
+    JSValue eb = JS_GetPropertyStr(ctx, o, "evBeforeFlush"), ea = JS_GetPropertyStr(ctx, o, "evAfterFlush");
+    H.ev_before_flush = JS_ValueToAtom(ctx, eb);
+    H.ev_after_flush = JS_ValueToAtom(ctx, ea);
+    JS_FreeValue(ctx, eb), JS_FreeValue(ctx, ea);
     H.ready = true;
     return JS_UNDEFINED;
+}
+
+// ---------------------------------------------------------------- WebGLPipeline batching
+// pushBatch / flush / MultiPipeline.batchQuad: Phaser's code in C. PokeRogue's field and sprite
+// pipelines flush after every sprite, so these run for nearly every object drawn in a battle.
+
+// WebGLPipeline.createBatch(texture)
+static JSValue create_batch(JSContext *ctx, JSValueConst p, JSValueConst tex) {
+    if (!gsame(ctx, p, A_createBatch, H.wp_create_batch)) return call(ctx, p, A_createBatch, 1, &tex);
+    JSValue b = JS_NewObject(ctx), arr = JS_NewArray(ctx);
+    JS_SetPropertyUint32(ctx, arr, 0, JS_DupValue(ctx, tex));
+    sset(ctx, b, A_start, JS_NewFloat64(ctx, gnum(ctx, p, A_vertexCount)));
+    sset(ctx, b, A_count, JS_NewInt32(ctx, 0));
+    sset(ctx, b, A_texture, arr);
+    sset(ctx, b, A_unit, JS_NewInt32(ctx, 0));
+    sset(ctx, b, A_maxUnit, JS_NewInt32(ctx, 0));
+    sset(ctx, p, A_currentBatch, JS_DupValue(ctx, b));
+    sset(ctx, p, A_currentUnit, JS_NewInt32(ctx, 0));
+    sset(ctx, p, A_currentTexture, JS_DupValue(ctx, tex));
+    JSValue list = G(p, A_batch);
+    int64_t n = 0;
+    int e = JS_GetLength(ctx, list, &n);
+    if (!e) e = JS_SetPropertyInt64(ctx, list, n, b) < 0 ? -1 : 0;
+    else JS_FreeValue(ctx, b);
+    JS_FreeValue(ctx, list);
+    return e ? JS_EXCEPTION : JS_NewInt32(ctx, 0);
+}
+
+// WebGLPipeline.pushBatch(texture) -> unit
+static JSValue push_batch(JSContext *ctx, JSValueConst p, JSValueConst tex) {
+    JSValue cb = G(p, A_currentBatch), ct = G(p, A_currentTexture), ret;
+    if (JS_ToBool(ctx, cb) <= 0 || (gbool(ctx, p, A_forceZero) && !JS_IsStrictEqual(ctx, tex, ct))) {
+        ret = create_batch(ctx, p, tex);
+    } else if (JS_IsStrictEqual(ctx, tex, ct)) {
+        ret = G(p, A_currentUnit);
+    } else {
+        JSValue texs = G(cb, A_texture);
+        int64_t n = 0, idx = -1;
+        if (JS_GetLength(ctx, texs, &n) < 0) {
+            ret = JS_EXCEPTION;
+        } else {
+            for (int64_t i = 0; i < n && idx < 0; i++) { // indexOf
+                JSValue t = JS_GetPropertyInt64(ctx, texs, i);
+                if (JS_IsStrictEqual(ctx, t, tex)) idx = i;
+                JS_FreeValue(ctx, t);
+            }
+            if (idx >= 0) {
+                sset(ctx, p, A_currentUnit, JS_NewInt64(ctx, idx));
+                sset(ctx, p, A_currentTexture, JS_DupValue(ctx, tex));
+                ret = JS_NewInt64(ctx, idx);
+            } else {
+                JSValue rend = G(p, A_renderer);
+                double maxt = gnum(ctx, rend, A_maxTextures);
+                JS_FreeValue(ctx, rend);
+                if ((double)n == maxt) {
+                    ret = create_batch(ctx, p, tex);
+                } else {
+                    double unit = gnum(ctx, cb, A_unit) + 1;
+                    sset(ctx, cb, A_unit, JS_NewFloat64(ctx, unit));
+                    sset(ctx, cb, A_maxUnit, JS_NewFloat64(ctx, gnum(ctx, cb, A_maxUnit) + 1));
+                    JS_SetPropertyInt64(ctx, texs, n, JS_DupValue(ctx, tex));
+                    sset(ctx, p, A_currentUnit, JS_NewFloat64(ctx, unit));
+                    sset(ctx, p, A_currentTexture, JS_DupValue(ctx, tex));
+                    ret = JS_NewFloat64(ctx, unit);
+                }
+            }
+        }
+        JS_FreeValue(ctx, texs);
+    }
+    JS_FreeValue(ctx, cb), JS_FreeValue(ctx, ct);
+    return ret;
+}
+static JSValue js_push_batch(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    return push_batch(ctx, this_val, argc ? argv[0] : JS_UNDEFINED);
+}
+
+// this.emit(event, this, isPostFlush), skipped when nothing listens (eventemitter3's _events)
+static int emit_flush_event(JSContext *ctx, JSValueConst p, JSAtom ev, JSValueConst post) {
+    JSValue evs = G(p, A__events), l = JS_IsObject(evs) ? JS_GetProperty(ctx, evs, ev) : JS_UNDEFINED;
+    bool listened = !JS_IsUndefined(l);
+    JS_FreeValue(ctx, evs), JS_FreeValue(ctx, l);
+    if (!listened) return 0;
+    JSValueConst args[3] = {JS_AtomToValue(ctx, ev), p, post};
+    int e = call0(ctx, p, A_emit, 3, args);
+    JS_FreeValue(ctx, (JSValue)args[0]);
+    return e;
+}
+
+static int gl_call(JSContext *ctx, JSValueConst gl, int method, int argc, JSValueConst *argv) { return call0(ctx, gl, method, argc, argv); }
+
+// WebGLPipeline.flush(isPostFlush)
+static JSValue js_flush(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    JSValueConst p = this_val, post = argc > 0 && !JS_IsUndefined(argv[0]) ? argv[0] : JS_FALSE;
+    double n = gnum(ctx, p, A_vertexCount);
+    if (!(n > 0)) return JS_DupValue(ctx, p);
+    JSValue gl = JS_UNDEFINED, batches = JS_UNDEFINED, act = JS_UNDEFINED;
+    if (emit_flush_event(ctx, p, H.ev_before_flush, post)) goto fail;
+    if (!gsame(ctx, p, A_onBeforeFlush, H.wp_on_before_flush) && call0(ctx, p, A_onBeforeFlush, 1, &post)) goto fail;
+    gl = G(p, A_gl);
+    JSValue sh = G(p, A_currentShader);
+    double vsize = gnum(ctx, sh, A_vertexSize);
+    JS_FreeValue(ctx, sh);
+    double topo = gnum(ctx, p, A_topology);
+    if (gbool(ctx, p, A_active)) {
+        // setVertexBuffer()
+        if (gsame(ctx, p, A_setVertexBuffer, H.wp_set_vertex_buffer)) {
+            JSValue vb = G(p, A_vertexBuffer), ab = G(p, A_activeBuffer);
+            int e = 0;
+            if (!JS_IsStrictEqual(ctx, vb, ab)) {
+                JSValue wb = G(vb, A_webGLBuffer);
+                JSValueConst args[2] = {JS_NewInt32(ctx, 0x8892), wb};
+                e = gl_call(ctx, gl, A_bindBuffer, 2, args);
+                JS_FreeValue(ctx, wb);
+                if (!e) sset(ctx, p, A_activeBuffer, JS_DupValue(ctx, vb));
+            }
+            JS_FreeValue(ctx, vb), JS_FreeValue(ctx, ab);
+            if (e) goto fail;
+        } else if (call0(ctx, p, A_setVertexBuffer, 0, NULL)) {
+            goto fail;
+        }
+        if (n == gnum(ctx, p, A_vertexCapacity)) {
+            JSValue vd = G(p, A_vertexData);
+            JSValueConst args[3] = {JS_NewInt32(ctx, 0x8892), vd, JS_NewInt32(ctx, 0x88E8)};
+            int e = gl_call(ctx, gl, A_bufferData, 3, args);
+            JS_FreeValue(ctx, vd);
+            if (e) goto fail;
+        } else {
+            JSValue bytes = G(p, A_bytes);
+            size_t off = 0, len = 0, bpe = 0, total = 0;
+            JSValue ab = JS_GetTypedArrayBuffer(ctx, bytes, &off, &len, &bpe);
+            JS_FreeValue(ctx, bytes);
+            if (JS_IsException(ab)) goto fail;
+            uint8_t *base = JS_GetArrayBuffer(ctx, &total, ab);
+            JS_FreeValue(ctx, ab);
+            if (!base) goto fail;
+            size_t want = (size_t)(n * vsize);
+            if (want > len) want = len; // subarray clamps
+            gl_buffer_sub_data(0x8892, 0, base + off, want);
+        }
+        batches = G(p, A_batch);
+        act = G(p, A_activeTextures);
+        int64_t nb = 0;
+        if (JS_GetLength(ctx, batches, &nb) < 0) goto fail;
+        bool fz = gbool(ctx, p, A_forceZero);
+        if (fz) {
+            JSValue a0 = JS_GetPropertyInt64(ctx, act, 0);
+            bool has = JS_ToBool(ctx, a0) > 0;
+            JS_FreeValue(ctx, a0);
+            JSValueConst t0 = JS_NewInt32(ctx, 0x84C0);
+            if (!has && gl_call(ctx, gl, A_activeTexture, 1, &t0)) goto fail;
+        }
+        for (int64_t bi = 0; bi < nb; bi++) {
+            JSValue b = JS_GetPropertyInt64(ctx, batches, bi), texs = G(b, A_texture);
+            int maxu = fz ? 0 : (int)gnum(ctx, b, A_maxUnit);
+            int e = 0;
+            for (int d = 0; d <= maxu && !e; d++) {
+                JSValue c = JS_GetPropertyInt64(ctx, texs, d), cur = JS_GetPropertyInt64(ctx, act, d);
+                if (!JS_IsStrictEqual(ctx, cur, c)) {
+                    if (!fz) {
+                        JSValueConst u = JS_NewInt32(ctx, 0x84C0 + d);
+                        e = gl_call(ctx, gl, A_activeTexture, 1, &u);
+                    }
+                    if (!e) {
+                        JSValue wt = G(c, A_webGLTexture);
+                        JSValueConst args[2] = {JS_NewInt32(ctx, 0x0DE1), wt};
+                        e = gl_call(ctx, gl, A_bindTexture, 2, args);
+                        JS_FreeValue(ctx, wt);
+                    }
+                    if (!e) e = JS_SetPropertyInt64(ctx, act, d, JS_DupValue(ctx, c)) < 0;
+                }
+                JS_FreeValue(ctx, c), JS_FreeValue(ctx, cur);
+            }
+            if (!e) {
+                JSValueConst args[3] = {JS_NewFloat64(ctx, topo), G(b, A_start), G(b, A_count)};
+                e = gl_call(ctx, gl, A_drawArrays, 3, args);
+                JS_FreeValue(ctx, (JSValue)args[1]), JS_FreeValue(ctx, (JSValue)args[2]);
+            }
+            JS_FreeValue(ctx, texs), JS_FreeValue(ctx, b);
+            if (e) goto fail;
+        }
+    }
+    sset(ctx, p, A_vertexCount, JS_NewInt32(ctx, 0));
+    {
+        JSValue list = JS_IsUndefined(batches) ? G(p, A_batch) : JS_DupValue(ctx, batches);
+        int e = JS_SetProperty(ctx, list, AT[A_length], JS_NewInt32(ctx, 0));
+        JS_FreeValue(ctx, list);
+        if (e < 0) goto fail;
+    }
+    sset(ctx, p, A_currentBatch, JS_NULL);
+    sset(ctx, p, A_currentTexture, JS_NULL);
+    sset(ctx, p, A_currentUnit, JS_NewInt32(ctx, 0));
+    if (emit_flush_event(ctx, p, H.ev_after_flush, post)) goto fail;
+    if (!gsame(ctx, p, A_onAfterFlush, H.wp_on_after_flush) && call0(ctx, p, A_onAfterFlush, 1, &post)) goto fail;
+    JS_FreeValue(ctx, gl), JS_FreeValue(ctx, batches), JS_FreeValue(ctx, act);
+    return JS_DupValue(ctx, p);
+fail:
+    JS_FreeValue(ctx, gl), JS_FreeValue(ctx, batches), JS_FreeValue(ctx, act);
+    return JS_EXCEPTION;
+}
+
+// MultiPipeline.batchQuad(go, x0, y0, x1, y1, x2, y2, x3, y3, u0, v0, u1, v1, tintTL, tintTR,
+//   tintBL, tintBR, tintEffect, texture, unit) -> hasFlushed. Pipelines with another vertex layout
+//   use Phaser's (rt.origBatchQuad, passed as the function's data).
+static JSValue js_batch_quad(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv, int magic, JSValue *data) {
+    JSValueConst p = this_val;
+    JSValueConst a[20];
+    for (int i = 0; i < 20; i++) a[i] = i < argc ? argv[i] : JS_UNDEFINED;
+    JSValue sh = G(p, A_currentShader);
+    double vcc = JS_IsObject(sh) ? gnum(ctx, sh, A_vertexComponentCount) : 0;
+    JS_FreeValue(ctx, sh);
+    if (vcc != 7) return JS_Call(ctx, data[0], p, argc, argv);
+    JSValue unitv = JS_IsUndefined(a[19]) ? G(p, A_currentUnit) : JS_DupValue(ctx, a[19]);
+    bool flushed = false;
+    if (gnum(ctx, p, A_vertexCount) + 6 > gnum(ctx, p, A_vertexCapacity)) {
+        if (call0(ctx, p, A_flush, 0, NULL)) goto fail;
+        flushed = true;
+    }
+    JSValue cb = G(p, A_currentBatch);
+    bool has_cb = JS_ToBool(ctx, cb) > 0;
+    JS_FreeValue(ctx, cb);
+    if (!has_cb) { // unit = this.setTexture2D(texture)
+        JS_FreeValue(ctx, unitv);
+        unitv = call(ctx, p, A_setTexture2D, 1, &a[18]);
+        if (JS_IsException(unitv)) goto fail;
+    }
+    {
+        double v[18];
+        for (int i = 1; i <= 17; i++) v[i] = num(ctx, a[i]);
+        float unit = (float)num(ctx, unitv), te = (float)v[17];
+        uint32_t t[4];
+        for (int i = 0; i < 4; i++) {
+            uint32_t u = 0;
+            JS_ToUint32(ctx, &u, a[13 + i]);
+            t[i] = u;
+        }
+        JSValue vd = G(p, A_vertexData);
+        size_t vsize;
+        uint8_t *vb = JS_GetArrayBuffer(ctx, &vsize, vd);
+        JS_FreeValue(ctx, vd);
+        double vc = gnum(ctx, p, A_vertexCount);
+        if (!vb || (vc * 7 + 42) * 4 > vsize) {
+            JS_ThrowRangeError(ctx, "batchQuad: vertex buffer overflow");
+            goto fail;
+        }
+        float *vf = (float *)vb + (size_t)vc * 7;
+        uint32_t *vu = (uint32_t *)vf;
+        // x0 y0 u0 v0 | x1 y1 u0 v1 | x2 y2 u1 v1 | x0 y0 u0 v0 | x2 y2 u1 v1 | x3 y3 u1 v0
+        const int xi[6] = {1, 3, 5, 1, 5, 7}, ui[6] = {9, 9, 11, 9, 11, 11}, vi[6] = {10, 12, 12, 10, 12, 10}, ti[6] = {0, 2, 3, 0, 3, 1};
+        for (int k = 0; k < 6; k++) {
+            vf[k * 7 + 0] = (float)v[xi[k]], vf[k * 7 + 1] = (float)v[xi[k] + 1];
+            vf[k * 7 + 2] = (float)v[ui[k]], vf[k * 7 + 3] = (float)v[vi[k]];
+            vf[k * 7 + 4] = unit, vf[k * 7 + 5] = te, vu[k * 7 + 6] = t[ti[k]];
+        }
+        vc += 6;
+        sset(ctx, p, A_vertexCount, JS_NewInt32(ctx, (int32_t)vc));
+        JSValue cb2 = G(p, A_currentBatch);
+        sset(ctx, cb2, A_count, JS_NewFloat64(ctx, vc - gnum(ctx, cb2, A_start)));
+        JS_FreeValue(ctx, cb2);
+    }
+    JS_FreeValue(ctx, unitv);
+    if (!gsame(ctx, p, A_onBatch, H.wp_on_batch) && call0(ctx, p, A_onBatch, 1, &a[0])) return JS_EXCEPTION;
+    return JS_NewBool(ctx, flushed);
+fail:
+    JS_FreeValue(ctx, unitv);
+    return JS_EXCEPTION;
+}
+
+// makeBatchQuad(phaserBatchQuad) -> the C batchQuad (falls back to Phaser's for other layouts)
+static JSValue js_make_batch_quad(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    return JS_NewCFunctionData(ctx, js_batch_quad, 20, 0, 1, argv);
+}
+
+// ---------------------------------------------------------------- uniforms
+// WebGLShader.setUniform1..4(setter, name, v1[, v2, v3, v4], skipCheck): Phaser's code, run for
+// every uniform PokeRogue's sprite pipelines set on every sprite (thousands of calls per frame).
+//   var u = this.uniforms[name];
+//   if (u && (skipCheck || u.value1 !== v1 || ...)) { u.setter ||= setter; u.value1 = v1 ...;
+//     this.renderer.setProgram(this.program); setter.call(this.gl, u.location.webGLUniformLocation, v1 ...);
+//     this.pipeline.currentShader = this; }
+//   return this;
+static JSValue js_set_uniform(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv, int n) {
+    if (!AT[0])
+        for (int i = 0; i < A_COUNT; i++) AT[i] = JS_NewAtom(ctx, atom_names[i]);
+    JSValueConst setter = argv[0];
+    JSValue uniforms = G(this_val, A_uniforms);
+    JSAtom name = JS_ValueToAtom(ctx, argv[1]);
+    JSValue u = JS_EXCEPTION;
+    if (name != JS_ATOM_NULL) {
+        u = JS_IsObject(uniforms) ? JS_GetProperty(ctx, uniforms, name) : JS_ThrowTypeError(ctx, "setUniform: no uniforms");
+        JS_FreeAtom(ctx, name);
+    }
+    JS_FreeValue(ctx, uniforms);
+    JSValue ret = JS_DupValue(ctx, this_val);
+    if (JS_IsException(u)) {
+        JS_FreeValue(ctx, ret);
+        return JS_EXCEPTION;
+    }
+    if (JS_ToBool(ctx, u) <= 0) goto done;
+    static const int vat[4] = {A_value1, A_value2, A_value3, A_value4};
+    bool change = argc > 2 + n && JS_ToBool(ctx, argv[2 + n]) > 0;
+    for (int i = 0; i < n && !change; i++) {
+        JSValue cur = G(u, vat[i]);
+        change = !JS_IsStrictEqual(ctx, cur, argc > 2 + i ? argv[2 + i] : JS_UNDEFINED);
+        JS_FreeValue(ctx, cur);
+    }
+    if (!change) goto done;
+    JSValue cs = G(u, A_setter);
+    bool has = JS_ToBool(ctx, cs) > 0;
+    JS_FreeValue(ctx, cs);
+    if (!has) sset(ctx, u, A_setter, JS_DupValue(ctx, setter));
+    for (int i = 0; i < n; i++) sset(ctx, u, vat[i], JS_DupValue(ctx, argc > 2 + i ? argv[2 + i] : JS_UNDEFINED));
+    JSValue renderer = G(this_val, A_renderer), program = G(this_val, A_program);
+    JSValue r = call(ctx, renderer, A_setProgram, 1, (JSValueConst *)&program);
+    JS_FreeValue(ctx, renderer), JS_FreeValue(ctx, program);
+    if (JS_IsException(r)) goto fail;
+    JS_FreeValue(ctx, r);
+    JSValue gl = G(this_val, A_gl), loc = G(u, A_location), wl = G(loc, A_webGLUniformLocation);
+    JSValueConst args[5] = {wl};
+    for (int i = 0; i < n; i++) args[1 + i] = argc > 2 + i ? argv[2 + i] : JS_UNDEFINED;
+    r = JS_Call(ctx, setter, gl, n + 1, args);
+    JS_FreeValue(ctx, gl), JS_FreeValue(ctx, loc), JS_FreeValue(ctx, wl);
+    if (JS_IsException(r)) goto fail;
+    JS_FreeValue(ctx, r);
+    JSValue pipeline = G(this_val, A_pipeline);
+    if (JS_IsObject(pipeline)) sset(ctx, pipeline, A_currentShader, JS_DupValue(ctx, this_val));
+    else JS_ThrowTypeError(ctx, "setUniform: shader has no pipeline");
+    bool bad = !JS_IsObject(pipeline);
+    JS_FreeValue(ctx, pipeline);
+    if (bad) goto fail;
+done:
+    JS_FreeValue(ctx, u);
+    return ret;
+fail:
+    JS_FreeValue(ctx, u);
+    JS_FreeValue(ctx, ret);
+    return JS_EXCEPTION;
 }
 
 // ---------------------------------------------------------------- UUID
@@ -757,6 +1320,14 @@ static JSValue js_replace_wrap(JSContext *ctx, JSValueConst this_val, int argc, 
 }
 
 void fastpath_register(JSContext *ctx, JSValue native) {
+    JS_SetPropertyStr(ctx, native, "pipelinePushBatch", JS_NewCFunction(ctx, js_push_batch, "pushBatch", 1));
+    JS_SetPropertyStr(ctx, native, "pipelineFlush", JS_NewCFunction(ctx, js_flush, "flush", 1));
+    JS_SetPropertyStr(ctx, native, "makeBatchQuad", JS_NewCFunction(ctx, js_make_batch_quad, "makeBatchQuad", 1));
+    for (int n = 1; n <= 4; n++) {
+        char name[16];
+        snprintf(name, sizeof name, "setUniform%d", n);
+        JS_SetPropertyStr(ctx, native, name, JS_NewCFunctionMagic(ctx, js_set_uniform, name, 3 + n, JS_CFUNC_generic_magic, n));
+    }
     JS_SetPropertyStr(ctx, native, "batchSprite", JS_NewCFunction(ctx, js_batch_sprite, "batchSprite", 30));
     JS_SetPropertyStr(ctx, native, "batchVerts", JS_NewCFunction(ctx, js_batch_verts, "batchVerts", 8));
     JS_SetPropertyStr(ctx, native, "renderContainer", JS_NewCFunction(ctx, js_render_container, "renderContainer", 4));
