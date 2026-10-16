@@ -251,7 +251,9 @@ def github_token():
     if tok:
         return tok
     try:
-        return subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, check=True).stdout.strip()
+        # systemd services get no HOME, where gh keeps its login.
+        env = {**os.environ, "HOME": os.path.expanduser("~")}
+        return subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, check=True, env=env).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         return None
 
