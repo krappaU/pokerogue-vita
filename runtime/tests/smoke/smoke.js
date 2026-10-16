@@ -201,10 +201,16 @@ async function run() {
     c.width = 960; c.height = 544;
     const gl = c.getContext("webgl");
     if (!gl) return "no context";
+    // Names the first call that raised a GL error (vitaGL rejects some enums desktop GL accepts).
+    const stale = [];
+    for (let e; (e = gl.getError()) && stale.length < 8;) stale.push("0x" + e.toString(16));
+    if (stale.length) console.log("[test] note: GL errors pending before the WebGL check: " + stale.join(" "));
+    const ok = (step) => { const e = gl.getError(); if (e) throw new Error("GL error 0x" + e.toString(16) + " after " + step); };
     const sh = (type, src) => {
       const s = gl.createShader(type);
       gl.shaderSource(s, src);
       gl.compileShader(s);
+      ok("compileShader");
       if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
       return s;
     };
@@ -215,6 +221,7 @@ async function run() {
       "void main() { vec4 texture = color; gl_FragColor = texture; }"));
     gl.linkProgram(p);
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) return "link: " + gl.getProgramInfoLog(p);
+    ok("linkProgram");
     gl.useProgram(p);
     const buf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, buf);
@@ -222,16 +229,36 @@ async function run() {
     const loc = gl.getAttribLocation(p, "pos");
     gl.enableVertexAttribArray(loc);
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    ok("vertex setup");
     gl.uniform4f(gl.getUniformLocation(p, "color"), 0, 0.5, 1, 1);
-    gl.viewport(0, 0, 960, 544);
+    // Into a framebuffer object, as Phaser's render targets do (reading the screen's back buffer
+    // is not reliable in Vita3K).
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 16, 16, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    const fb = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) return "framebuffer incomplete";
+    ok("framebuffer setup");
+    gl.viewport(0, 0, 16, 16);
     gl.clearColor(1, 0, 0, 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
+    ok("uniform/viewport/clear");
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    ok("drawArrays");
     const px = new Uint8Array(4);
-    gl.readPixels(480, 272, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
-    const e = gl.getError();
-    if (e) return "GL error " + e;
-    if (px[0] > 5 || Math.abs(px[1] - 128) > 3 || px[2] < 250) return "pixel " + Array.from(px);
+    gl.readPixels(8, 8, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    ok("readPixels");
+    // On the Vita's GPU (vitaGL reports "SGX543MP4+") pixels are read back from GPU memory, which
+    // Vita3K doesn't fill from its host renderer (always zeros): there only the calls are checked.
+    const vitagl = /SGX543/.test(String(gl.getParameter(gl.RENDERER)));
+    if (vitagl) console.log("[test] note: vitaGL: pixel readback not checked");
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.deleteFramebuffer(fb);
+    gl.deleteTexture(tex);
+    if (!vitagl && (px[0] > 5 || Math.abs(px[1] - 128) > 3 || px[2] < 250)) return "pixel " + Array.from(px);
   });
 
   // ------------------------------------------------------------ audio
