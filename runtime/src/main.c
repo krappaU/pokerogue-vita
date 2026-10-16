@@ -265,7 +265,13 @@ static void control_poll(JSContext *ctx, bool *quit) {
 #define PKR_COMMIT "unknown"
 #endif
 
-const char *host_version_string(void) { return "PokeRogue Vita " PKR_VERSION " (" PKR_COMMIT ")"; }
+#ifdef PKR_DEV
+#define PKR_FLAVOR " dev"
+#else
+#define PKR_FLAVOR ""
+#endif
+
+const char *host_version_string(void) { return "PokeRogue Vita " PKR_VERSION PKR_FLAVOR " (" PKR_COMMIT ")"; }
 
 // ---------------------------------------------------------------- frame stats
 
@@ -425,7 +431,7 @@ static void draw_hud(JSContext *ctx, double js_ms) {
     if (now - t0 >= 500 || !text[0]) {
         struct mallinfo mi = mallinfo();
         double secs = (now - t0) / 1000.0;
-        snprintf(text, sizeof text, "v%s %s | %.0f fps | JS %.1f ms | %.0f MB", PKR_VERSION, PKR_COMMIT,
+        snprintf(text, sizeof text, "v%s%s %s | %.0f fps | JS %.1f ms | %.0f MB", PKR_VERSION, PKR_FLAVOR, PKR_COMMIT,
                  secs > 0 ? frames / secs : 0, frames ? js_sum / frames : 0, (unsigned)mi.uordblks / 1048576.0);
         t0 = now, js_sum = 0, frames = 0;
     }
@@ -507,8 +513,8 @@ static void save_screenshot(const char *path) {
 //   local=game                      play an offline build of the game from <data>/game (no login,
 //                                   saves stay on the console); automatic if <data>/game exists
 //   online=1                        play the live site even if <data>/game exists
-//   devserver=http://host:8765/     dev server for test builds and log upload (devtools.c,
-//   devkey=<secret>                 tools/devserver); devbranch=<branch>: its builds of that branch
+//   devserver=http://host:8765/     dev builds only: dev server for test builds and log upload
+//   devkey=<secret>                 (devtools.c, tools/devserver); devbranch=<branch>: that branch's builds
 // Is an offline build of the game in <data>/game? The start screen offers it (unless config.txt
 // decides: online=1, or local=<dir>).
 static char offline_dir[600], offline_version[64] = "?";

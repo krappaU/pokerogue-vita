@@ -10,7 +10,7 @@ the internet. Only the Python standard library is needed.
   GET  /build.vpk?key=K&id=ID        that build's .vpk (supports resuming with Range)
   POST /log?key=K&kind=prev|now      a log from the console, saved under <dir>/logs/
 
-Builds come from the newest CI run (push events) that uploaded a .vpk artifact, on any branch or
+Builds come from the newest CI run (push events) that uploaded a dev .vpk artifact, on any branch or
 on --branch / the console's devbranch=. With --vpk, a local file (or the newest .vpk in a folder,
 e.g. runtime/build-vita) is served instead, for builds made on this machine.
 """
@@ -87,9 +87,10 @@ class GitHub:
         for run in runs.get("workflow_runs", []):
             arts = json.load(self.get(f"/repos/{self.repo}/actions/runs/{run['id']}/artifacts"))
             for a in arts.get("artifacts", []):
-                if not a["name"].startswith("pokerogue-") or a.get("expired"):
+                # Only dev builds: they keep the dev server client, so the next update works too.
+                if not a["name"].startswith("pokerogue-dev-") or a.get("expired"):
                     continue
-                version = a["name"].split("-")[1]
+                version = a["name"].split("-")[2]
                 sha = run["head_sha"][:7]
                 title = (run.get("display_title") or "")[:60]
                 build = {

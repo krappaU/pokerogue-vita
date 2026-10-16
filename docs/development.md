@@ -31,11 +31,16 @@ The app also needs `ur0:data/libshacccg.suprx` (Sony's shader compiler, extracte
 with ShaRKBR33D or ShaRKF00D); vitaGL compiles shaders with it at runtime. Never commit or share it.
 
 ## Test builds and logs without FTP (dev server)
+Dev builds only: `PKR_DEV=1 runtime/scripts/build_vita.sh` (`build-vita-dev/pokerogue-<VERSION>-dev.vpk`;
+CI uploads it as the `pokerogue-dev-*` artifact). Normal builds, the ones handed to players, don't
+contain this code at all: they never replace their own files or send logs anywhere. Dev builds
+show "dev" after the version.
+
 `tools/devserver/devserver.py` (Python standard library only) runs on any machine the console can
 reach, the internet included: the console opens every connection, so nothing on the home network
 is exposed. Once it is set up, after one install from VitaShell:
 - **New builds:** before the start screen the app asks the server for its newest build: the latest
-  CI `.vpk` (push runs; any branch, or the one in `devbranch=`), or with `--vpk` one built on that
+  CI dev `.vpk` (push runs; any branch, or the one in `devbranch=`), or with `--vpk` one built on that
   machine. If it isn't the one running, the app asks, downloads it, replaces its own files in
   `ux0:app/PKRV00001` (eboot.bin, js/, cacert.pem) and restarts. `sce_sys/` (LiveArea, param.sfo)
   is left alone, so changes there still need an install from VitaShell. If installing fails, the
@@ -48,7 +53,7 @@ is exposed. Once it is set up, after one install from VitaShell:
 
 Setup:
 1. On the server: `DEVSERVER_KEY=<secret> tools/devserver/devserver.py` (port 8765; `--vpk
-   runtime/build-vita` to serve local builds instead of CI's). CI builds need a GitHub token
+   runtime/build-vita-dev` to serve dev builds made there instead of CI's). CI builds need a GitHub token
    (`gh auth login`, or `GITHUB_TOKEN`). Make a key with
    `python3 -c 'import secrets; print(secrets.token_urlsafe(16))'`.
 2. In `ux0:data/pokerogue/config.txt` on the console:
@@ -59,7 +64,7 @@ Setup:
    Plain HTTP sends the key and logs unencrypted; put the server behind an HTTPS proxy (Caddy,
    nginx) and use an `https://` URL to avoid that.
 
-Without `devserver=` none of this runs, so release builds behave as before.
+Even a dev build does nothing of this without `devserver=`.
 
 ## Vita gotchas
 - CMake needs `-DCMAKE_TOOLCHAIN_FILE=$VITASDK/share/vita.toolchain.cmake`.

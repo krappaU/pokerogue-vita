@@ -85,11 +85,19 @@ void ui_message_wait(const char *msg);  // until X or O
 bool json_str(const char *from, const char *key, char *out, size_t n);
 long long json_num(const char *from, const char *key);
 bool ui_download(const char *url, const char *path, const char *what, char *err, size_t errn); // with progress, O cancels
-// Dev server (devtools.c): test builds and log upload, only when config.txt names a server.
+// Dev server (devtools.c): test builds and log upload. Dev builds only (PKR_DEV): a player's build
+// never replaces its own code or sends data anywhere but the game's servers.
+#ifdef PKR_DEV
 void dev_start(const char *prev_log);  // after net_init: uploads the previous run's log
 bool dev_offer_update(void);           // start screen: installs a newer test build (restarts the app)
 void dev_send_log(void);               // L + R + START in game: uploads the current log
-void dev_frame(void);                  // main loop: shows upload results                 // offline_install.c: download <data>/game.zip (or an update)
+void dev_frame(void);                  // main loop: shows upload results
+#else
+static inline void dev_start(const char *prev_log) { (void)prev_log; }
+static inline bool dev_offer_update(void) { return false; }
+static inline void dev_send_log(void) {}
+static inline void dev_frame(void) {}
+#endif                 // offline_install.c: download <data>/game.zip (or an update)
 void offline_update_check_start(void);      // background check for a newer offline game release
 const char *offline_update_available(const char *installed); // its tag, or NULL
 void plat_shutdown(void);
