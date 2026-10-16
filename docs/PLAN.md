@@ -91,6 +91,7 @@ Performance (the main remaining work):
   flushes, colour arrays rebuilt with `splice(...spread)`) are now the largest cost. Planned: a
   native Phaser renderer behind Phaser's API (branch `native-renderer`), engine-level speedups in
   QuickJS (fast paths for `splice`/spread), and checking whether a JIT is possible.
+  What is native today and what still runs in Phaser's JS: [render-coverage.md](render-coverage.md).
 - Loads: startup ~17 s with a warm cache (over a minute after each game update while its code is
   compiled), wave and trainer-battle transitions of several seconds, hitches when evicted textures
   are re-uploaded. The `[perf]` line now names slow main-loop steps; check the next logs.

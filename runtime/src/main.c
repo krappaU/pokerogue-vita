@@ -132,22 +132,32 @@ static char pending_shot[512];
 static struct {
     char key[32];
     int release_frame;
+    double release_at;
 } pending_release[8];
 static int frame_no;
 static int pending_tap_up = -1;
 static float tap_x, tap_y;
 
+static double ctl_wait_until; // "wait": no further commands before this time
+
 static void control_line(JSContext *ctx, char *line, bool *quit) {
     char *arg = strchr(line, ' ');
     if (arg) *arg++ = 0;
-    if (!strcmp(line, "key") && arg) {
+    if (!strcmp(line, "wait") && arg) {
+        // the pause a script asked for, counted from when the previous command ran (scripts/drive.sh
+        // turns its sleeps into these): with long frames, commands queued meanwhile kept their
+        // spacing instead of running back to back
+        ctl_wait_until = host_now_ms() + atof(arg) * 1000;
+    } else if (!strcmp(line, "key") && arg) {
         plat_inject_key(arg, true);
         for (int i = 0; i < 8; i++) {
             if (!pending_release[i].key[0]) {
                 snprintf(pending_release[i].key, sizeof pending_release[i].key, "%s", arg);
-                // released on the next frame: held longer, slow desktop frames (100-200 ms) turned
-                // a tap into the game's 250 ms key repeat
+                // released after 120 ms like a finger's tap, and never in the frame that saw the
+                // press: counted in frames, slow desktop frames (100-200 ms) either turned taps into
+                // the game's 250 ms key repeat or put press and release into one game update
                 pending_release[i].release_frame = frame_no + 1;
+                pending_release[i].release_at = host_now_ms() + 120;
                 break;
             }
         }
@@ -210,12 +220,18 @@ static void control_poll(JSContext *ctx, bool *quit) {
         pending_tap_up = -1;
     }
     for (int i = 0; i < 8; i++) {
-        if (pending_release[i].key[0] && frame_no >= pending_release[i].release_frame) {
+        if (pending_release[i].key[0] && frame_no >= pending_release[i].release_frame &&
+            host_now_ms() >= pending_release[i].release_at) {
             plat_inject_key(pending_release[i].key, false);
             pending_release[i].key[0] = 0;
         }
     }
     if (!g_cfg.control) return;
+    // One key tap at a time: the next command waits until the tap's key is released. Commands
+    // appended during a long frame would otherwise all run at its end and merge their taps.
+    for (int i = 0; i < 8; i++)
+        if (pending_release[i].key[0]) return;
+    if (host_now_ms() < ctl_wait_until) return;
     FILE *f = fopen(g_cfg.control, "r");
     if (!f) return;
     fseek(f, 0, SEEK_END);
@@ -229,7 +245,9 @@ static void control_poll(JSContext *ctx, bool *quit) {
             if (n && line[n - 1] != '\n') break; // partial line; read it next frame
             ctl_offset += n;
             line[--n] = 0;
+            bool hold = !strncmp(line, "key ", 4) || !strncmp(line, "wait ", 5);
             control_line(ctx, line, quit);
+            if (hold) break; // the rest waits for the release or the pause (see above)
         }
     }
     fclose(f);

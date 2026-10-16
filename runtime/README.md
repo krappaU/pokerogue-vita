@@ -57,6 +57,8 @@ a screenshot).
 Every replacement of Phaser code is checked against Phaser's own output with animations frozen:
 `scripts/probe_verify_render.js` (vertex data per flush), `probe_verify_uniforms.js` (GL uniform
 calls) and `probe_verify_batching.js` (draw calls, texture binds, uploaded vertex bytes).
+[../docs/render-coverage.md](../docs/render-coverage.md) lists which draw features and screens take
+the native paths.
 
 ## Status
 See the [root README](../README.md) and the open items in [../docs/PLAN.md](../docs/PLAN.md).
