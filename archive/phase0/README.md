@@ -1,5 +1,10 @@
 # Phase 0: QuickJS-on-Vita feasibility benchmark
 
+> **Archived.** This was the feasibility benchmark that decided the project could work (see
+> [docs/phase0-findings.md](../../docs/phase0-findings.md)). It is kept for history and is not
+> maintained: paths below are as they were (`phase0/`), and its measuring tools now live in
+> [tools/measure](../../tools/measure).
+
 Answers one question before the real port is built: is the Vita's CPU fast enough to run
 PokeRogue's JavaScript in QuickJS-ng (an interpreter, no JIT)?
 

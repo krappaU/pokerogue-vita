@@ -417,7 +417,7 @@ static JSValue n_register_font(JSContext *ctx, JSValueConst this_val, int argc, 
 }
 
 // Best face for a family: one covering Latin text with the right style, then any Latin face, then
-// anything with that name. Per-glyph fallback for mixed CJK text is not done yet.
+// anything with that name (characters it lacks come from other faces: see face_for).
 static plutovg_font_face_t *find_font(const char *family, bool bold, bool italic) {
     char fam[64];
     snprintf(fam, sizeof fam, "%s", family);

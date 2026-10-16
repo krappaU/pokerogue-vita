@@ -33,7 +33,7 @@ pokerogue.net (index.html, JS chunks, assets)  ←→  api.pokerogue.net
 │  QuickJS-ng ── runs the unmodified game bundle (ES2023, modules) │
 │  Web API shim:                                                  │
 │   WebGL1        → vitaGL (GLSL translated at runtime)           │
-│   Canvas2D/text → plutovg or cairo + freetype                   │
+│   Canvas2D/text → plutovg (fonts with per-character fallback)   │
 │   Image         → stb_image / libpng → GL texture               │
 │   Web Audio     → own mixer on sceAudio (mp3 streamed, not      │
 │                   pre-decoded to float PCM, to save RAM)        │
@@ -70,22 +70,50 @@ Docker image and is tested in Vita3K (does it boot?) and on the real Vita (perfo
    non-browser clients break. Today, browser-like headers are enough.
 
 ## Phases
-0. **Feasibility spike: done (go).** See [phase0-findings.md](phase0-findings.md). On real
-   hardware, the synthetic battle frame went from 57.8 ms (stock Phaser) to 27.4 ms (native
-   batching fast path). Compiling the 6 MB of JS takes 14.8 s; loading the bytecode cache takes 0.9 s.
-1. **Desktop runtime: largely done.** See [phase1-findings.md](phase1-findings.md) and `runtime/`.
-   The live client boots to its login screen, and a login-bypass build plays into battles.
-   The real game turned out much heavier than the Phase 0 benchmark (busy battle ~12–15 ms JS per
-   frame on x86, estimated ~200 ms on the Vita before optimizations).
-2. **Vita runtime:** the same runtime on Vita (SDL2 + vitaGL, curl), then measure the *real* game's
-   frame cost on the device. That number decides how much native rendering work Phase 4 needs.
-3. **Playable:** audio, gamepad, touch, IME login, online saves.
-4. **Polish:** performance (native container walk, uniform batching, 30 fps cap), memory work,
-   offline cache and last-good fallback, LiveArea assets, settings.
+0. **Feasibility spike: done (go).** See [phase0-findings.md](phase0-findings.md) (the benchmark
+   itself is in `archive/phase0/`). On real hardware the synthetic battle frame went from 57.8 ms
+   (stock Phaser) to 27.4 ms with native batching; the bytecode cache cut compiling 6 MB of JS from
+   14.8 s to 0.9 s.
+1. **Desktop runtime: done.** The live client and offline builds run headless in Docker; this is
+   where most work is developed and checked.
+2. **Vita runtime: done.** vitaGL, libcurl/OpenSSL (with Vita-specific fixes), memory budget,
+   LiveArea assets.
+3. **Playable: done (beta).** Sound, gamepad, touch, built-in keyboard login, online saves,
+   offline mode with downloads and updates, save import/export. Released as betas
+   (v0.37-beta onward).
+4. **Performance and polish: in progress.** See the findings log for what has been done (native
+   container walk, sprite batching, uniforms and flushes; lazily built UI; translation cache;
+   native save encryption; work moved off the main thread) and the open items below.
 
+## Open items (2026-10-16)
+Performance (the main remaining work):
+- Battles run at ~10-20 fps on the Vita; the game's own sprite pipelines (per-sprite uniforms and
+  flushes, colour arrays rebuilt with `splice(...spread)`) are now the largest cost. Planned: a
+  native Phaser renderer behind Phaser's API (branch `native-renderer`), engine-level speedups in
+  QuickJS (fast paths for `splice`/spread), and checking whether a JIT is possible.
+- Loads: startup ~17 s with a warm cache (over a minute after each game update while its code is
+  compiled), wave and trainer-battle transitions of several seconds, hitches when evicted textures
+  are re-uploaded. The `[perf]` line now names slow main-loop steps; check the next logs.
+
+Reliability:
+- Downloads occasionally stall for ~16 s and fail with 0 bytes (one per session in the last logs,
+  down from batches before 0.39). Consider retrying failed asset GETs once.
+- Memory over long sessions: watch heap and GPU pools in `[mem]` lines (0.41 evicts harder under
+  pressure).
+- No fallback to the last working game version if a new release breaks the shim (risk 4 above).
+- Cloudflare served stale copies of pokerogue.net to requests with an `Origin` header (fixed by
+  matching browser headers); watch for similar cache variants.
+
+Features and checks:
+- Untested on the console yet: save import/export and the restart after an import (0.41),
+  texture eviction under pressure (0.41), the input-repeat fix and QR links (0.40).
+- The system keyboard (IME dialog) fails on the test console (0x800204c4); the built-in keyboard
+  is used instead. Discord/Google sign-in can't work (a QR code explains it).
+- Most game settings are untested; the rear touchpad is off (resting fingers pressed "submit").
+- Video elements show a stand-in frame (no video decoding).
 ## Requirements on the Vita
 - HENkaku or Ensō, with unsafe homebrew enabled; VitaShell to install builds (over FTP or USB)
 - `libshacccg.suprx` in `ur0:data/` (or `ur0:data/external/`), which vitaGL needs to compile shaders.
   Each user installs their own copy, for example with PIB-Configuration-Tool, ShaRKBR33D or ShaRKF00D.
 - Wi-Fi: the app loads the live game from pokerogue.net
-- Logs go to `ux0:data/pokerogue/log.txt` (the Phase 0 benchmark used `ux0:data/pokerogue-bench/`)
+- Logs go to `ux0:data/pokerogue/log.txt`

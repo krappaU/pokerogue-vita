@@ -1,7 +1,8 @@
 # Measuring the real game
 
 These tools run the real PokeRogue client in headless Chrome and count, per frame, what Phaser draws.
-They calibrate the synthetic benchmark against the real game.
+They first calibrated the Phase 0 synthetic benchmark (archive/phase0) against the real game; Chrome's
+output is also the reference picture for the runtime's renderer.
 
 1. Clone pagefaultgames/pokerogue and `git clone --depth 1 https://github.com/pagefaultgames/pokerogue-locales locales` inside it.
    The assets submodule is not needed: `serve.js` fetches missing files from pokerogue.net and caches them.

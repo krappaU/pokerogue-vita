@@ -284,7 +284,7 @@
     set checked(v) { this.toggleAttribute("checked", !!v); }
     select() { this.selectionStart = 0; this.selectionEnd = this._value.length; }
     setSelectionRange(a, b) { this.selectionStart = a; this.selectionEnd = b; }
-    // Focus is where the Vita's system keyboard will open (Phase 3). For now, report it.
+    // Focus opens the system keyboard (or the built-in one) for text fields: see js/input.js.
     focus() { super.focus(); if (rt.onInputFocus) rt.onInputFocus(this); }
     get accept() { return this._attrs.accept || ""; }
     set accept(v) { this.setAttribute("accept", v); }

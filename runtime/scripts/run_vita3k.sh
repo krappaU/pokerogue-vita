@@ -7,8 +7,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 SECONDS_TO_RUN=${1:-120}
-V3K=../phase0/.cache/vita3k          # shared emulator install (see ../phase0/scripts/run_vita3k.sh)
-[ -d "$V3K/squashfs-root" ] || { echo "run ../phase0/scripts/run_vita3k.sh once to install Vita3K"; exit 1; }
+V3K=.cache/vita3k                    # emulator install (downloaded on first use)
+docker build -q -t pkrb-vita3k -f docker/vita3k.Dockerfile docker >/dev/null
+if [ ! -d "$V3K/squashfs-root" ]; then
+  mkdir -p "$V3K/home"
+  curl -sfL -o "$V3K/Vita3K.AppImage" https://github.com/Vita3K/Vita3K/releases/download/continuous/Vita3K-x86_64.AppImage
+  chmod +x "$V3K/Vita3K.AppImage"
+  docker run --rm -v "$PWD/$V3K":/v -w /v pkrb-vita3k ./Vita3K.AppImage --appimage-extract >/dev/null
+fi
 FS="$V3K/home/.local/share/Vita3K/Vita3K"
 mkdir -p "$FS/ur0/data" .cache/vita3k-shots
 [ -f .cache/private/libshacccg.suprx ] && cp .cache/private/libshacccg.suprx "$FS/ur0/data/"
@@ -22,7 +28,6 @@ if [ "$PREFILL_FROM" != none ] && [ -d "$PREFILL_FROM/http" ]; then
   cp -n "$PREFILL_FROM"/http/* "$FS/ux0/data/pokerogue/http/" 2>/dev/null || true
   echo "prefilled $(ls "$FS/ux0/data/pokerogue/http" | wc -l) cached files from $PREFILL_FROM"
 fi
-docker build -q -t pkrb-vita3k -f ../phase0/docker/vita3k.Dockerfile ../phase0/docker >/dev/null
 docker rm -f pkr-vita3k >/dev/null 2>&1 || true
 docker run --rm --init --name pkr-vita3k ${DOCKER_ARGS:-} -e XDG_RUNTIME_DIR=/tmp -e SDL_AUDIODRIVER=dummy -v "$(cd "$V3K" && pwd)":/v -v "$(cd "$V3K/home" && pwd)":/root \
   -v "$PWD/build-vita":/vpk -v "$PWD/.cache/vita3k-shots":/shots pkrb-vita3k bash -c "

@@ -1,4 +1,7 @@
-# Phase 1 findings (in progress)
+# Findings log (Phase 1 onward)
+
+Measurements, device logs and the reasons behind each change, oldest first. Version numbers refer
+to `runtime/VERSION`; device logs are numbered as the tester sent them.
 
 October 2026. Measured against PokeRogue source and live client at v1.12.x and Phaser 3.90, with the
 desktop runtime in `runtime/`. Timings come from an x86 server (AMD EPYC, shared with other services)

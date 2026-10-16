@@ -1,62 +1,63 @@
 # Runtime
 
 A small purpose-built "browser" that runs the PokeRogue web client: QuickJS-ng plus just the web APIs
-the game and Phaser use. This folder currently builds for Linux (SDL2 + OpenGL ES 2); the Vita build
-(SDL2 + vitaGL) is Phase 2.
+the game and Phaser use. The same code builds for the PS Vita (vitaGL, sceCtrl, sceAudio) and for
+Linux (SDL2 + OpenGL ES 2), where most development and testing happens headless in Docker.
 
 ## Layout
 | file | what it does |
 |---|---|
-| `src/main.c` | config, 60 Hz frame loop, `[perf]` stats, test control channel |
-| `src/platform_sdl.c` | window, GL ES context, keyboard/mouse/gamepad (W3C "standard" layout) |
-| `src/js_host.c` | QuickJS setup, ES module loader over HTTP, URL resolution, `__native` helpers |
-| `src/net.c` | libcurl HTTP (non-blocking, polled per frame); disk cache for versioned assets; browser-like headers |
-| `src/gl.c` | WebGL 1 as native functions, with screen scaling/letterboxing of the 1920x1080 canvas |
-| `src/canvas2d.c` | image decoding (stb_image), fonts and Canvas 2D drawing (plutovg) |
-| `src/fastpath.c` | native sprite batching for Phaser (from Phase 0) |
-| `js/bootstrap.js` | loads the shim, fetches the live `index.html`, runs it like a browser |
+| `src/main.c` | config, frame loop, `[perf]`/`[mem]` log lines, watchdog, test control channel, app restart |
+| `src/platform_vita.c`, `src/platform_sdl.c` | screen, input (W3C "standard" gamepad), audio output, threads |
+| `src/js_host.c` | QuickJS setup, ES module loader with bytecode cache, URL resolution, `__native` helpers |
+| `src/net.c` | HTTP on libcurl in a worker thread; disk cache for versioned assets; the offline game's zip |
+| `src/gl.c` | WebGL 1 as native functions; screen scaling; texture eviction when GPU memory runs short |
+| `src/canvas2d.c` | images (decoded on a worker thread), fonts with per-character fallback, Canvas 2D on plutovg |
+| `src/fastpath.c` | Phaser's container walk, sprite batching, uniforms and flushes in C (see `js/fastpath.js`) |
+| `src/audio.c`, `src/audio_m4a.c` | Web Audio backend: decoder thread (WAV, MP3, AAC) and mixer |
+| `src/savecrypt.c` | native AES for the game's save encryption (crypto-js compatible) |
+| `src/launcher.c`, `src/offline_install.c` | start screen; downloading/updating the offline game |
+| `src/osk.c`, `src/dialogs.c`, `src/overlay.c` | built-in keyboard; QR codes, notices, file picker; status screens |
+| `src/profiler.c` | sampling profiler for logs from the console |
+| `js/bootstrap.js` | loads the shim, fetches `index.html`, runs it like a browser; Phaser adjustments |
 | `js/core.js` | console, timers, rAF, events, URL, TextEncoder, base64, crypto, Intl polyfill |
-| `js/dom.js` | DOM tree, HTML parser, selectors, elements, document/window, FontFace, DOMParser |
-| `js/canvas2d.js` | CanvasRenderingContext2D (state, colors, fonts, text layout, shadows) |
-| `js/webgl.js` | WebGLRenderingContext around the native functions |
-| `js/net.js` | fetch, XMLHttpRequest, Blob, FileReader, Headers |
-| `js/storage.js` | localStorage and cookies, persisted in the data dir |
-| `js/input.js` | navigator, keyboard/pointer events, Gamepad API |
-| `js/audio.js` | silent Web Audio stand-in (real audio is Phase 3) |
-| `js/fastpath.js` | swaps Phaser's sprite batching and container rendering for native-backed versions |
+| `js/dom.js` | DOM tree, HTML parser, selectors, elements, document/window, FontFace, downloads, file inputs |
+| `js/canvas2d.js`, `js/webgl.js` | CanvasRenderingContext2D and WebGLRenderingContext on the natives |
+| `js/net.js`, `js/storage.js` | fetch, XMLHttpRequest, Blob, FileReader; localStorage and cookies |
+| `js/input.js`, `js/audio.js` | navigator, keyboard/pointer events, Gamepad API, text fields; Web Audio |
+| `js/fastpath.js`, `js/lazy_ui.js`, `js/i18n_cache.js`, `js/savecrypt.js` | performance: native rendering paths, UI built on first use, translation cache, native save encryption |
 
-## Build and run (Linux, headless, all in Docker)
+## Build and run (all in Docker)
 ```bash
-./scripts/fetch_deps.sh      # QuickJS-ng, plutovg, stb (pinned) into third_party/
+./scripts/fetch_deps.sh      # pinned third-party sources into third_party/
 ./scripts/build_linux.sh     # -> build-linux/pokerogue-rt
-./scripts/run_linux.sh --control .cache/control.txt          # live pokerogue.net
+./scripts/build_vita.sh      # -> build-vita/pokerogue-<VERSION>.vpk
+./scripts/run_linux.sh --control .cache/control.txt                        # live pokerogue.net
+./scripts/run_linux.sh --data .cache/offline --control .cache/control.txt  # offline game in .cache/offline
+./scripts/run_vita3k.sh 240  # crash check in Vita3K (its timings mean nothing)
 ```
-Everything the runtime writes (HTTP cache, `localStorage.json`, `cookies.json`, `log.txt`) goes to `.cache/data/`.
+Everything the runtime writes (HTTP cache, `localStorage.json`, `cookies.json`, `log.txt`) goes to the
+data folder (`.cache/data/` by default, `ux0:data/pokerogue/` on the Vita).
 
 While it runs, drive it with `scripts/drive.sh`, which appends to the control file:
 ```bash
 ./scripts/drive.sh "key Space" "sleep 2" "shot .cache/shots/title.png"
 ./scripts/drive.sh "eval document.title"
-./scripts/drive.sh "evalfile scripts/probe_selfprof.js"
+./scripts/drive.sh "evalfile scripts/probe_verify_render.js"
 ```
 
-### Playing without an account (for testing and measurements)
-The live site needs a login. A local production build of PokeRogue with `VITE_BYPASS_LOGIN=1`
-plays as a guest. To build and serve one (see `../phase0/measure/README.md` for checking out the game):
-```bash
-VITE_BYPASS_LOGIN=1 VITE_BYPASS_TUTORIAL=1 pnpm exec vite build --mode production   # in the pokerogue checkout
-docker network create pkr-net
-docker run -d --name pkr-serve --network pkr-net -v <phase0/measure>:/tools:ro -v <pokerogue>/dist:/dist:ro \
-  -v <cache dir>:/cache pkr-chrome node /tools/serve.js /dist /cache 8000
-DOCKER_ARGS="--network pkr-net" ./scripts/run_linux.sh --url http://pkr-serve:8000/ --control .cache/control.txt
-./scripts/drive_to_battle.sh   # timing-sensitive; check with a screenshot
-```
-`serve.js` fills in images, audio and locales from pokerogue.net on demand.
+### Playing without an account (testing)
+The live site needs a login, and the login API shouldn't be hammered from a server. For testing,
+use the offline game: put Admiral-Billy's `game.zip` (or let the start screen download it) in a data
+folder such as `.cache/offline/` and run with `--data .cache/offline`. It plays as a guest.
+`scripts/drive_to_battle.sh` drives a fresh save into the first battle (timing-sensitive; check with
+a screenshot).
 
-## Status (2026-10-14)
-- The live pokerogue.net client boots to its login screen. A login-bypass production build of the
-  current game source plays through title, starter select and into battles (including a wave-120
-  double battle with ~40 items), with correct rendering, text and PokeRogue's custom shaders.
-- Not done yet: audio (silent stand-in), login text input (system keyboard on Vita), pointer
-  coordinates, per-glyph font fallback for mixed CJK text, video (stand-in frame), bytecode cache.
-- Performance findings are in [../docs/phase1-findings.md](../docs/phase1-findings.md).
+### Checking native fast paths
+Every replacement of Phaser code is checked against Phaser's own output with animations frozen:
+`scripts/probe_verify_render.js` (vertex data per flush), `probe_verify_uniforms.js` (GL uniform
+calls) and `probe_verify_batching.js` (draw calls, texture binds, uploaded vertex bytes).
+
+## Status
+See the [root README](../README.md) and the open items in [../docs/PLAN.md](../docs/PLAN.md).
+Measurements and the reasons behind each change are in [../docs/phase1-findings.md](../docs/phase1-findings.md).

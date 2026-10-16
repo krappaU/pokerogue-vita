@@ -5,20 +5,12 @@ Every toolchain runs in Docker, so the host needs only `docker`, `git`, `curl` a
 | Docker image | Used for | Built from |
 |---|---|---|
 | `vitasdk/vitasdk:latest` | Vita builds (.vpk) | pulled from Docker Hub |
-| `pkrb-linux` | desktop builds and Node/V8 reference runs | `phase0/docker/linux.Dockerfile` |
-| `pkrb-vita3k` | headless Vita3K crash checks | `phase0/docker/vita3k.Dockerfile` |
-| `pkr-chrome` | headless Chrome for measuring the real game | `phase0/measure/Dockerfile` |
+| `pkr-rt-linux` | desktop builds of the runtime | `runtime/docker/linux.Dockerfile` |
+| `pkrb-vita3k` | headless Vita3K crash checks | `runtime/docker/vita3k.Dockerfile` |
+| `pkr-chrome` | headless Chrome running the real game (reference renders) | `tools/measure/Dockerfile` |
 
-## Phase 0 benchmark
-```bash
-cd phase0
-./scripts/fetch_deps.sh      # QuickJS-ng (pinned), Phaser 3.90, live pokerogue.net chunks, Vita debug-text helper
-./scripts/build_linux.sh     # desktop build + run, writes bench-log.txt
-./scripts/build_vita.sh      # -> build-vita/pokerogue_bench.vpk
-./scripts/run_vita3k.sh      # install + run the vpk in Vita3K and print its log (crash check only)
-docker run --rm -v "$PWD":/w -w /w pkrb-linux node scripts/node-driver.js   # same scene in V8
-```
-`fetch_deps.sh` downloads whatever pokerogue.net serves today, so Test 1 numbers drift as the game grows.
+The original feasibility benchmark (Phase 0) is kept in `archive/phase0/` for reference; its own
+README explains how it was built and run.
 
 ## Installing on a PS Vita
 Requirements: HENkaku (or Ensō), VitaShell, and **Settings → HENkaku Settings → Enable Unsafe
@@ -27,21 +19,21 @@ Homebrew**. Builds are marked unsafe so they can raise the CPU clock.
 1. In VitaShell, press **SELECT** to start FTP. Note the IP address it shows.
 2. Upload the file from a computer. You can rename it during upload; VitaShell only cares about `.vpk`:
    ```bash
-   curl -T pokerogue_bench.vpk ftp://VITA_IP:1337/ux0:/data/pokerogue_bench.vpk
+   curl -T runtime/build-vita/pokerogue-0.41.vpk ftp://VITA_IP:1337/ux0:/data/pokerogue.vpk
    ```
 3. In VitaShell, open `ux0:data/`, press ✕ on the .vpk, install it, and accept the permissions prompt.
-4. Logs are written to `ux0:data/pokerogue-bench/log.txt`:
+4. Logs are written to `ux0:data/pokerogue/log.txt`:
    ```bash
-   curl ftp://VITA_IP:1337/ux0:/data/pokerogue-bench/log.txt -o log.txt
+   curl ftp://VITA_IP:1337/ux0:/data/pokerogue/log.txt -o log.txt
    ```
 
-Later phases will also need `ur0:data/libshacccg.suprx`, extracted on the console with ShaRKF00D.
-vitaGL needs it to compile shaders at runtime.
+The app also needs `ur0:data/libshacccg.suprx` (Sony's shader compiler, extracted on the console
+with ShaRKBR33D or ShaRKF00D); vitaGL compiles shaders with it at runtime. Never commit or share it.
 
 ## Vita gotchas
 - CMake needs `-DCMAKE_TOOLCHAIN_FILE=$VITASDK/share/vita.toolchain.cmake`.
 - Vita newlib's printf has no `%zu`; use `%lu` with a cast.
-- Size `_newlib_heap_size_user` and `sceUserMainThreadStackSize` explicitly (see `phase0/src/main.c`).
+- Size `_newlib_heap_size_user` and `sceUserMainThreadStackSize` explicitly (see `runtime/src/main.c`).
 - Vita3K is for crash checks only: it does not emulate the Vita's CPU speed. It also crashes on its
   own now and then, and loses the app's unflushed file writes when it does; the app's console
   output (`*** TTY:` lines in `.cache/vita3k-shots/vita3k.log`) survives.
@@ -131,10 +123,17 @@ CDRAM, 64 MB RAM, 16 MB phycont, 4 MB dialogs. On the test console this leaves ~
 memory and 8 MB of CDRAM to the system. `getImageData` hands its pixels to JS without a copy.
 
 ## Memory: texture eviction
-Phaser never frees textures. Image-backed textures not drawn for ~20 s are shrunk to 1x1 when GPU
-texture memory exceeds 64 MB, and re-uploaded from the image's PNG data when next used (`gl.c`).
-The network is also serviced from the JS interrupt handler, so downloads don't time out during
-long frames.
+Phaser never frees textures. When GPU texture memory exceeds 64 MB, image-backed textures not drawn
+for 600 frames are shrunk to 1x1 and re-uploaded from the image's PNG data when next used (`gl.c`).
+Each re-upload doubles that texture's idle time (up to 16x), so textures used every few waves stop
+bouncing; when memory is short (over 96 MB, or vitaGL's pools nearly full, after which it would put
+textures in the main heap) any texture idle for 90 frames goes. The `[perf]` line counts re-uploads.
+
+## Threads
+The game's JavaScript runs on one thread (CPU core 0) and can't be split. Off that thread: HTTP,
+the disk cache and the offline game's zip (network thread, core 1), image decoding (core 1), audio
+mixing (core 1) and audio decoding (core 2). Decoders run below the network thread's priority: the
+Vita doesn't time-slice threads of equal priority, and a busy decoder used to stall downloads.
 
 ## The game's API and Cloudflare
 api.pokerogue.net sits behind Cloudflare. Requests without a browser-like `Origin`/`Referer`
@@ -163,7 +162,7 @@ of API requests. Don't test logins in a loop from a server: Cloudflare starts bl
   (`runtime/patches/vitagl-0002-*.patch`).
 
 ## Measuring the real game
-See [phase0/measure/README.md](../phase0/measure/README.md): headless Chrome running a local dev
+See [tools/measure/README.md](../tools/measure/README.md): headless Chrome running a local dev
 build of PokeRogue, with hooks that count what Phaser draws each frame.
 
 ## Sound
