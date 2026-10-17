@@ -59,9 +59,10 @@ host_config g_cfg = {
     .exit_after_frames = 0,
     .busy_after_ms = 2500,
 #ifdef PKR_PROFILE_BUILD
-    // profiling build (CMake PKR_PROFILE_BUILD): sample from the start, ten times as often
+    // profiling build (CMake PKR_PROFILE_BUILD): sample from the start, ten times as often, by time
     .sample = true,
     .profile_rate = 1000,
+    .sample_ms = 1,
 #endif
 };
 
@@ -516,6 +517,7 @@ static void save_screenshot(const char *path) {
 //   profile=0                       no built-in profiler (on by default; see profiler.c)
 //   sample=1                        profile from the start (else only with the debug line)
 //   profile_rate=1000               JS operations between profile samples (QuickJS's default 10000)
+//   sample_ms=1                     at most one sample per ms: samples follow time, not JS operations
 //   nettrace=1                      log the headers of requests to the game's API
 //   local=game                      play an offline build of the game from <data>/game (no login,
 //                                   saves stay on the console); automatic if <data>/game exists
@@ -588,6 +590,8 @@ static void load_config_file(void) {
             g_cfg.sample = atoi(v) != 0;
         } else if (!strcmp(k, "profile_rate")) {
             g_cfg.profile_rate = atoi(v);
+        } else if (!strcmp(k, "sample_ms")) {
+            g_cfg.sample_ms = atof(v);
         } else if (!strcmp(k, "osk")) {
             g_cfg.osk = atoi(v) != 0;
         } else if (!strcmp(k, "local") && v[0]) {

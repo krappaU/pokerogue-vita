@@ -88,6 +88,22 @@ calls into can be made cheaper, and everything around it can move to C.
    Phaser JS (render) 19%, tweens 16%, native 8%, sprite animations 5-8%, other updates 5%,
    frame events 4%, our JS 3-4%. Samples count JS operations (calls and loop iterations), not
    time: TweenManager.step is ~3% of the time on desktop but 16% of the samples.
+3d. **Time-based profiles and three runtime-side savings** (2026-10-17). `sample_ms=1` (on in
+   profiling builds) takes at most one sample per ~1 ms (random gaps; the timer restarts at each
+   main-loop step so C time between JS runs isn't charged to the next JS), so samples follow time
+   rather than operation counts. Desktop battle, draws skipped: PokeRogue's sprite pipelines 44%,
+   native render code 16%, Phaser render JS 17%, tweens 8%, sprite animations 3%, frame events 5%.
+   That profile showed, and these remove:
+   - eventemitter3's `emit` (12% of samples): in C, skipping listeners that are WebGLPipeline's
+     empty `onPreRender`/`onRender`/`onPostRender` (26 of the 30 renderer-event calls per frame).
+     `scripts/probe_verify_emit.js` checks it against the JS one (once, removal while emitting,
+     contexts, 0-7 arguments, a throwing listener); WebGL calls identical.
+   - Text size accessors (3%): the C renderer reads a drawn text's stored size and origin instead
+     of calling the lazy-measuring getters four times per text per frame.
+   - `querySelectorAll("input")` every 30 frames (177 us on desktop, a ~5 ms spike on the Vita):
+     a bare tag name is matched directly (53 us); the text-field loop checks the cheap things first.
+   Left in the profile: the game's `isOutside()` (5%, a 10-case switch over an enum object, called
+   from every field sprite's `onBind`) and the style Proxy behind Phaser's DOM elements (2%).
 4. **The render walk itself:** `WebGLRenderer.render` (cameras, display list, render lists,
    `preRender`/`postRender`), so the per-frame tree walk happens in C end to end.
 5. **Updates:** Tween and animation stepping for the common cases (numeric properties, standard

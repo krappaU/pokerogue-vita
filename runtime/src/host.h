@@ -28,6 +28,8 @@ typedef struct {
     bool sample;             // profiler sampling without the debug line (control channel "profile",
                              // config.txt sample=1; on from the start in profiling builds)
     int profile_rate;        // JS operations between samples (config.txt profile_rate=N; 0: QuickJS's 10000)
+    double sample_ms;        // at most one sample per this many ms, so samples follow time rather than
+                             // operation counts (config.txt sample_ms=1; 0: every check)
     int interrupt_after_s;   // 0 = never interrupt long-running JS (config.txt interrupt=N)
     const char *dev_server;  // config.txt devserver=<url>: test builds and log upload (devtools.c)
     const char *dev_key;     // config.txt devkey=<secret>, sent to the dev server

@@ -13,6 +13,7 @@
 // total = anywhere on the stack) and the main-loop split; <data>/profile.txt gets all stacks in
 // collapsed form (one "frame;frame;frame count" line each, for flame graph tools).
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,9 +42,23 @@ void prof_init(void) {
     last_report = host_now_ms();
 }
 
+// Time-gated sampling (sample_ms): the next sample is due sample_ms after the last one, but never
+// earlier than sample_ms into a main-loop step, so time spent in C between two JS runs (GL, swap,
+// waiting) isn't charged to whatever JS runs first afterwards.
+static double next_sample;
+
+// A random interval averaging sample_ms: a fixed one lines up with the frame (each frame starts a
+// step) and keeps sampling the same spot.
+static double sample_gap(void) {
+    static uint32_t seed = 12345;
+    seed = seed * 1664525u + 1013904223u;
+    return g_cfg.sample_ms * 2.0 * (double)(seed >> 8) / 16777216.0;
+}
+
 // Time spent in one step of the main loop (called by the loop when it moves to the next step).
 void prof_phase(const char *name, double ms) {
     if (!started) return;
+    if (g_cfg.sample_ms > 0) next_sample = host_now_ms() + sample_gap();
     for (int i = 0; i < MAX_PHASES; i++) {
         if (phase_names[i] == name || !phase_names[i]) {
             phase_names[i] = name;
@@ -112,6 +127,11 @@ void prof_poll(JSContext *ctx) {
     // Only while the debug line is on: in the Vita3K emulator, sampling during normal play caused
     // one-second stalls (cause unknown; each sample itself is fast).
     if (!g_cfg.hud && !g_cfg.sample) return;
+    if (g_cfg.sample_ms > 0) {
+        double now = host_now_ms();
+        if (now < next_sample) return;
+        next_sample = now + sample_gap();
+    }
     static char buf[4096];
     if (JS_SampleStack(ctx, buf, sizeof buf) > 0 && buf[0]) {
         shorten(buf);
