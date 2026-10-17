@@ -334,6 +334,8 @@ static int cmp_d(const void *a, const void *b) {
     return x < y ? -1 : x > y;
 }
 
+static double t_main_start; // host_now_ms() at the start of main(), for the [perf] line's t=
+
 // Logs JS time per frame (timers, rAF = Phaser's update + render, promise jobs) every 300 frames.
 static void perf_add(double js_ms) {
     if (perf_n == 0) perf_t0 = host_now_ms();
@@ -344,8 +346,10 @@ static void perf_add(double js_ms) {
     double sum = 0;
     for (int i = 0; i < perf_n; i++) sum += perf_js[i];
     qsort(perf_js, perf_n, sizeof *perf_js, cmp_d);
-    char net[160];
+    char net[320];
     net_stats(net, sizeof net);
+    char dec[64];
+    image_decode_stats(dec, sizeof dec);
     char gc[64] = "";
     if (perf_gc) snprintf(gc, sizeof gc, " | GC in %d frames (up to %.0f ms)", perf_gc, perf_gc_max);
     char other[160] = "";
@@ -365,9 +369,9 @@ static void perf_add(double js_ms) {
     char glx[96] = "";
     if (restores) snprintf(glx, sizeof glx, ", %d textures re-uploaded", restores);
     host_log("[perf] %.1f fps | JS per frame: avg %.2f ms, p50 %.2f, p95 %.2f, max %.2f%s | draw %.1f, swap %.1f, after %.1f ms | "
-             "in GL draw calls %.1f ms/frame (max %.0f)%s%s | net: %s",
+             "in GL draw calls %.1f ms/frame (max %.0f)%s%s | net: %s | %s | t=%.1f s",
              perf_n / secs, sum / perf_n, perf_js[perf_n / 2], perf_js[perf_n * 95 / 100], perf_js[perf_n - 1], gc,
-             perf_draw_ms / perf_n, perf_swap_ms / perf_n, perf_after_ms / perf_n, gl_total / perf_n, gl_max, glx, other, net);
+             perf_draw_ms / perf_n, perf_swap_ms / perf_n, perf_after_ms / perf_n, gl_total / perf_n, gl_max, glx, other, net, dec, (host_now_ms() - t_main_start) / 1000.0);
     perf_gc = 0;
     perf_gc_max = 0;
     perf_swap_ms = perf_after_ms = perf_draw_ms = 0;
@@ -649,6 +653,7 @@ static void relaunch_mode(char *out, size_t n) {
 }
 
 int main(int argc, char **argv) {
+    t_main_start = host_now_ms();
     // The data dir may come from the command line; the config file lives inside it.
     for (int i = 1; i + 1 < argc; i++)
         if (!strcmp(argv[i], "--data")) g_cfg.data_dir = argv[i + 1];
@@ -819,6 +824,7 @@ int main(int argc, char **argv) {
             if (all > perf_gc_max) perf_gc_max = all;
         }
         perf_add(js_ms);
+        module_list_flush();
         prof_frame();
 
         set_phase("drawing");

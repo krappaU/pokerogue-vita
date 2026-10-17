@@ -141,6 +141,17 @@ async function run() {
     eq(m.answer, 42);
     eq(m.default(21), 42);
   });
+  await check("net: import() of a bundler-style chunk (compiled code without source)", async () => {
+    const m = await import("./assets/chunk-Ab_d-1xY.js");
+    eq(m.twice(4), 8, "function");
+    const c = new m.Counter();
+    c.inc();
+    eq(c.inc(), 2, "class");
+    eq(typeof m.twice.toString(), "string", "toString");
+    let stack = "";
+    try { m.boom(); } catch (e) { stack = String(e.stack); }
+    eq(/chunk-Ab_d-1xY\.js:\d+/.test(stack), true, "stack traces keep file and line: " + stack);
+  });
   await check("net: Blob, object URLs and FileReader", async () => {
     const blob = new Blob(["abc", new Uint8Array([100, 101])], { type: "text/plain" });
     eq(blob.size, 5, "size");

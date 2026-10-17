@@ -240,7 +240,17 @@ static bool is_cacheable(const char *method, const char *url) {
     size_t olen = strlen(origin);
     if (strncmp(url, origin, olen)) return false;
     const char *path = url + olen;
-    return !strncmp(path, "/assets/", 8) || strstr(path, "?t=") || strstr(path, "&t=") || strstr(path, "?v=");
+    // /fonts/ (7 MB, downloaded on every start before this) is served with "max-age=315360000": a
+    // browser keeps it. Old entries are refetched, see cache_read_raw.
+    return !strncmp(path, "/assets/", 8) || !strncmp(path, "/fonts/", 7) || strstr(path, "?t=") || strstr(path, "&t=") ||
+           strstr(path, "?v=");
+}
+
+// Cached files without a version in the URL or name (the fonts) are refetched after a month, in
+// case the site replaces one in place.
+static bool cache_unversioned(const char *url) {
+    const char *p = strstr(url, "/fonts/");
+    return p && !strchr(p, '?');
 }
 
 static void cache_path(const char *url, char *out, size_t n) {
@@ -249,9 +259,32 @@ static void cache_path(const char *url, char *out, size_t n) {
     snprintf(out, n, "%s/http/%016llx", g_cfg.data_dir, (unsigned long long)h);
 }
 
+// Read time of the disk cache, for the [perf] line (written by whichever thread reads, polled by
+// the main thread: approximate is fine for a diagnostic).
+static volatile double stat_cache_ms, stat_cache_mb;
+static volatile int stat_cache_n;
+static volatile double stat_wire_mb;
+
+static char *cache_read_raw(const char *url, size_t *len);
+
 static char *cache_read(const char *url, size_t *len) {
+    double t0 = host_now_ms();
+    char *d = cache_read_raw(url, len);
+    if (d) {
+        stat_cache_ms += host_now_ms() - t0;
+        stat_cache_mb += *len / 1048576.0;
+        stat_cache_n++;
+    }
+    return d;
+}
+
+static char *cache_read_raw(const char *url, size_t *len) {
     char path[600];
     cache_path(url, path, sizeof path);
+    if (cache_unversioned(url)) {
+        struct stat st;
+        if (stat(path, &st) == 0 && time(NULL) - st.st_mtime > 30 * 24 * 3600) return NULL;
+    }
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
     fseek(f, 0, SEEK_END);
@@ -922,6 +955,7 @@ double net_clock_offset_ms(void) { return clock_offset_ms; }
 static void deliver(JSContext *ctx, req *r, long status, const char *error, const char *final_url) {
     n_done++;
     n_bytes += r->body.len;
+    if (!r->from_cache) stat_wire_mb += r->body.len / 1048576.0;
     if (r->body.len > 1024 * 1024)
         host_log("[net] large response: %s (%lu KB)", r->url, (unsigned long)(r->body.len / 1024));
     // Keep only the last response's headers (redirects produce several blocks).
@@ -1020,8 +1054,9 @@ void net_poll(JSContext *ctx) {
 void net_stats(char *out, size_t n) {
     int pending = 0;
     for (req *r = reqs; r; r = r->next) pending++;
-    snprintf(out, n, "%d requests done (%d from cache, %.1f MB), %d pending", n_done, n_cache_hits,
-             n_bytes / 1048576.0, pending);
+    snprintf(out, n, "%d requests done (%d from cache, %.1f MB, %.1f MB over the network), %d pending | disk cache: %d reads, %.1f MB, %.0f ms",
+             n_done, n_cache_hits, n_bytes / 1048576.0, stat_wire_mb, pending, stat_cache_n, stat_cache_mb, stat_cache_ms);
+    stat_cache_n = 0, stat_cache_ms = stat_cache_mb = 0;
 }
 
 // The request is freed when the network thread hands it back; no callback is made.
