@@ -6,19 +6,31 @@ them with `flat()`, twice per Pokemon per frame:
 - splice appending to a plain fast array (start == length, nothing deleted): the push fast path.
 - apply / spread calls with up to 16 arguments from a plain fast array: a stack buffer instead of a
   heap allocation.
+- f(a, ...arr): the argument array grows once to its final size instead of element by element.
 - flat() / FlattenIntoArray: non-object elements of a plain fast array appended to a plain fast
   array directly.
-Standalone qjs (desktop, 2026-10-17): splice(len, 0, ...4 values) 0.98 -> 0.71 us, splice with 4
-arguments 0.52 -> 0.42 us, flat() of 128 numbers 5.8 -> 2.1 us. QuickJS-ng's tests/*.js give the
+Standalone qjs (desktop, 2026-10-17, best of 9 runs): splice(len, 0, ...4 values) 0.61-0.69 ->
+0.58-0.60 us, splice with 4 arguments 0.43 -> 0.34-0.37 us, push(...4 values) 0.37 -> 0.27 us,
+flat() of 128 numbers 5.4 -> 1.9 us. QuickJS-ng's tests/*.js give the
 same results with and without this patch (143 files, the same 15 non-zero exits), and so do edge
 cases (frozen/sealed/non-extensible arrays, read-only length, subclasses, overridden constructor or
 species, holes, index setters on Array.prototype, mutation during apply).
-
 diff --git a/quickjs.c b/quickjs.c
-index f4c8438..7e1959a 100644
+index f4c8438..fa3e85e 100644
 --- a/quickjs.c
 +++ b/quickjs.c
-@@ -42567,6 +42567,26 @@ static JSValue js_function_apply(JSContext *ctx, JSValueConst this_val,
+@@ -17354,6 +17354,10 @@ static __exception int js_append_enumerate(JSContext *ctx, JSValue *sp)
+             js_get_fast_array(ctx, sp[-1], &arrp, &count32) && len == count32) {
+             JSObject *dst = JS_VALUE_GET_TAG(sp[-3]) == JS_TAG_OBJECT ? JS_VALUE_GET_OBJ(sp[-3]) : NULL;
+             bool append = dst && dst->class_id == JS_CLASS_ARRAY && dst->fast_array && dst->u.array.count == pos;
++            /* PKR: room for all of them at once instead of growing step by step */
++            if (append && (uint64_t)pos + count32 <= INT32_MAX && pos + count32 > dst->u.array.u1.size &&
++                expand_fast_array(ctx, dst, pos + count32))
++                return -1;
+             for (i = 0; i < count32; i++) {
+                 int e = append ? add_fast_array_element(ctx, dst, js_dup(arrp[i]), JS_PROP_THROW)
+                                : JS_DefinePropertyValueUint32(ctx, sp[-3], pos, js_dup(arrp[i]), JS_PROP_C_W_E);
+@@ -42567,6 +42571,26 @@ static JSValue js_function_apply(JSContext *ctx, JSValueConst this_val,
           JS_VALUE_GET_TAG(array_arg) == JS_TAG_NULL) && magic != 2) {
          return JS_Call(ctx, this_val, this_arg, 0, NULL);
      }
@@ -45,7 +57,7 @@ index f4c8438..7e1959a 100644
      tab = build_arg_list(ctx, &len, array_arg);
      if (!tab)
          return JS_EXCEPTION;
-@@ -43283,6 +43303,40 @@ static JSValue js_get_this(JSContext *ctx, JSValueConst this_val)
+@@ -43283,6 +43307,40 @@ static JSValue js_get_this(JSContext *ctx, JSValueConst this_val)
      return js_dup(this_val);
  }
  
@@ -86,7 +98,7 @@ index f4c8438..7e1959a 100644
  static JSValue JS_ArraySpeciesCreate(JSContext *ctx, JSValueConst obj,
                                       JSValueConst len_val)
  {
-@@ -43290,6 +43344,8 @@ static JSValue JS_ArraySpeciesCreate(JSContext *ctx, JSValueConst obj,
+@@ -43290,6 +43348,8 @@ static JSValue JS_ArraySpeciesCreate(JSContext *ctx, JSValueConst obj,
      int res;
      JSContext *realm;
  
@@ -95,7 +107,7 @@ index f4c8438..7e1959a 100644
      res = js_is_array(ctx, obj);
      if (res < 0)
          return JS_EXCEPTION;
-@@ -44467,6 +44523,29 @@ static JSValue js_array_slice(JSContext *ctx, JSValueConst this_val,
+@@ -44467,6 +44527,29 @@ static JSValue js_array_slice(JSContext *ctx, JSValueConst this_val,
      if (JS_SetProperty(ctx, arr, JS_ATOM_length, js_int64(n)) < 0)
          goto exception;
  
@@ -125,7 +137,7 @@ index f4c8438..7e1959a 100644
      if (splice) {
          new_len = len + item_count - del_count;
          if (item_count != del_count) {
-@@ -44625,6 +44704,22 @@ static int64_t JS_FlattenIntoArray(JSContext *ctx, JSValueConst target,
+@@ -44625,6 +44708,22 @@ static int64_t JS_FlattenIntoArray(JSContext *ctx, JSValueConst target,
      }
  
      for (sourceIndex = 0; sourceIndex < sourceLen; sourceIndex++) {

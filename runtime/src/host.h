@@ -25,7 +25,9 @@ typedef struct {
     bool net_trace;          // config.txt nettrace=1: log API request headers
     bool osk;                // always use the built-in keyboard (config.txt osk=1)
     bool hud;                // debug line over the game (config.txt hud=1; SELECT while holding L+R)
-    bool sample;             // profiler sampling without the debug line (control channel "profile")
+    bool sample;             // profiler sampling without the debug line (control channel "profile",
+                             // config.txt sample=1; on from the start in profiling builds)
+    int profile_rate;        // JS operations between samples (config.txt profile_rate=N; 0: QuickJS's 10000)
     int interrupt_after_s;   // 0 = never interrupt long-running JS (config.txt interrupt=N)
     const char *dev_server;  // config.txt devserver=<url>: test builds and log upload (devtools.c)
     const char *dev_key;     // config.txt devkey=<secret>, sent to the dev server

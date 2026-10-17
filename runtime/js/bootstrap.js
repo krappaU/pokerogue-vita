@@ -51,7 +51,7 @@
     const TM = P.Tweens && P.Tweens.TweenManager && P.Tweens.TweenManager.prototype;
     if (TM && typeof TM.step === "function" && typeof TM.getDelta === "function" && g.localStorage.getItem("PKR_TWEEN_STEPS") !== "0") {
       const hasUpdateCb = (t) => !!(t.callbacks && t.callbacks.onUpdate);
-      TM.step = function (tick) {
+      TM.step = function tweenStep(tick) {
         const e = this.getDelta(tick === true);
         if (e <= 0) return;
         this.processing = true;

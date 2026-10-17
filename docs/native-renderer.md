@@ -75,8 +75,19 @@ calls into can be made cheaper, and everything around it can move to C.
    a battle frame. Nearly all of it is building the 128-value colour arrays: 64
    `splice(len, 0, ...four)` per array (~1 us each on desktop), `flat()`, `map`. The patch makes
    species creation, appending splices, small spread/apply calls and `flat()` of numbers cheaper
-   (standalone qjs: spread splice 0.98 -> 0.71 us, flat of 128 numbers 5.8 -> 2.1 us). In the game:
-   `SpritePipeline.onBind` 0.415 -> 0.323 ms per frame, `onBatch` 0.246 -> 0.217.
+   (standalone qjs, best of 9: spread splice 0.61-0.69 -> 0.58-0.60 us, push(...four) 0.37 -> 0.27
+   us, flat of 128 numbers 5.4 -> 1.9 us; single runs on this server vary by 30%). In the game:
+   `SpritePipeline.onBind` 0.415 -> 0.323 ms per frame, `onBatch` 0.246 -> 0.217 (40 s averages,
+   so also only roughly). The interpreter's own work per operation dominates the rest.
+3c. **Profiling on the Vita.** `config.txt` `sample=1` samples the JS profile from the start and
+   `profile_rate=1000` samples ten times as often (QuickJS's interrupt rate is now set at run time,
+   `patches/quickjs-0005`); a build with CMake `PKR_PROFILE_BUILD=ON` does both by default. Every
+   30 s the log gets `[prof] groups:` (render: PokeRogue's sprite pipelines / text / native code /
+   Phaser JS, update: tweens / sprite animations / other, frame events, runtime JS outside the
+   frame) besides the top functions. Desktop, battle command menu, 2026-10-17: pipelines 35%,
+   Phaser JS (render) 19%, tweens 16%, native 8%, sprite animations 5-8%, other updates 5%,
+   frame events 4%, our JS 3-4%. Samples count JS operations (calls and loop iterations), not
+   time: TweenManager.step is ~3% of the time on desktop but 16% of the samples.
 4. **The render walk itself:** `WebGLRenderer.render` (cameras, display list, render lists,
    `preRender`/`postRender`), so the per-frame tree walk happens in C end to end.
 5. **Updates:** Tween and animation stepping for the common cases (numeric properties, standard

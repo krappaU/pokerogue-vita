@@ -58,6 +58,11 @@ host_config g_cfg = {
     .win_h = 544,
     .exit_after_frames = 0,
     .busy_after_ms = 2500,
+#ifdef PKR_PROFILE_BUILD
+    // profiling build (CMake PKR_PROFILE_BUILD): sample from the start, ten times as often
+    .sample = true,
+    .profile_rate = 1000,
+#endif
 };
 
 static FILE *log_fp;
@@ -509,6 +514,8 @@ static void save_screenshot(const char *path) {
 //   audio=0                         no sound
 //   busy=2500                       show a "Loading" screen once one frame's JS has run this long (0: never)
 //   profile=0                       no built-in profiler (on by default; see profiler.c)
+//   sample=1                        profile from the start (else only with the debug line)
+//   profile_rate=1000               JS operations between profile samples (QuickJS's default 10000)
 //   nettrace=1                      log the headers of requests to the game's API
 //   local=game                      play an offline build of the game from <data>/game (no login,
 //                                   saves stay on the console); automatic if <data>/game exists
@@ -577,6 +584,10 @@ static void load_config_file(void) {
             g_cfg.interrupt_after_s = atoi(v);
         } else if (!strcmp(k, "hud")) {
             g_cfg.hud = atoi(v) != 0;
+        } else if (!strcmp(k, "sample")) {
+            g_cfg.sample = atoi(v) != 0;
+        } else if (!strcmp(k, "profile_rate")) {
+            g_cfg.profile_rate = atoi(v);
         } else if (!strcmp(k, "osk")) {
             g_cfg.osk = atoi(v) != 0;
         } else if (!strcmp(k, "local") && v[0]) {
@@ -737,6 +748,7 @@ int main(int argc, char **argv) {
     host_js_set_interrupt(js_interrupt);
     set_phase("loading the game code");
     if (!g_cfg.no_profile) prof_init();
+    if (g_cfg.profile_rate > 0) JS_SetInterruptCounterInit(g_cfg.profile_rate);
     {
         pthread_t wd;
         pthread_attr_t attr;

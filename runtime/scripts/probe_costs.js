@@ -25,6 +25,13 @@
   wrap(Phaser.Display.Masks.GeometryMask.prototype, "preRenderWebGL", "GeometryMask.preRenderWebGL");
   wrap(Phaser.Display.Masks.GeometryMask.prototype, "postRenderWebGL", "GeometryMask.postRenderWebGL");
   wrap(Phaser.Tweens.TweenManager.prototype, "step", "TweenManager.step");
+  wrap(GO.Container.prototype, "renderWebGL", "renderWebGL Container (incl. children)");
+  wrap(GO.Text.prototype, "renderWebGL", "renderWebGL Text");
+  wrap(Phaser.Cameras.Scene2D.Camera.prototype, "preRender", "Camera.preRender");
+  wrap(Phaser.Renderer.WebGL.WebGLRenderer.prototype, "render", "WebGLRenderer.render (scene)");
+  wrap(Phaser.Renderer.WebGL.WebGLRenderer.prototype, "preRender", "WebGLRenderer.preRender");
+  wrap(Phaser.Renderer.WebGL.WebGLRenderer.prototype, "postRender", "WebGLRenderer.postRender");
+  wrap(Phaser.Renderer.WebGL.WebGLPipeline.prototype, "flush", "WebGLPipeline.flush");
   wrap(Phaser.Animations.AnimationState.prototype, "update", "AnimationState.update");
   const seen = new Set();
   for (const p of __rt.renderer.pipelines.pipelines.values()) {

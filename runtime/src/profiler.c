@@ -135,6 +135,82 @@ static fstat *find_fn(fstat *fs, int *n, int cap, const char *name, size_t len) 
     return &fs[(*n)++];
 }
 
+// ---------------------------------------------------------------- groups
+// Each sample's stack sorted into one group, to see at a glance where a battle frame's JS goes
+// (docs/native-renderer.md). Frames are "name@file:line:col"; the runtime's own files end in ".js",
+// the game's and Phaser's bundles don't (shorten() drops their hash and extension). Phaser's
+// Game.step frames ("step@") come first; the frame after them says which part of the frame it is.
+enum { G_PIPELINES, G_TEXT, G_RENDER_NATIVE, G_RENDER_JS, G_TWEENS, G_ANIMS, G_UPDATE, G_EVENTS, G_OURS,
+       G_OTHER, G_COUNT };
+static const char *group_names[G_COUNT] = {
+    "render: PokeRogue's sprite pipelines", "render: text", "render: in native code",
+    "render: Phaser JS", "update: tweens", "update: sprite animations", "update: other",
+    "frame events", "runtime JS outside the frame", "other",
+};
+
+// strstr within the first len bytes (newlib doesn't always declare memmem)
+static bool has(const char *f, size_t len, const char *s) {
+    size_t n = strlen(s);
+    for (size_t i = 0; i + n <= len; i++)
+        if (!memcmp(f + i, s, n)) return true;
+    return false;
+}
+static bool frame_is(const char *f, size_t len, const char *name) {
+    size_t n = strlen(name);
+    return len > n && !memcmp(f, name, n) && f[n] == '@';
+}
+static bool frame_in_ours(const char *f, size_t len) {
+    const char *at = memchr(f, '@', len);
+    return at && has(at, len - (size_t)(at - f), ".js:");
+}
+
+static int group_of(const char *key) {
+    const char *fr[64];
+    size_t fl[64];
+    int n = 0;
+    for (const char *p = key; n < 64;) {
+        const char *e = strchr(p, ';');
+        fr[n] = p, fl[n] = e ? (size_t)(e - p) : strlen(p), n++;
+        if (!e) break;
+        p = e + 1;
+    }
+    int i = 0;
+    while (i < n && !frame_is(fr[i], fl[i], "step")) i++;
+    if (i == n) return frame_in_ours(fr[n - 1], fl[n - 1]) ? G_OURS : G_OTHER;
+    while (i < n && frame_is(fr[i], fl[i], "step")) i++;
+    if (i == n) return G_OTHER;
+    bool render = frame_is(fr[i], fl[i], "render") || frame_is(fr[i], fl[i], "preRender") ||
+                  frame_is(fr[i], fl[i], "postRender");
+    bool update = frame_is(fr[i], fl[i], "update");
+    for (int k = i; k < n; k++) {
+        if (render && (frame_is(fr[k], fl[k], "onBind") || frame_is(fr[k], fl[k], "onBatch") ||
+                       frame_is(fr[k], fl[k], "batchQuad") || frame_is(fr[k], fl[k], "onPreRender")) &&
+            !frame_in_ours(fr[k], fl[k]) && !has(fr[k], fl[k], "@native"))
+            return G_PIPELINES;
+        if (render && (frame_is(fr[k], fl[k], "textRender") || frame_is(fr[k], fl[k], "updateText") ||
+                       frame_is(fr[k], fl[k], "TextWebGLRenderer")))
+            return G_TEXT;
+        if (update && frame_is(fr[k], fl[k], "tweenStep")) return G_TWEENS;
+        if (update && frame_is(fr[k], fl[k], "fastSceneUpdate")) return G_ANIMS;
+    }
+    if (render) return has(fr[n - 1], fl[n - 1], "@native") ? G_RENDER_NATIVE : G_RENDER_JS;
+    if (update) return G_UPDATE;
+    return G_EVENTS;
+}
+
+static void report_groups(unsigned total) {
+    unsigned g[G_COUNT] = {0};
+    for (int i = 0; i < MAX_STACKS; i++)
+        if (stacks[i].key) g[group_of(stacks[i].key)] += stacks[i].count;
+    char line[600];
+    size_t ll = 0;
+    line[0] = 0;
+    for (int k = 0; k < G_COUNT; k++)
+        if (g[k] * 200 >= total) // 0.5% and up
+            ll += snprintf(line + ll, sizeof line - ll, "%s%s %.0f%%", ll ? ", " : "", group_names[k], 100.0 * g[k] / total);
+    host_log("[prof] groups: %s", line);
+}
+
 static void report(void) {
     unsigned total = n_samples;
     if (!total) return;
@@ -172,6 +248,7 @@ static void report(void) {
         if (phase_ms[i] >= tt / 200)
             ll += snprintf(line + ll, sizeof line - ll, "%s%s %.0f%%", ll ? ", " : "", phase_names[i], 100.0 * phase_ms[i] / tt);
     host_log("[prof]   %s", line);
+    report_groups(total);
     qsort(fs, n, sizeof *fs, by_self);
     host_log("[prof] self (innermost JS function):");
     for (int i = 0; i < n && i < 20; i++)

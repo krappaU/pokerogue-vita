@@ -1,0 +1,42 @@
+Lets the runtime set how often the interrupt handler runs (and the built-in profiler samples)
+at run time: JS_SetInterruptCounterInit(n) (config.txt profile_rate=, or a profiling build),
+instead of only at compile time (patch 0003).
+
+diff --git a/quickjs.c b/quickjs.c
+index fa3e85e..88e01b2 100644
+--- a/quickjs.c
++++ b/quickjs.c
+@@ -8652,10 +8652,19 @@ static void JS_ThrowInterrupted(JSContext *ctx)
+     JS_SetUncatchableError(ctx, ctx->rt->current_exception);
+ }
+ 
++/* PKR: operations between interrupt checks, settable at run time (JS_SetInterruptCounterInit) so a
++   normal build can profile at a finer rate when asked */
++static int js_interrupt_counter_init = JS_INTERRUPT_COUNTER_INIT;
++
++void JS_SetInterruptCounterInit(int n)
++{
++    js_interrupt_counter_init = n > 0 ? n : JS_INTERRUPT_COUNTER_INIT;
++}
++
+ static no_inline __exception int __js_poll_interrupts(JSContext *ctx)
+ {
+     JSRuntime *rt = ctx->rt;
+-    ctx->interrupt_counter = JS_INTERRUPT_COUNTER_INIT;
++    ctx->interrupt_counter = js_interrupt_counter_init;
+     if (rt->interrupt_handler) {
+         if (rt->interrupt_handler(rt, rt->interrupt_opaque)) {
+             JS_ThrowInterrupted(ctx);
+diff --git a/quickjs.h b/quickjs.h
+index 8edf282..c2b4029 100644
+--- a/quickjs.h
++++ b/quickjs.h
+@@ -1187,6 +1187,8 @@ JS_EXTERN void JS_SetHostPromiseRejectionTracker(JSRuntime *rt, JSHostPromiseRej
+ typedef int JSInterruptHandler(JSRuntime *rt, void *opaque);
+ /* pokerogue-vita: current JS call stack in collapsed form (see quickjs.c) */
+ JS_EXTERN int JS_SampleStack(JSContext *ctx, char *buf, size_t size);
++/* PKR: operations between interrupt-handler calls (default 10000; profiling builds use fewer) */
++JS_EXTERN void JS_SetInterruptCounterInit(int n);
+ JS_EXTERN void JS_SetInterruptHandler(JSRuntime *rt, JSInterruptHandler *cb, void *opaque);
+ /* if can_block is true, Atomics.wait() can be used */
+ JS_EXTERN void JS_SetCanBlock(JSRuntime *rt, bool can_block);
