@@ -583,7 +583,24 @@
     return false;
   }
   function matchesSelector(el, sel) { return parseSelector(sel).some((steps) => matchSteps(el, steps, steps.length - 1)); }
+  const TAG_ONLY = /^[a-zA-Z][\w-]*$/;
   function querySelectorAll(root, sel, first) {
+    // A bare tag name ("input", every 30 frames for the text fields): compare tag names directly
+    if (typeof sel === "string" && TAG_ONLY.test(sel)) {
+      const tag = sel.toLowerCase(), out = [];
+      const walkTag = (n) => {
+        const cs = n.childNodes;
+        for (let i = 0; i < cs.length; i++) {
+          const c = cs[i];
+          if (c.nodeType !== 1) continue;
+          if (c.localName === tag) { out.push(c); if (first) return true; }
+          if (walkTag(c)) return true;
+        }
+        return false;
+      };
+      walkTag(root);
+      return out;
+    }
     const groups = parseSelector(sel), out = [];
     const walk = (n) => {
       for (const c of n.childNodes) {

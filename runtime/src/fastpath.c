@@ -226,6 +226,9 @@ static struct {
     JSValue ct_sf_set, alpha_single_setter, wp_push_batch, wp_create_batch, wp_set_vertex_buffer, wp_on_before_flush,
         wp_on_after_flush;
     JSAtom ev_before_flush, ev_after_flush;
+    // js/fastpath.js made Text's width, height and display origin accessors that measure on first
+    // read and keep the values in _pkr_<name>: a text that is already drawn has them up to date
+    bool text_lazy;
 } H;
 
 enum {
@@ -247,7 +250,7 @@ enum {
     A_setProgram, A_batch, A_activeTextures, A_texture, A_maxUnit, A_webGLTexture, A_topology, A_bytes, A_vertexSize,
     A_vertexBuffer, A_activeBuffer, A_setVertexBuffer, A_webGLBuffer, A__events, A_emit, A_onBeforeFlush, A_onAfterFlush,
     A_bufferData, A_activeTexture, A_bindTexture, A_drawArrays, A_bindBuffer, A_createBatch, A_unit, A_maxTextures,
-    A_setScrollFactorC, A_isStroked, A_isFilled, A_isRounded, A_fillColor, A_fillAlpha, A_maskCount, A_COUNT
+    A_setScrollFactorC, A__pkr_width, A__pkr_height, A__pkr__displayOriginX, A__pkr__displayOriginY, A_isStroked, A_isFilled, A_isRounded, A_fillColor, A_fillAlpha, A_maskCount, A_COUNT
 };
 static const char *atom_names[A_COUNT] = {
     "list", "length", "localTransform", "matrix", "x", "y", "_rotation", "_scaleX", "_scaleY", "hasPostPipeline",
@@ -268,7 +271,7 @@ static const char *atom_names[A_COUNT] = {
     "setProgram", "batch", "activeTextures", "texture", "maxUnit", "webGLTexture", "topology", "bytes", "vertexSize",
     "vertexBuffer", "activeBuffer", "setVertexBuffer", "webGLBuffer", "_events", "emit", "onBeforeFlush", "onAfterFlush",
     "bufferData", "activeTexture", "bindTexture", "drawArrays", "bindBuffer", "createBatch", "unit", "maxTextures",
-    "setScrollFactor", "isStroked", "isFilled", "isRounded", "fillColor", "fillAlpha", "maskCount",
+    "setScrollFactor", "_pkr_width", "_pkr_height", "_pkr__displayOriginX", "_pkr__displayOriginY", "isStroked", "isFilled", "isRounded", "fillColor", "fillAlpha", "maskCount",
 };
 static JSAtom AT[A_COUNT];
 
@@ -489,7 +492,10 @@ static int batch_sprite(JSContext *ctx, rctx *r, JSValueConst pipeline, JSValueC
         }
     }
 
-    double dox = gnum(ctx, go, A__displayOriginX), doy = gnum(ctx, go, A__displayOriginY);
+    // a text here passed fast_text (drawn, so measured): its stored origin, without the accessor call
+    bool stored = text && H.text_lazy;
+    double dox = gnum(ctx, go, stored ? A__pkr__displayOriginX : A__displayOriginX);
+    double doy = gnum(ctx, go, stored ? A__pkr__displayOriginY : A__displayOriginY);
     double x, y, w, h, u0, v0, u1, v1, fx = 1, fy = 1;
     if (text) {
         // batchTexture(src, tex, fw, fh, x, y, fw / res, fh / res, ..., frameX 0, frameY 0, fw, fh)
@@ -610,8 +616,9 @@ static int render_container(JSContext *ctx, rctx *r, JSValueConst ct, JSValueCon
 // waiting for its lazy update), not empty, no flip/crop/post pipeline, on a plain pipeline whose
 // onBind does nothing (batchTexture would bind it a second time). Sets *pipeline and *frame.
 static bool fast_text(JSContext *ctx, JSValueConst t, JSValueConst rw, JSValue *pipeline, JSValue *frame) {
-    if (!same(rw, H.text_render) || gbool(ctx, t, A__pkrTextDirty) || gnum(ctx, t, A_width) == 0 ||
-        gnum(ctx, t, A_height) == 0 || gbool(ctx, t, A_flipX) || gbool(ctx, t, A_flipY) || gbool(ctx, t, A_isCropped) ||
+    if (!same(rw, H.text_render) || gbool(ctx, t, A__pkrTextDirty) ||
+        gnum(ctx, t, H.text_lazy ? A__pkr_width : A_width) == 0 ||
+        gnum(ctx, t, H.text_lazy ? A__pkr_height : A_height) == 0 || gbool(ctx, t, A_flipX) || gbool(ctx, t, A_flipY) || gbool(ctx, t, A_isCropped) ||
         gbool(ctx, t, A_hasPostPipeline))
         return false;
     *pipeline = G(t, A_pipeline);
@@ -920,6 +927,9 @@ static JSValue js_render_setup(JSContext *ctx, JSValueConst this_val, int argc, 
     HOOK(wp_set_vertex_buffer, "wpSetVertexBuffer") HOOK(wp_on_before_flush, "wpOnBeforeFlush")
     HOOK(wp_on_after_flush, "wpOnAfterFlush")
 #undef HOOK
+    JSValue tl = JS_GetPropertyStr(ctx, o, "textLazySize");
+    H.text_lazy = JS_ToBool(ctx, tl) > 0;
+    JS_FreeValue(ctx, tl);
     JSValue eb = JS_GetPropertyStr(ctx, o, "evBeforeFlush"), ea = JS_GetPropertyStr(ctx, o, "evAfterFlush");
     H.ev_before_flush = JS_ValueToAtom(ctx, eb);
     H.ev_after_flush = JS_ValueToAtom(ctx, ea);
@@ -2208,6 +2218,99 @@ static JSValue js_shapes_setup(JSContext *ctx, JSValueConst this_val, int argc, 
     return out;
 }
 
+// ---------------------------------------------------------------- EventEmitter.emit
+// eventemitter3's emit (Phaser.Events.EventEmitter), which Phaser runs dozens of times per frame
+// (game step, scene and renderer events), in C. The same calls in the same order, except that
+// listeners known to be empty functions are skipped: every pipeline subscribes its
+// onPreRender/onRender/onPostRender to the renderer, and most are WebGLPipeline's empty ones
+// (26 of the 30 calls per battle frame). js/fastpath.js checks that emit is eventemitter3's and
+// that events are stored under plain names before installing this.
+#define EE_MAX_NOOP 8
+static struct {
+    JSValue noop[EE_MAX_NOOP];
+    int n_noop;
+    JSAtom fn, context, once, removeListener;
+} EE;
+
+static bool ee_noop(JSValueConst f) {
+    for (int i = 0; i < EE.n_noop; i++)
+        if (same(f, EE.noop[i])) return true;
+    return false;
+}
+
+// calls listener l (an eventemitter3 EE object) with argv[1..argc-1]; removes it first if once
+static int ee_call(JSContext *ctx, JSValueConst self, JSValueConst l, JSValueConst event, int argc, JSValueConst *argv) {
+    JSValue once = JS_GetProperty(ctx, l, EE.once);
+    if (JS_IsException(once)) return -1;
+    int e = 0;
+    if (JS_ToBool(ctx, once) > 0) {
+        JSValue f = JS_GetProperty(ctx, l, EE.fn);
+        JSValueConst args[4] = {event, f, JS_UNDEFINED, JS_TRUE};
+        e = JS_IsException(f) ? -1 : pcall0(ctx, self, EE.removeListener, 4, args);
+        JS_FreeValue(ctx, f);
+    }
+    JS_FreeValue(ctx, once);
+    if (e) return -1;
+    JSValue f = JS_GetProperty(ctx, l, EE.fn);
+    if (JS_IsException(f)) return -1;
+    if (ee_noop(f)) {
+        JS_FreeValue(ctx, f);
+        return 0;
+    }
+    JSValue c = JS_GetProperty(ctx, l, EE.context);
+    JSValue r = JS_IsException(c) ? JS_EXCEPTION : JS_Call(ctx, f, c, argc - 1, argv + 1);
+    JS_FreeValue(ctx, f), JS_FreeValue(ctx, c);
+    if (JS_IsException(r)) return -1;
+    JS_FreeValue(ctx, r);
+    return 0;
+}
+
+static JSValue js_ee_emit(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    JSValueConst event = argc > 0 ? argv[0] : JS_UNDEFINED;
+    JSValue evs = G(this_val, A__events);
+    if (JS_IsException(evs)) return JS_EXCEPTION;
+    JSValue ls = JS_GetPropertyValue(ctx, evs, JS_DupValue(ctx, event));
+    JS_FreeValue(ctx, evs);
+    if (JS_IsException(ls)) return JS_EXCEPTION;
+    if (JS_ToBool(ctx, ls) <= 0) {
+        JS_FreeValue(ctx, ls);
+        return JS_FALSE;
+    }
+    JSValue fn = JS_GetProperty(ctx, ls, EE.fn);
+    bool single = JS_ToBool(ctx, fn) > 0;
+    JS_FreeValue(ctx, fn);
+    int e = 0;
+    if (single) {
+        e = ee_call(ctx, this_val, ls, event, argc ? argc : 1, argc ? argv : &event);
+    } else {
+        int64_t n = 0;
+        e = JS_GetLength(ctx, ls, &n);
+        for (int64_t i = 0; i < n && !e; i++) {
+            JSValue l = JS_GetPropertyInt64(ctx, ls, i);
+            e = JS_IsException(l) ? -1 : ee_call(ctx, this_val, l, event, argc ? argc : 1, argc ? argv : &event);
+            JS_FreeValue(ctx, l);
+        }
+    }
+    JS_FreeValue(ctx, ls);
+    return e ? JS_EXCEPTION : JS_TRUE;
+}
+
+// emitSetup([empty functions to skip]) -> the native emit
+static JSValue js_ee_setup(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    if (!AT[0])
+        for (int i = 0; i < A_COUNT; i++) AT[i] = JS_NewAtom(ctx, atom_names[i]);
+    if (!EE.fn) {
+        EE.fn = JS_NewAtom(ctx, "fn"), EE.context = JS_NewAtom(ctx, "context"), EE.once = JS_NewAtom(ctx, "once");
+        EE.removeListener = JS_NewAtom(ctx, "removeListener");
+    }
+    for (int i = 0; i < EE.n_noop; i++) JS_FreeValue(ctx, EE.noop[i]);
+    EE.n_noop = 0;
+    int64_t n = 0;
+    if (argc > 0 && JS_GetLength(ctx, argv[0], &n) == 0)
+        for (int64_t i = 0; i < n && EE.n_noop < EE_MAX_NOOP; i++) EE.noop[EE.n_noop++] = JS_GetPropertyInt64(ctx, argv[0], i);
+    return JS_NewCFunction(ctx, js_ee_emit, "emit", 6);
+}
+
 // ---------------------------------------------------------------- UUID
 // Phaser names every Text's canvas texture with Utils.String.UUID():
 //   'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => random hex digit)
@@ -2285,6 +2388,7 @@ void fastpath_register(JSContext *ctx, JSValue native) {
         JS_SetPropertyStr(ctx, native, name, keep(ctx, &PM.set_uniform_fn[n],
             JS_NewCFunctionMagic(ctx, js_set_uniform, name, 3 + n, JS_CFUNC_generic_magic, n)));
     }
+    JS_SetPropertyStr(ctx, native, "emitSetup", JS_NewCFunction(ctx, js_ee_setup, "emitSetup", 1));
     JS_SetPropertyStr(ctx, native, "shapesSetup", JS_NewCFunction(ctx, js_shapes_setup, "shapesSetup", 1));
     JS_SetPropertyStr(ctx, native, "nineSliceSetup", JS_NewCFunction(ctx, js_nineslice_setup, "nineSliceSetup", 1));
     JS_SetPropertyStr(ctx, native, "graphicsSetup", JS_NewCFunction(ctx, js_graphics_setup, "graphicsSetup", 1));

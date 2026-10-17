@@ -618,6 +618,7 @@
       goWillRender: Phaser.GameObjects.GameObject.prototype.willRender, containerWillRender: Container.willRender,
       wpOnBind: WP.onBind, wpOnBatch: WP.onBatch, wpSetGameObject: WP.setGameObject,
       camAddToRenderList: Phaser.Cameras.Scene2D.BaseCamera.prototype.addToRenderList, textRender,
+      textLazySize: lazySize,
       // Recognised on objects and done in C: the setAlpha/setScrollFactor round trip of generic
       // children, and MultiPipeline.batchSprite for sprites on pipelines with their own batchQuad.
       alphaSetAlpha: Phaser.GameObjects.Components.Alpha.setAlpha,
@@ -834,6 +835,29 @@
     g.__rt.shapesSwap = [[RP2, "renderWebGL", n.rectRender], [GMP, "preRenderWebGL", n.gmPreRender],
       [GMP, "postRenderWebGL", n.gmPostRender], [GMP, "applyStencil", n.gmApplyStencil]].map(([o, k, f]) => [o, k, o[k], f]);
     for (const [o, k, , f] of g.__rt.shapesSwap) o[k] = f;
+  }
+
+  // 17. eventemitter3's emit in C (src/fastpath.c "EventEmitter.emit"), skipping listeners that are
+  //     WebGLPipeline's empty onPreRender/onRender/onPostRender. Only if emit is still eventemitter3's
+  //     and events are stored under plain names. localStorage PKR_NATIVE_EMIT=0 keeps the JS one;
+  //     __rt.emitSwap for the probes.
+  {
+    let EEP = Phaser.Events.EventEmitter.prototype;
+    while (EEP && !Object.prototype.hasOwnProperty.call(EEP, "emit")) EEP = Object.getPrototypeOf(EEP);
+    let plain = false;
+    try { const ee = new Phaser.Events.EventEmitter(); ee.on("x", () => {}); plain = !!(ee._events && ee._events.x); } catch (e) { /* no */ }
+    const src = EEP ? String(EEP.emit) : "";
+    let nativeEmit = !!(g.__native.emitSetup && plain &&
+      /^function\s*(emit)?\s*\(\s*\w+(\s*,\s*\w+){5}\s*\)\s*\{\s*var \w+\s*=\s*\w+\s*\?\s*\w+\s*\+\s*\w+\s*:\s*\w+;\s*if\s*\(\s*!this\._events\[\w+\]\s*\)\s*return/.test(src) &&
+      /removeListener\(\w+,\s*\w+(\[\w+\])?\.fn,\s*(void 0|undefined),\s*(!0|true)\)/.test(src));
+    try { if (g.localStorage.getItem("PKR_NATIVE_EMIT") === "0") nativeEmit = false; } catch (e) { /* keep */ }
+    if (nativeEmit) {
+      const empty = (f) => typeof f === "function" && /^function\s*\w*\s*\(\s*\)\s*\{\s*\}$/.test(String(f));
+      const noops = ["onPreRender", "onRender", "onPostRender", "onResize"].map((k) => WPP[k]).filter(empty);
+      const nat = g.__native.emitSetup(noops);
+      g.__rt.emitSwap = [[EEP, "emit", EEP.emit, nat]];
+      EEP.emit = nat;
+    }
   }
 
   g.__rt.fastpath = g.__fastpath = {

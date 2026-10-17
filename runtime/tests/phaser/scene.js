@@ -178,9 +178,13 @@ async function run() {
   await probe(game, "probe_verify_batching.js", "__vfb");
   await probe(game, "probe_verify_uniforms.js", "__vfu");
   report("phaser: native pipeline machinery and shapes active",
-    !!(rt.pipelineSwaps && rt.graphicsSwap && rt.nineSliceSwap && rt.shapesSwap),
-    ["pipelineSwaps", "graphicsSwap", "nineSliceSwap", "shapesSwap"].filter((k) => !rt[k]).join(" "));
-  for (const which of ["pipeline", "graphics", "nineslice", "shapes"]) {
+    !!(rt.pipelineSwaps && rt.graphicsSwap && rt.nineSliceSwap && rt.shapesSwap && rt.emitSwap),
+    ["pipelineSwaps", "graphicsSwap", "nineSliceSwap", "shapesSwap", "emitSwap"].filter((k) => !rt[k]).join(" "));
+  {
+    const out = (0, eval)(await (await fetch("probe_verify_emit.js")).text());
+    report("probe_verify_emit.js", /^identical: /.test(out), out.slice(0, 200));
+  }
+  for (const which of ["pipeline", "graphics", "nineslice", "shapes", "emit"]) {
     globalThis.__vfpWhich = which;
     await probe(game, "probe_verify_pipeline.js", "__vfp", which);
   }
