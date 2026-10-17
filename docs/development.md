@@ -30,51 +30,43 @@ Homebrew**. Builds are marked unsafe so they can raise the CPU clock.
 The app also needs `ur0:data/libshacccg.suprx` (Sony's shader compiler, extracted on the console
 with ShaRKBR33D or ShaRKF00D); vitaGL compiles shaders with it at runtime. Never commit or share it.
 
-## Test builds and logs without FTP (dev server)
+## Test builds and logs without FTP (dev builds)
 Dev builds only: `PKR_DEV=1 runtime/scripts/build_vita.sh` (`build-vita-dev/pokerogue-<VERSION>-dev.vpk`;
 CI uploads it as the `pokerogue-dev-*` artifact). Normal builds, the ones handed to players, don't
 contain this code at all: they never replace their own files or send logs anywhere. Dev builds
-show "dev" after the version.
+show "dev" after the version. The app side is `runtime/src/devtools.c`.
 
-`tools/devserver/devserver.py` (Python standard library only) runs on any machine the console can
-reach, the internet included: the console opens every connection, so nothing on the home network
-is exposed. Once it is set up, after one install from VitaShell:
-- **New builds:** before the start screen the app asks the server for the newest *published* build,
-  whatever branch it is from (see "Publishing" below), or, with `devbranch=<branch>` in `config.txt`,
-  the newest CI dev build of that branch. If it isn't the one running, the app asks, downloads it, replaces its own files in
-  `ux0:app/PKRV00001` (eboot.bin, js/, cacert.pem) and restarts. `sce_sys/` (LiveArea, param.sfo)
-  is left alone, so changes there still need an install from VitaShell. If installing fails, the
-  download stays in `ux0:data/pokerogue/dev-update.vpk` for VitaShell. A build that was declined
-  isn't offered again.
-- **Logs:** each start uploads the previous run's log (kept as `log-prev.txt`, so the log of a
-  crash is sent by the next start), and L + R + START in game uploads the current one. They land in
-  `<dir>/logs/` on the server (`latest.txt` is the newest; `latest-prev.txt` the newest of a run
-  that ended), where a Claude session on that machine can read them. With `--logs-key`, a second key
-  that only reads logs, sessions elsewhere can fetch them too: `GET /logs/latest.txt?key=<logs key>`.
+**Test builds (GitHub):** before the start screen a dev build reads `build.json` of the
+[`dev-build` pre-release](https://github.com/krappaU/pokerogue-vita/releases/tag/dev-build). If it
+names another build than the one running, the app asks, downloads the .vpk from the release,
+replaces its own files in `ux0:app/PKRV00001` (eboot.bin, js/, cacert.pem) and restarts. `sce_sys/`
+(LiveArea, param.sfo) is left alone, so changes there still need an install from VitaShell. If
+installing fails, the download stays in `ux0:data/pokerogue/dev-update.vpk` for VitaShell. A build
+that was declined isn't offered again. `devbuilds=off` in `config.txt` turns the check off
+(`devbuilds=<url>` reads another `build.json`).
 
-Setup:
-1. On the server: `DEVSERVER_KEY=<secret> tools/devserver/devserver.py` (port 8765). Publishing a
-   CI run and `devbranch=` need a GitHub token (`gh auth login`, or `GITHUB_TOKEN`). Make a key with
-   `python3 -c 'import secrets; print(secrets.token_urlsafe(16))'`.
-2. In `ux0:data/pokerogue/config.txt` on the console:
-   ```
-   devserver=http://your.server:8765/
-   devkey=<secret>
-   ```
-   Plain HTTP sends the key and logs unencrypted; put the server behind an HTTPS proxy (Caddy,
-   nginx) and use an `https://` URL to avoid that.
+Publishing: only builds published on purpose reach the console, never a plain push. Actions ->
+"Publish dev build" -> Run workflow, with what to test as the label and optionally a CI run (empty:
+the newest successful CI run on `main`). It replaces the release with that run's dev .vpk and its
+`build.json`. Publishing an older run again is a rollback. From a shell:
+`gh workflow run publish-dev.yml -f label="what to test" [-f run=<run id>]`.
 
-Even a dev build does nothing of this without `devserver=`.
-
-Publishing: consoles are offered only what was published on purpose, never a plain push or CI run,
-so work in progress on a branch can't replace the build being tested. On the server:
+**Logs (log server):** `tools/devserver/` (README there; Docker Compose with a Cloudflare tunnel).
+With `devserver=` set, each start uploads the previous run's log (kept as `log-prev.txt`, so the
+log of a crash is sent by the next start), and L + R + START in game uploads the current one. Each
+upload is a new entry; reading needs no key:
 ```
-tools/devserver/publish.sh 38906897929 "native renderer: test the title screen"   # a CI run's dev artifact
-tools/devserver/publish.sh runtime/build-vita-dev/pokerogue-0.42-dev.vpk "label" --commit abc1234 --branch my-branch
+curl https://<host>/logs           # the list, newest first: id, time, kind, size, build
+curl https://<host>/logs/latest    # the newest log
+curl https://<host>/logs/log57     # one log
 ```
-The newest published build wins, so publishing an older one again is a rollback. The label (what to
-test) is shown on the console when it offers the update. Only `pokerogue-<version>-dev.vpk` files
-are accepted: a normal build can't update itself, so publishing one would end the update chain.
+`kind` is `prev-run` (the log of a run that ended, crashed or not, sent by the next start) or
+`in-game` (L + R + START). In `ux0:data/pokerogue/config.txt` on the console:
+```
+devserver=https://<host>/
+devkey=<the server's DEVSERVER_KEY>
+```
+Without `devserver=`, a dev build sends no logs.
 
 ## Vita gotchas
 - CMake needs `-DCMAKE_TOOLCHAIN_FILE=$VITASDK/share/vita.toolchain.cmake`.

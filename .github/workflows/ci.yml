@@ -72,8 +72,8 @@ jobs:
           name: pokerogue-${{ env.VERSION }}-${{ github.sha }}
           path: runtime/build-vita/pokerogue-${{ env.VERSION }}.vpk
           if-no-files-found: error
-      # The dev build (dev server client: test builds and log upload) for the developer's console;
-      # tools/devserver serves it. Never for players.
+      # The dev build (test builds and log upload, src/devtools.c) for the developer's console;
+      # publish-dev.yml puts it in the dev-build release. Never for players.
       - run: PKR_DEV=1 scripts/build_vita.sh
       - uses: actions/upload-artifact@v4
         with:

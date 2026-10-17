@@ -32,9 +32,9 @@ target_compile_options(plutovg PRIVATE -w)
 # Version: runtime/VERSION ("0.18"); the build scripts pass the git commit as PKR_COMMIT.
 file(STRINGS VERSION PKR_VERSION LIMIT_COUNT 1)
 set(PKR_TITLE_ID PKRV00001)
-# Dev build (scripts/build_vita.sh with PKR_DEV=1): adds the dev server client (src/devtools.c),
+# Dev build (scripts/build_vita.sh with PKR_DEV=1): adds src/devtools.c,
 # which installs test builds and uploads logs. Never in builds handed out to players.
-option(PKR_DEV "dev build: test builds and log upload through tools/devserver" OFF)
+option(PKR_DEV "dev build: test builds from the dev-build release, log upload to tools/devserver" OFF)
 if(NOT PKR_COMMIT)
   set(PKR_COMMIT unknown)
 endif()

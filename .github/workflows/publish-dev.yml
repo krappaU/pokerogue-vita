@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Publishes a CI run's dev .vpk as the "dev-build" pre-release, which dev builds on the console
+# check at start (runtime/src/devtools.c). Started by hand (Actions -> Publish dev build -> Run), so
+# only builds chosen for testing reach the console; publishing an older run again is a rollback.
+name: Publish dev build
+
+on:
+  workflow_dispatch:
+    inputs:
+      label:
+        description: What to test (shown on the console)
+        required: false
+      run:
+        description: CI run id or URL (empty = the newest successful CI run on main)
+        required: false
+
+concurrency:
+  group: publish-dev
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_INPUT: ${{ inputs.run }}
+      LABEL: ${{ inputs.label }}
+    steps:
+      - name: Find the CI run
+        run: |
+          run=$(grep -oE '[0-9]{6,}' <<< "$RUN_INPUT" | tail -1 || true)
+          if [ -z "$run" ]; then
+            run=$(gh run list --workflow ci.yml --branch main --event push --status success --limit 1 --json databaseId -q '.[0].databaseId')
+          fi
+          [ -n "$run" ] || { echo "no successful CI run found"; exit 1; }
+          gh run view "$run" --json headSha,headBranch,displayTitle > run.json
+          echo "RUN=$run" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ env.RUN }}
+          github-token: ${{ github.token }}
+          pattern: pokerogue-dev-*
+          path: dl
+          merge-multiple: true
+      - name: Publish
+        run: |
+          vpk=$(ls dl/pokerogue-*-dev.vpk | head -1)
+          [ -f "$vpk" ] || { echo "run $RUN has no dev .vpk (expired?)"; exit 1; }
+          version=$(basename "$vpk" | sed -E 's/pokerogue-(.*)-dev\.vpk/\1/')
+          asset="pokerogue-$version-dev-run$RUN.vpk"
+          mv "$vpk" "$asset"
+          sha=$(jq -r .headSha run.json)
+          # The console's JSON reader has no escapes: plain printable ASCII, no quotes or backslashes.
+          python3 - "$asset" "$version" "$sha" "$RUN" > build.json <<'EOF'
+          import json, os, re, sys
+          asset, version, sha, run = sys.argv[1:]
+          b = json.load(open("run.json"))
+          label = f"{version} {b['headBranch']} {sha[:7]}"
+          if os.environ.get("LABEL"):
+              label += " - " + os.environ["LABEL"]
+          label = re.sub(r"[^ -~]", "?", label).replace('"', "'").replace("\\", "/")[:150]
+          url = f"https://github.com/{os.environ['GH_REPO']}/releases/download/dev-build/{asset}"
+          print(json.dumps({"id": f"run{run}", "commit": sha[:7], "label": label,
+                            "size": os.path.getsize(asset), "url": url}))
+          EOF
+          cat build.json
+          notes="Test build for the developer's console, not for players: install a release instead.
+          $(jq -r .label build.json)
+          From CI run https://github.com/$GH_REPO/actions/runs/$RUN"
+          # A new release each time: the tag moves to the build's commit, and the old .vpk is gone.
+          # The .vpk goes up before build.json, so a console never sees a build.json without it.
+          gh release delete dev-build --cleanup-tag --yes 2>/dev/null || true
+          gh release create dev-build "$asset" --prerelease --target "$sha" --title "Dev build $version" --notes "$notes"
+          gh release upload dev-build build.json

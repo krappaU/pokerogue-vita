@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# The log server and a Cloudflare tunnel that publishes it over HTTPS (see README.md):
+#   cp env.example .env   # then fill it in
+#   docker compose up -d --build
+services:
+  devserver:
+    build: .
+    restart: unless-stopped
+    user: "${DEVSERVER_UID:-1000}:${DEVSERVER_GID:-1000}"
+    environment:
+      DEVSERVER_KEY: ${DEVSERVER_KEY:?set DEVSERVER_KEY in .env}
+    volumes:
+      - ${DEVSERVER_DATA:-./data}:/data
+    # Direct access without the tunnel (LAN, or a console still set to http://<host>:8765/).
+    # Remove this, or bind it to 127.0.0.1, once the console uses the tunnel's address.
+    ports:
+      - "${DEVSERVER_PORT:-8765}:8765"
+
+  cloudflared:
+    image: cloudflare/cloudflared:2025.9.1
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env}
+    depends_on:
+      - devserver

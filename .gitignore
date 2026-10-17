@@ -18,3 +18,7 @@ runtime/.cache/
 
 # Python bytecode (tools/devserver)
 __pycache__/
+
+# Dev server (tools/devserver): secrets and logs
+tools/devserver/.env
+tools/devserver/data/

@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Dev server: test builds onto the console and logs off it without FTP. Only active when
-// <data>/config.txt names a server (devserver=<url>, devkey=<secret>, optional devbranch=<branch>);
-// tools/devserver/devserver.py is the other end.
-//
-// The console makes every connection, so the server can be anywhere on the internet and nothing on
-// the home network has to be opened.
-//   - Logs: at start, the previous run's log (log-prev.txt, kept so a crash's log survives the
-//     restart) is uploaded in the background; L + R + START in game uploads the current one.
-//   - Test builds: before the start screen, the server is asked for its newest build (the latest
-//     CI .vpk, or one built on the server). If it isn't the one running, the app offers to install
-//     it: the app's files (eboot.bin, js/, cacert.pem) in ux0:app/<title id> are replaced and the
-//     app restarts. sce_sys/ (LiveArea, param.sfo) is left alone; changes there need VitaShell.
+// Dev builds only: test builds onto the console and logs off it without FTP.
+//   - Test builds: before the start screen, the app reads build.json of the "dev-build" GitHub
+//     pre-release (.github/workflows/publish-dev.yml; config.txt devbuilds=<url> for another, or
+//     devbuilds=off). If it isn't the build running, the app offers to install it: the app's files
+//     (eboot.bin, js/, cacert.pem) in ux0:app/<title id> are replaced and the app restarts.
+//     sce_sys/ (LiveArea, param.sfo) is left alone; changes there need VitaShell.
+//   - Logs, when config.txt names a log server (devserver=<url>, devkey=<secret>;
+//     tools/devserver/devserver.py): at start, the previous run's log (log-prev.txt, kept so a
+//     crash's log survives the restart) is uploaded in the background; L + R + START in game
+//     uploads the current one. The console makes every connection, so the server can be anywhere.
 
 #include <pthread.h>
 #include <stdio.h>
@@ -21,6 +19,8 @@
 #include "miniz.h"
 
 #include "host.h"
+
+#define DEV_BUILDS_URL "https://github.com/krappaU/pokerogue-vita/releases/download/dev-build/build.json"
 
 #ifdef __vita__
 static const char *const app_dir = "ux0:app/" PKR_TITLE_ID;
@@ -84,9 +84,9 @@ static void *upload_thread(void *arg) {
         snprintf(build, sizeof build, "X-Build: %s", host_version_string());
         const char *headers[] = {"Content-Type: text/plain; charset=utf-8", key, build, NULL};
         long status = net_post_threadsafe(url, headers, body, len, err, sizeof err);
-        if (status == 200) snprintf(msg, sizeof msg, "Log sent to the dev server (%lu KB).", (unsigned long)((len + 1023) / 1024));
-        else if (status) snprintf(msg, sizeof msg, "The dev server refused the log (HTTP %ld).", status);
-        else snprintf(msg, sizeof msg, "Couldn't reach the dev server: %s", err);
+        if (status == 200) snprintf(msg, sizeof msg, "Log sent to the log server (%lu KB).", (unsigned long)((len + 1023) / 1024));
+        else if (status) snprintf(msg, sizeof msg, "The log server refused the log (HTTP %ld).", status);
+        else snprintf(msg, sizeof msg, "Couldn't reach the log server: %s", err);
         host_log("[dev] %s log upload: %s", j->kind, msg);
     }
     free(body);
@@ -129,15 +129,14 @@ static void upload_start(const char *path, const char *kind, bool notify) {
 
 void dev_start(const char *prev_log) {
     if (!g_cfg.dev_server) return;
-    host_log("[dev] dev server %s%s%s", g_cfg.dev_server, g_cfg.dev_branch ? ", branch " : "",
-             g_cfg.dev_branch ? g_cfg.dev_branch : "");
+    host_log("[dev] log server %s", g_cfg.dev_server);
     struct stat st;
     if (prev_log && stat(prev_log, &st) == 0 && st.st_size > 0) upload_start(prev_log, "prev", false);
 }
 
 void dev_send_log(void) {
     if (!g_cfg.dev_server) {
-        dialog_notice("No dev server is set up (devserver= in config.txt).");
+        dialog_notice("No log server is set up (devserver= in config.txt).");
         return;
     }
     char path[600];
@@ -248,7 +247,8 @@ static bool install_vpk(const char *vpk, char *err, size_t errn) {
 }
 
 bool dev_offer_update(void) {
-    if (!g_cfg.dev_server || !app_dir) return false;
+    const char *builds = g_cfg.dev_builds ? g_cfg.dev_builds : DEV_BUILDS_URL;
+    if (!app_dir || !strcmp(builds, "off")) return false;
     char commit[64], inst_id[128] = "", inst_commit[64] = "";
     running_commit(commit, sizeof commit);
     if (read_pair("dev-build.txt", inst_id, sizeof inst_id, inst_commit, sizeof inst_commit)) {
@@ -256,16 +256,13 @@ bool dev_offer_update(void) {
         else if (strcmp(inst_commit, commit)) inst_id[0] = 0; // installed some other way since
     }
 
-    overlay_present("PokeRogue\n\nAsking the dev server for a test build...");
-    char url[1200], query[300] = "";
-    if (g_cfg.dev_branch) snprintf(query, sizeof query, "branch=%s", g_cfg.dev_branch);
-    dev_url(url, sizeof url, "build.json", query[0] ? query : NULL);
+    overlay_present("PokeRogue\n\nLooking for a new test build...");
     size_t len = 0;
     long status = 0;
-    char *json = net_get_threadsafe(url, &len, &status);
-    char id[128] = "", srv_commit[64] = "", label[200] = "";
-    if (!json || status != 200 || !json_str(json, "id", id, sizeof id)) {
-        host_log("[dev] no test build from the dev server (HTTP %ld)", status);
+    char *json = net_get_threadsafe(builds, &len, &status);
+    char id[128] = "", srv_commit[64] = "", label[200] = "", url[1200] = "";
+    if (!json || status != 200 || !json_str(json, "id", id, sizeof id) || !json_str(json, "url", url, sizeof url)) {
+        host_log("[dev] no test build at %s (HTTP %ld)", builds, status);
         free(json);
         return false;
     }
@@ -283,7 +280,7 @@ bool dev_offer_update(void) {
         return false;
 
     char msg[900];
-    snprintf(msg, sizeof msg, "Test build on the dev server:\n%s\n(%.1f MB)\n\nRunning now: %s\n\nInstall it? The app restarts.",
+    snprintf(msg, sizeof msg, "New test build:\n%s\n(%.1f MB)\n\nRunning now: %s\n\nInstall it? The app restarts.",
              label, size > 0 ? size / 1048576.0 : 0, host_version_string());
     if (!ui_confirm(msg)) {
         write_pair("dev-declined.txt", id, "-"); // not asked again for this build
@@ -296,9 +293,6 @@ bool dev_offer_update(void) {
         remove(vpk);
         write_pair("dev-update.id", id, "-");
     }
-    char q[200];
-    snprintf(q, sizeof q, "id=%s", id);
-    dev_url(url, sizeof url, "build.vpk", q);
     char what[300];
     snprintf(what, sizeof what, "Downloading test build %s", label);
     if (!ui_download(url, vpk, what, err, sizeof err)) {

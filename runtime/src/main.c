@@ -621,8 +621,8 @@ static void load_config_file(void) {
             g_cfg.dev_server = strdup(v);
         } else if (!strcmp(k, "devkey") && v[0]) {
             g_cfg.dev_key = strdup(v);
-        } else if (!strcmp(k, "devbranch") && v[0]) {
-            g_cfg.dev_branch = strdup(v);
+        } else if (!strcmp(k, "devbuilds") && v[0]) {
+            g_cfg.dev_builds = strdup(v);
         }
     }
     fclose(f);
@@ -711,7 +711,7 @@ int main(int argc, char **argv) {
     bool have_offline = offline_installed();
     char again[16];
     relaunch_mode(again, sizeof again);
-    if (!again[0]) dev_offer_update(); // a newer test build on the dev server (restarts the app)
+    if (!again[0]) dev_offer_update(); // a newer test build in the dev-build release (restarts the app)
     if (!strcmp(again, "offline") && have_offline && !g_cfg.local_dir) {
         g_cfg.local_dir = offline_dir;
         g_cfg.base_url = LOCAL_ORIGIN "/";

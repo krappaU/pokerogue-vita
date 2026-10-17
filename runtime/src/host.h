@@ -31,9 +31,9 @@ typedef struct {
     double sample_ms;        // at most one sample per this many ms, so samples follow time rather than
                              // operation counts (config.txt sample_ms=1; 0: every check)
     int interrupt_after_s;   // 0 = never interrupt long-running JS (config.txt interrupt=N)
-    const char *dev_server;  // config.txt devserver=<url>: test builds and log upload (devtools.c)
-    const char *dev_key;     // config.txt devkey=<secret>, sent to the dev server
-    const char *dev_branch;  // config.txt devbranch=<branch>: test builds from this branch only
+    const char *dev_server;  // config.txt devserver=<url>: log upload (devtools.c)
+    const char *dev_key;     // config.txt devkey=<secret>, sent with each log
+    const char *dev_builds;  // config.txt devbuilds=<url of build.json> or off: test builds
 } host_config;
 
 extern host_config g_cfg;
@@ -54,7 +54,7 @@ typedef enum {
     PEV_POINTER_UP,
     PEV_QUIT,
     PEV_TOGGLE_HUD, // debug line on/off
-    PEV_SEND_LOG,   // upload the log to the dev server (devtools.c)
+    PEV_SEND_LOG,   // upload the log to the log server (devtools.c)
 } plat_event_type;
 
 typedef struct {
