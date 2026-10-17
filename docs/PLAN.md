@@ -89,8 +89,9 @@ Docker image and is tested in Vita3K (does it boot?) and on the real Vita (perfo
 Performance (the main remaining work):
 - Battles run at ~10-20 fps on the Vita; the game's own sprite pipelines (per-sprite uniforms and
   flushes, colour arrays rebuilt with `splice(...spread)`) are now the largest cost. Planned: a
-  native Phaser renderer behind Phaser's API (branch `native-renderer`), engine-level speedups in
-  QuickJS (fast paths for `splice`/spread), and checking whether a JIT is possible.
+  native Phaser renderer behind Phaser's API ([native-renderer.md](native-renderer.md): steps 1-3d
+  on `main` since 0.49, next the render walk and updates), engine-level speedups in QuickJS (fast
+  paths for `splice`/spread: done), and checking whether a JIT is possible.
   What is native today and what still runs in Phaser's JS: [render-coverage.md](render-coverage.md).
 - Loads: startup ~17 s with a warm cache (over a minute after each game update while its code is
   compiled), wave and trainer-battle transitions of several seconds, hitches when evicted textures

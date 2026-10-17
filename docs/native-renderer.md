@@ -1,9 +1,9 @@
-# Native renderer (branch `native-renderer`)
+# Native renderer
 
 Goal: cut the JavaScript time per battle frame on the Vita (60-80 ms in the 0.38-0.41 logs, so
 10-15 fps) by doing more of Phaser's work in C, without touching the game's code and while keeping
-auto-updates. Bug fixes continue on `main`; this branch merges `main` in regularly and goes back to
-`main` piece by piece, each piece checked against Phaser's own output.
+auto-updates. Developed on `main` since 0.49 (2026-10-17; steps 1-3d were on the `native-renderer`
+and `claude/project-thread-v4icpr` branches before), each piece checked against Phaser's own output.
 
 ## Where the time goes (desktop profile, 2026-10-16, runtime 0.41, offline game e4e9b53)
 Idle battle, 10,509 JS samples at one per 1,000 interpreter operations:
