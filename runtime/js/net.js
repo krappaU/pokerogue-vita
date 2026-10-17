@@ -121,6 +121,8 @@
     return flat;
   }
 
+  const GET_RETRIES = 2;
+
   // Low-level request: resolves {status, statusText, headers, body: ArrayBuffer, url}.
   function request(method, url, headers, body, signal) {
     return new Promise((resolve, reject) => {
@@ -130,14 +132,27 @@
       }
       const flat = [];
       headers.forEach((v, k) => flat.push(k, v));
-      let done = false;
-      const id = N.http(method, url, withCookies(url, flat), bodyBytes(body), (status, headerText, ab, err, finalURL) => {
-        if (done) return;
-        done = true;
-        if (err) return reject(new TypeError("Failed to fetch: " + err));
-        const p = parseHeaders(headerText);
-        resolve({ status, statusText: p.statusText, headers: p.headers, body: ab, url: finalURL });
-      });
+      withCookies(url, flat);
+      let done = false, id = 0, attempt = 0;
+      // A GET that fails at the transport level (timeout with 0 bytes, reset) is repeated: the game
+      // awaits every asset, and one lost download left a wave-60 load stuck for good (0.42 log).
+      const retries = method === "GET" || method === "HEAD" ? GET_RETRIES : 0;
+      const send = () => {
+        id = N.http(method, url, flat, bodyBytes(body), (status, headerText, ab, err, finalURL) => {
+          if (done) return;
+          if (err && attempt < retries) {
+            attempt++;
+            N.log("[net] retry " + attempt + "/" + retries + ": " + url);
+            g.setTimeout(() => { if (!done) send(); }, 500 * attempt);
+            return;
+          }
+          done = true;
+          if (err) return reject(new TypeError("Failed to fetch: " + err));
+          const p = parseHeaders(headerText);
+          resolve({ status, statusText: p.statusText, headers: p.headers, body: ab, url: finalURL });
+        });
+      };
+      send();
       if (signal) {
         if (signal.aborted) { done = true; N.httpAbort(id); reject(signal.reason); return; }
         signal.addEventListener("abort", () => { if (!done) { done = true; N.httpAbort(id); reject(signal.reason); } });

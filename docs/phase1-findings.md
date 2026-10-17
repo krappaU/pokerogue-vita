@@ -305,3 +305,20 @@ Vita's 0.5-0.8 s battle hitches are GPU waits too.
   pools) textures idle for 90 frames are evicted regardless.
 - The [perf] line lists other main-loop steps taking 2+ ms per frame ("also"): 31-log had
   loading windows at ~3 fps with only ~29 ms of JS per frame.
+
+### Wave-60 hang from a lost download (0.42 dev 2fa1176, Vita log of 2026-10-17)
+- Entering a wave-60 trainer fight: ~30 asset requests were pending at once (RAM pool 4-8 MB free,
+  video pool 0.1-0.5 of 88 MB, GPU textures ~99 MB), the frame rate fell to 2-4 fps with the
+  network step taking 200-410 ms per frame, and five requests failed after 19-21 s with 0 bytes
+  (`korrina.json`, `dig-charging.json`, three battle SFX). The first failure reached the game as
+  `TypeError: Failed to fetch` (unhandled rejection in net.js), its loader never finished, and the
+  game sat on the loading screen at a steady 26 ms of JS per frame with 0 requests pending.
+- Not the renderer: the first failure is a download timeout, before any new draw path runs.
+- Change (runtime, not yet run on a Vita): `request()` in net.js repeats a GET/HEAD that fails
+  at the transport level up to twice (after 0.5 s, then 1 s) and logs `[net] retry n/2: url`. POSTs
+  are never repeated. Checked with a stubbed native client: success, one and two failures
+  recovered, three failures reject, a POST that fails is not repeated.
+- Still open: why ~30 parallel requests starve under low RAM (the 8-connection cap is in
+  net.c); if retries don't help, limit concurrent requests while the pools are nearly full.
+- Also in this log: `[error] Exported save data is invalid JSON!` several times around a save
+  export that still wrote `data_Krappa.prsv` (198 KB); not looked into yet.
