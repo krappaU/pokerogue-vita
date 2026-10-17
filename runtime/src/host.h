@@ -136,6 +136,14 @@ void url_resolve(const char *base, const char *url, char *out, size_t n);
 void net_init(void);
 void net_shutdown(void);
 void host_js_set_interrupt(JSInterruptHandler *cb);
+// Compiled-code cache (js_host.c), used by precompile.c
+bool module_chunk_url(const char *url);                           // "/assets/name-HASH.js": compiled code is keyed by URL
+void module_bytecode_path(const char *url, char *out, size_t n);  // the cache file of such a chunk
+bool module_bytecode_write(const char *path, const void *bc, size_t len); // any thread
+void module_bytecode_put(const char *path, char *buf, size_t len);        // hand a compiled chunk to the loader (takes buf)
+void module_list_flush(void);                                     // from the main loop
+// Compiles a module and its imports on worker threads, filling the cache (precompile.c).
+void precompile_graph(const char *entry_url);
 void mem_report(const char *stage); // largest malloc + system free memory, to the log
 
 // Built-in sampling profiler (profiler.c): reports to the log every 30 s and to <data>/profile.txt.
@@ -150,6 +158,7 @@ double net_clock_offset_ms(void);              // server time - console clock (0
 bool net_download_file(const char *url, const char *path, bool (*progress)(long long done, long long total, void *ud),
                        void *ud, char *err, size_t errn);
 void net_stats(char *out, size_t n);           // one-line summary for the log
+void image_decode_stats(char *out, size_t n);   // images decoded since the last call (canvas2d.c)
 void net_register(JSContext *ctx, JSValue native);
 bool host_random_bytes(void *buf, size_t n);
 // Blocking GET used by the module loader. Returns malloc'd body or NULL.
