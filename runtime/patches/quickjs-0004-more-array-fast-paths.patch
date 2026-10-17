@@ -1,0 +1,150 @@
+More array fast paths in QuickJS-ng, with the same results. PokeRogue's sprite pipeline builds two
+128-value colour arrays per sprite with 64 `arr.splice(arr.length, 0, ...src)` calls and flattens
+them with `flat()`, twice per Pokemon per frame:
+- ArraySpeciesCreate: a plain array whose Array.prototype.constructor and Array[Symbol.species] are
+  still the built-in ones gets `new Array(len)` without the two property reads and the getter call.
+- splice appending to a plain fast array (start == length, nothing deleted): the push fast path.
+- apply / spread calls with up to 16 arguments from a plain fast array: a stack buffer instead of a
+  heap allocation.
+- flat() / FlattenIntoArray: non-object elements of a plain fast array appended to a plain fast
+  array directly.
+Standalone qjs (desktop, 2026-10-17): splice(len, 0, ...4 values) 0.98 -> 0.71 us, splice with 4
+arguments 0.52 -> 0.42 us, flat() of 128 numbers 5.8 -> 2.1 us. QuickJS-ng's tests/*.js give the
+same results with and without this patch (143 files, the same 15 non-zero exits), and so do edge
+cases (frozen/sealed/non-extensible arrays, read-only length, subclasses, overridden constructor or
+species, holes, index setters on Array.prototype, mutation during apply).
+
+diff --git a/quickjs.c b/quickjs.c
+index f4c8438..7e1959a 100644
+--- a/quickjs.c
++++ b/quickjs.c
+@@ -42567,6 +42567,26 @@ static JSValue js_function_apply(JSContext *ctx, JSValueConst this_val,
+          JS_VALUE_GET_TAG(array_arg) == JS_TAG_NULL) && magic != 2) {
+         return JS_Call(ctx, this_val, this_arg, 0, NULL);
+     }
++    /* PKR: up to 16 arguments from a plain fast array (f(...arr), f.apply(x, arr)) go through a
++       stack buffer instead of a heap allocation */
++    if (JS_VALUE_GET_TAG(array_arg) == JS_TAG_OBJECT) {
++        JSObject *p = JS_VALUE_GET_OBJ(array_arg);
++        uint32_t n, i;
++        if (p->class_id == JS_CLASS_ARRAY && p->fast_array &&
++            JS_VALUE_GET_TAG(p->prop[0].u.value) == JS_TAG_INT &&
++            (n = JS_VALUE_GET_INT(p->prop[0].u.value)) == p->u.array.count && n <= 16) {
++            JSValue buf[16];
++            for (i = 0; i < n; i++)
++                buf[i] = js_dup(p->u.array.u.values[i]);
++            if (magic & 1)
++                ret = JS_CallConstructor2(ctx, this_val, this_arg, n, vc(buf));
++            else
++                ret = JS_Call(ctx, this_val, this_arg, n, vc(buf));
++            for (i = 0; i < n; i++)
++                JS_FreeValue(ctx, buf[i]);
++            return ret;
++        }
++    }
+     tab = build_arg_list(ctx, &len, array_arg);
+     if (!tab)
+         return JS_EXCEPTION;
+@@ -43283,6 +43303,40 @@ static JSValue js_get_this(JSContext *ctx, JSValueConst this_val)
+     return js_dup(this_val);
+ }
+ 
++/* PKR: whether ArraySpeciesCreate(obj) is certainly `new Array(len)` of this realm: obj is a plain
++   array with Array.prototype as its prototype and no own "constructor", Array.prototype.constructor
++   is this realm's Array, and Array[Symbol.species] is still the built-in getter (returns this).
++   Answers without the two property reads and the getter call (~0.3 us per splice/map/slice). */
++static bool js_array_species_is_default(JSContext *ctx, JSValueConst obj)
++{
++    JSObject *p, *proto, *ctor, *getter;
++    JSShapeProperty *prs;
++    JSProperty *pr;
++
++    if (JS_VALUE_GET_TAG(obj) != JS_TAG_OBJECT ||
++        JS_VALUE_GET_TAG(ctx->array_ctor) != JS_TAG_OBJECT ||
++        JS_VALUE_GET_TAG(ctx->class_proto[JS_CLASS_ARRAY]) != JS_TAG_OBJECT)
++        return false;
++    p = JS_VALUE_GET_OBJ(obj);
++    proto = JS_VALUE_GET_OBJ(ctx->class_proto[JS_CLASS_ARRAY]);
++    ctor = JS_VALUE_GET_OBJ(ctx->array_ctor);
++    if (p->class_id != JS_CLASS_ARRAY || p->shape->proto != proto)
++        return false;
++    if (find_own_property(&pr, p, JS_ATOM_constructor))
++        return false;
++    prs = find_own_property(&pr, proto, JS_ATOM_constructor);
++    if (!prs || (prs->flags & JS_PROP_TMASK) != JS_PROP_NORMAL ||
++        JS_VALUE_GET_TAG(pr->u.value) != JS_TAG_OBJECT || JS_VALUE_GET_OBJ(pr->u.value) != ctor)
++        return false;
++    prs = find_own_property(&pr, ctor, JS_ATOM_Symbol_species);
++    if (!prs || (prs->flags & JS_PROP_TMASK) != JS_PROP_GETSET)
++        return false;
++    getter = pr->u.getset.getter;
++    JSCFunctionType ft = { .getter = js_get_this };
++    return getter && getter->class_id == JS_CLASS_C_FUNCTION &&
++           getter->u.cfunc.c_function.generic == ft.generic;
++}
++
+ static JSValue JS_ArraySpeciesCreate(JSContext *ctx, JSValueConst obj,
+                                      JSValueConst len_val)
+ {
+@@ -43290,6 +43344,8 @@ static JSValue JS_ArraySpeciesCreate(JSContext *ctx, JSValueConst obj,
+     int res;
+     JSContext *realm;
+ 
++    if (js_array_species_is_default(ctx, obj))
++        return js_array_constructor(ctx, JS_UNDEFINED, 1, &len_val);
+     res = js_is_array(ctx, obj);
+     if (res < 0)
+         return JS_EXCEPTION;
+@@ -44467,6 +44523,29 @@ static JSValue js_array_slice(JSContext *ctx, JSValueConst this_val,
+     if (JS_SetProperty(ctx, arr, JS_ATOM_length, js_int64(n)) < 0)
+         goto exception;
+ 
++    if (splice && del_count == 0 && start == len && item_count > 0 &&
++        JS_VALUE_GET_TAG(obj) == JS_TAG_OBJECT) {
++        /* PKR: appending (arr.splice(arr.length, 0, ...items)) to a plain fast array: the same as
++           push, so the same fast path as js_array_push */
++        JSObject *p = JS_VALUE_GET_OBJ(obj);
++        if (p->class_id == JS_CLASS_ARRAY && p->fast_array && p->extensible &&
++            p->shape->proto == JS_VALUE_GET_OBJ(ctx->class_proto[JS_CLASS_ARRAY]) &&
++            ctx->std_array_prototype &&
++            JS_VALUE_GET_TAG(p->prop[0].u.value) == JS_TAG_INT &&
++            (get_shape_prop(p->shape)->flags & JS_PROP_WRITABLE) &&
++            JS_VALUE_GET_INT(p->prop[0].u.value) == len && p->u.array.count == len &&
++            len + item_count <= INT32_MAX) {
++            uint32_t new_len32 = len + item_count;
++            if (new_len32 > p->u.array.u1.size && expand_fast_array(ctx, p, new_len32))
++                goto exception;
++            for (i = 0; i < item_count; i++)
++                p->u.array.u.values[len + i] = js_dup(argv[i + 2]);
++            p->u.array.count = new_len32;
++            p->prop[0].u.value = js_uint32(new_len32);
++            JS_FreeValue(ctx, obj);
++            return arr;
++        }
++    }
+     if (splice) {
+         new_len = len + item_count - del_count;
+         if (item_count != del_count) {
+@@ -44625,6 +44704,22 @@ static int64_t JS_FlattenIntoArray(JSContext *ctx, JSValueConst target,
+     }
+ 
+     for (sourceIndex = 0; sourceIndex < sourceLen; sourceIndex++) {
++        /* PKR: a non-object element of a plain fast array, appended to a plain fast array (what
++           flat() mostly does with arrays of numbers): no property lookups */
++        if (JS_IsUndefined(mapperFunction) &&
++            JS_VALUE_GET_TAG(source) == JS_TAG_OBJECT && JS_VALUE_GET_TAG(target) == JS_TAG_OBJECT) {
++            JSObject *sp = JS_VALUE_GET_OBJ(source), *tp = JS_VALUE_GET_OBJ(target);
++            if (sp->class_id == JS_CLASS_ARRAY && sp->fast_array && sourceIndex < sp->u.array.count &&
++                tp->class_id == JS_CLASS_ARRAY && tp->fast_array && tp->extensible &&
++                tp->u.array.count == targetIndex && targetIndex < INT32_MAX &&
++                JS_VALUE_GET_TAG(sp->u.array.u.values[sourceIndex]) != JS_TAG_OBJECT) {
++                if (add_fast_array_element(ctx, tp, js_dup(sp->u.array.u.values[sourceIndex]),
++                                           JS_PROP_THROW) < 0)
++                    return -1;
++                targetIndex++;
++                continue;
++            }
++        }
+         present = JS_TryGetPropertyInt64(ctx, source, sourceIndex, &element);
+         if (present < 0)
+             return -1;

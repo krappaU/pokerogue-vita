@@ -68,6 +68,15 @@ calls into can be made cheaper, and everything around it can move to C.
      alone): identical WebGL calls in the battle command menu, during a move, the pause menu,
      the settings screen. Of what's left of the render time, about half is the game's own
      pipeline callbacks (`onBind`/`onBatch`/`batchQuad` of its sprite pipelines).
+3b. **More engine (QuickJS) fast paths. Done** (`patches/quickjs-0004-more-array-fast-paths.patch`).
+   Measured per call in a battle (`scripts/probe_costs.js`, desktop, draws skipped, 2026-10-17):
+   PokeRogue's `SpritePipeline` runs only twice per frame (once per Pokemon) but costs ~0.43 ms each
+   time on desktop (`onBind` 0.2 ms, `batchQuad` + `onBatch` 0.14 ms): on the Vita that is most of
+   a battle frame. Nearly all of it is building the 128-value colour arrays: 64
+   `splice(len, 0, ...four)` per array (~1 us each on desktop), `flat()`, `map`. The patch makes
+   species creation, appending splices, small spread/apply calls and `flat()` of numbers cheaper
+   (standalone qjs: spread splice 0.98 -> 0.71 us, flat of 128 numbers 5.8 -> 2.1 us). In the game:
+   `SpritePipeline.onBind` 0.415 -> 0.323 ms per frame, `onBatch` 0.246 -> 0.217.
 4. **The render walk itself:** `WebGLRenderer.render` (cameras, display list, render lists,
    `preRender`/`postRender`), so the per-frame tree walk happens in C end to end.
 5. **Updates:** Tween and animation stepping for the common cases (numeric properties, standard

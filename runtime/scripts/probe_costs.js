@@ -7,12 +7,12 @@
   const game = __rt.renderer.game, gl = __rt.renderer.gl, proto = Object.getPrototypeOf(gl);
   const draw = proto.drawArrays, drawEl = proto.drawElements;
   proto.drawArrays = proto.drawElements = function () {};
-  const t = {}, undo = [];
+  const t = {}, calls = {}, undo = [];
   let frames = 0;
   const wrap = (o, k, label) => {
     const f = o && o[k];
     if (typeof f !== "function" || f.__timed) return;
-    const w = function () { const s = performance.now(); try { return f.apply(this, arguments); } finally { t[label] = (t[label] || 0) + performance.now() - s; } };
+    const w = function () { calls[label] = (calls[label] || 0) + 1; const s = performance.now(); try { return f.apply(this, arguments); } finally { t[label] = (t[label] || 0) + performance.now() - s; } };
     w.__timed = true;
     o[k] = w;
     undo.push(() => { o[k] = f; });
@@ -41,7 +41,7 @@
     for (const u of undo) u();
     proto.drawArrays = draw; proto.drawElements = drawEl;
     const f = frames || 1;
-    return frames + " frames | " + Object.keys(t).sort((a, b) => t[b] - t[a]).map((k) => k + " " + (t[k] / f).toFixed(3)).join(" | ") + " (ms/frame)";
+    return frames + " frames | " + Object.keys(t).sort((a, b) => t[b] - t[a]).map((k) => k + " " + (t[k] / f).toFixed(3) + " (" + (calls[k] / f).toFixed(1) + "x)").join(" | ") + " (ms/frame, calls/frame)";
   };
   return "armed";
 })()
