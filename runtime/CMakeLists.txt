@@ -126,7 +126,7 @@ endif()
 # Profiling build: the built-in profiler samples from the start, every 1,000 JS operations, and
 # reports to the log every 30 s (src/profiler.c). A test build for one measurement, not for play:
 # a branch that wants one turns this on here (CI's builds then come out profiling).
-option(PKR_PROFILE_BUILD "profiling build: sample the JS profile from the start, 10x as often" OFF)
+option(PKR_PROFILE_BUILD "profiling build: sample the JS profile from the start, 10x as often" ON)
 if(PKR_PROFILE_BUILD)
   target_compile_definitions(pokerogue-rt PRIVATE PKR_PROFILE_BUILD=1)
 endif()
