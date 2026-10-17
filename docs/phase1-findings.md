@@ -322,3 +322,40 @@ Vita's 0.5-0.8 s battle hitches are GPU waits too.
   net.c); if retries don't help, limit concurrent requests while the pools are nearly full.
 - Also in this log: `[error] Exported save data is invalid JSON!` several times around a save
   export that still wrote `data_Krappa.prsv` (198 KB); not looked into yet.
+
+### Startup: where the first ~100 s go, and what runs in parallel now (2026-10-17, branch claude/startup-load-speedup)
+Read from the two 0.42 logs (online, warm caches; the log has no timestamps, so the timeline is
+rebuilt from the `[module]`, `[perf]` and `[net]` lines, ±2 s). Desktop numbers are from this
+branch, live site, desktop runtime; **nothing here is timed on the Vita yet**.
+- **Evaluated after 27-31 s**, then ~70 s more to the login screen. 8-9 s of the 27 s are the
+  module graph, ~10 s are the game waiting for **8.7 MB it downloads on every start** (the
+  `/fonts/*.ttf` files, 7.2 MB, and `manifest.json`: not in the disk cache, which only took
+  `/assets/` and `?t=` URLs; the server sends the fonts with `max-age=315360000`), with the CPU idle
+  (JS 1 ms/frame at 55 fps in those windows). The rest are single-threaded JS frames (13 s, 9.5 s,
+  15.8 s: game setup) that QuickJS can't split, and ~25 s of asset loading in which the main thread
+  is ~80% idle (cause not found yet; the `[perf]` line now has what's needed, see below).
+- **Module graph, 8.4 s with everything cached:** it read 5.4 MB of source (only to hash it) and
+  21 MB of compiled code from the memory card, one chunk after the other, at ~4 MB/s (fetch of
+  the 2.6 MB chunk 0.7 s = 3.7 MB/s). Deserializing is cheap (desktop: 36 ms for all of it). The
+  compiled files were 3.7x larger than needed because QuickJS stores each function's source text
+  inside it, once per nesting level (21 MB vs 5.6 MB for 12 chunks without; with `JS_WRITE_OBJ_STRIP_SOURCE`
+  file names and line numbers in stack traces stay). `/assets/name-HASH.js` chunks are now keyed
+  by URL (the hash is the bundler's content hash; the HTTP cache already assumed that) so the
+  source isn't read at all, a thread reads last run's chunks ahead (`bytecode/startup.txt`) while
+  the main thread fetches the page, and the loading overlay is only drawn for big chunks (each
+  present cost ~110 ms: the tiny modules' "fetched 111 ms" were that, not the disk).
+- **Fonts and 30-day-old unversioned cache entries:** `/fonts/` is cached like `/assets/`; an entry
+  without `?t=` older than 30 days is fetched again.
+- **First start after a game update (new chunk names, ~30 s of compiling on the main thread):**
+  `precompile.c` fetches and compiles the 23 chunks (6.1 MB) on three worker threads, each with its
+  own QuickJS runtime, following the imports it finds in each chunk (static and `import()`), and
+  hands the compiled bytes to the loader in memory. Desktop, cold cache: 23 chunks in 2.7 s (the
+  biggest chunk, `loading-scene` 2.6 MB, is the limit: ~2.3x over one thread; Vita estimate 30 s -> ~13 s).
+  A compile uses ~27 MB at most per thread.
+- **Not changed:** the game's own JS frames, fonts' parse time, the 8 ms/frame limit on handing
+  cached responses to JS.
+- **To read in the next Vita log:** `[module]` lines now give fetch / read / load per chunk with
+  their imports' time taken out; `[perf]` ends with `disk cache: N reads, MB, ms`, `images
+  decoded: N, ms` and `t=` (seconds since start), and `net:` says how many MB came over the network.
+  The idle ~25 s of asset loading is either slow cache reads (the `disk cache` ms will show it),
+  Phaser's loader queue, or I/O latency on the card; that decides what is worth doing next.

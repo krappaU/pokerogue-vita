@@ -132,6 +132,13 @@ static pthread_cond_t img_cond = PTHREAD_COND_INITIALIZER;
 static img_job *img_in, *img_in_tail, *img_out;
 static uint32_t img_next_id = 1;
 static bool img_thread_started;
+static volatile double stat_dec_ms;
+static volatile int stat_dec_n;
+
+void image_decode_stats(char *out, size_t n) {
+    snprintf(out, n, "images decoded: %d, %.0f ms", stat_dec_n, stat_dec_ms);
+    stat_dec_n = 0, stat_dec_ms = 0;
+}
 
 static void *img_thread(void *arg) {
     (void)arg;
@@ -144,8 +151,11 @@ static void *img_thread(void *arg) {
         if (!img_in) img_in_tail = NULL;
         pthread_mutex_unlock(&img_lock);
         int comp;
+        double t0 = host_now_ms();
         j->rgba = stbi_load_from_memory(j->data, (int)j->len, &j->w, &j->h, &comp, 4);
         if (!j->rgba) j->error = stbi_failure_reason();
+        stat_dec_ms += host_now_ms() - t0;
+        stat_dec_n++;
         pthread_mutex_lock(&img_lock);
         j->next = img_out;
         img_out = j;

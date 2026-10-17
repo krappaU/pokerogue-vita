@@ -2,6 +2,7 @@
 // QuickJS-ng host: runtime setup, ES module loading over HTTP, and the __native helper object.
 
 #include <dirent.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -197,10 +198,14 @@ static char *module_normalize(JSContext *ctx, const char *base, const char *name
 
 // ---------------------------------------------------------------- compiled-code cache
 // Compiling the game's ~6 MB of JS takes ~25 s on the Vita. The compiled bytecode is kept in
-// <data>/bytecode/, keyed by a hash of the URL, the source and the engine version, so a game
-// update (new source) or a runtime update with a different QuickJS just compiles afresh.
-// Entries older than 14 days are deleted at startup.
-#define BYTECODE_SALT "pkr-bytecode-1"
+// <data>/bytecode/ (without the functions' source text: with it the files were 21 MB instead of
+// 5.6 MB, and reading them from the memory card was most of the 8 s the module graph took).
+// The bundler names its chunks by content hash ("assets/name-HASH.js"), so those are keyed by URL
+// and, once compiled, never fetched again; other modules are keyed by a hash of URL, source and
+// engine version. Entries older than 14 days are deleted at startup (and rewritten when used).
+#define BYTECODE_SALT "pkr-bytecode-2"
+#define BYTECODE_EXT ".qbc2"
+#define BYTECODE_WRITE_FLAGS (JS_WRITE_OBJ_BYTECODE | JS_WRITE_OBJ_STRIP_SOURCE)
 
 static uint64_t fnv64(uint64_t h, const void *data, size_t n) {
     const uint8_t *p = data;
@@ -208,40 +213,57 @@ static uint64_t fnv64(uint64_t h, const void *data, size_t n) {
     return h;
 }
 
+// "https://host/assets/name-AbC123_x.js": the bundler's content hash (8 characters of A-Za-z0-9_-)
+// ends the file name.
+static bool chunk_url(const char *url) {
+    const char *a = strstr(url, "/assets/");
+    if (!a || strpbrk(url, "?#")) return false;
+    size_t n = strlen(url);
+    if (n < 8 + 1 + 1 + 3 || strcmp(url + n - 3, ".js") || url[n - 12] != '-') return false;
+    for (const char *p = url + n - 11; p < url + n - 3; p++)
+        if (!((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || *p == '_' || *p == '-')) return false;
+    return !strchr(a + 8, '/');
+}
+bool module_chunk_url(const char *url) { return chunk_url(url); }
+
 static void bytecode_path(const char *url, const char *src, size_t len, char *out, size_t n) {
     uint64_t h = 14695981039346656037ull;
     const char *v = JS_GetVersion();
     h = fnv64(h, BYTECODE_SALT, strlen(BYTECODE_SALT));
     h = fnv64(h, v, strlen(v));
     h = fnv64(h, url, strlen(url) + 1);
-    h = fnv64(h, src, len);
-    snprintf(out, n, "%s/bytecode/%016llx.qbc", g_cfg.data_dir, (unsigned long long)h);
+    if (src) h = fnv64(h, src, len);
+    snprintf(out, n, "%s/bytecode/%016llx%s", g_cfg.data_dir, (unsigned long long)h, BYTECODE_EXT);
 }
 
+void module_bytecode_path(const char *url, char *out, size_t n) { bytecode_path(url, NULL, 0, out, n); }
+
 static void bytecode_cleanup(void) {
-    char dir[600];
+    char dir[600], list[700];
     snprintf(dir, sizeof dir, "%s/bytecode", g_cfg.data_dir);
     DIR *d = opendir(dir);
     if (!d) return;
+    // What the last run loaded stays however old it is: a file is only written when it is compiled.
+    snprintf(list, sizeof list, "%s/startup.txt", dir);
+    size_t ln = 0;
+    char *used = read_file(list, &ln);
     time_t now = time(NULL);
     struct dirent *e;
     while ((e = readdir(d))) {
-        if (!strstr(e->d_name, ".qbc")) continue;
         char path[900];
+        bool old_format = strstr(e->d_name, ".qbc") && !strstr(e->d_name, BYTECODE_EXT); // 21 MB with sources
+        if (!old_format && !strstr(e->d_name, BYTECODE_EXT)) continue;
         snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
         struct stat st;
-        if (stat(path, &st) == 0 && now - st.st_mtime > 14 * 24 * 3600) remove(path);
+        bool in_use = used && strstr(used, e->d_name);
+        if (stat(path, &st) == 0 && (old_format || (!in_use && now - st.st_mtime > 14 * 24 * 3600))) remove(path);
     }
+    free(used);
     closedir(d);
 }
 
-static void bytecode_save(JSContext *ctx, JSValueConst fn, const char *path) {
-    size_t blen = 0;
-    uint8_t *bc = JS_WriteObject(ctx, &blen, fn, JS_WRITE_OBJ_BYTECODE);
-    if (!bc) {
-        JS_FreeValue(ctx, JS_GetException(ctx));
-        return;
-    }
+// Writes a compiled module (any thread). Returns false if the file couldn't be written.
+bool module_bytecode_write(const char *path, const void *bc, size_t blen) {
     char dir[600], tmp[720];
     snprintf(dir, sizeof dir, "%s/bytecode", g_cfg.data_dir);
 #ifdef __vita__
@@ -255,62 +277,256 @@ static void bytecode_save(JSContext *ctx, JSValueConst fn, const char *path) {
     if (f) ok &= fclose(f) == 0;
     if (ok) ok = rename(tmp, path) == 0;
     if (!ok) remove(tmp);
+    return ok;
+}
+
+static void bytecode_save(JSContext *ctx, JSValueConst fn, const char *path) {
+    size_t blen = 0;
+    uint8_t *bc = JS_WriteObject(ctx, &blen, fn, BYTECODE_WRITE_FLAGS);
+    if (!bc) {
+        JS_FreeValue(ctx, JS_GetException(ctx));
+        return;
+    }
+    module_bytecode_write(path, bc, blen);
     js_free(ctx, bc);
 }
 
-static JSModuleDef *module_load(JSContext *ctx, const char *url, void *opaque) {
-    size_t len = 0;
-    long status = 0;
-    double t0 = host_now_ms();
-    const char *base = strrchr(url, '/');
-    char msg[600];
-    snprintf(msg, sizeof msg, "PokeRogue\n\nDownloading game code\n%s", base ? base + 1 : url);
-    overlay_present(msg);
-    char *src = net_get_sync(url, &len, &status);
-    if (!src || status != 200) {
-        JS_ThrowReferenceError(ctx, "could not load module %s (HTTP %ld)", url, status);
-        free(src);
-        return NULL;
+// ---- compiled modules in memory: read ahead by a thread, or handed over by precompile.c
+// The module graph's compiled files are read from the memory card by a thread that starts with the
+// app (the main thread spends its first second fetching the page), in the order the last run
+// loaded them (<data>/bytecode/startup.txt). module_load takes a file from here when it's there.
+enum { BC_QUEUED = 1, BC_READING, BC_READY, BC_TAKEN };
+typedef struct {
+    char path[700];
+    char *buf;
+    size_t len;
+    int state;
+} bc_entry;
+#define BC_MAX 48
+static bc_entry bc_tab[BC_MAX];
+static pthread_mutex_t bc_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t bc_cond = PTHREAD_COND_INITIALIZER;
+static char bc_loaded[BC_MAX][700]; // paths in the order this run loaded them, for startup.txt
+static int bc_loaded_n;
+static bool bc_list_dirty;
+static double bc_list_t;
+
+static bc_entry *bc_find(const char *path) {
+    for (int i = 0; i < BC_MAX; i++)
+        if (bc_tab[i].state && !strcmp(bc_tab[i].path, path)) return &bc_tab[i];
+    return NULL;
+}
+
+// Hands a compiled module (malloc'd, ownership taken) to the loader without a disk read.
+void module_bytecode_put(const char *path, char *buf, size_t len) {
+    pthread_mutex_lock(&bc_lock);
+    bc_entry *e = bc_find(path);
+    if (!e)
+        for (int i = 0; i < BC_MAX && !e; i++)
+            if (!bc_tab[i].state) e = &bc_tab[i];
+    if (e && e->state != BC_READING) {
+        free(e->buf);
+        snprintf(e->path, sizeof e->path, "%s", path);
+        e->buf = buf, e->len = len, e->state = BC_READY;
+        buf = NULL;
+        pthread_cond_broadcast(&bc_cond);
     }
-    double t1 = host_now_ms();
-    char bc_path[700];
-    bytecode_path(url, src, len, bc_path, sizeof bc_path);
-    struct stat st;
-    bool have_bc = stat(bc_path, &st) == 0;
-    snprintf(msg, sizeof msg, "PokeRogue\n\n%s game code\n%s (%lu KB)%s", have_bc ? "Loading" : "Preparing",
-             base ? base + 1 : url, (unsigned long)(len / 1024),
-             have_bc ? "" : "\n\nThe first start after an update takes a while.");
-    overlay_present(msg);
+    pthread_mutex_unlock(&bc_lock);
+    free(buf);
+}
+
+// The compiled file for `path`: from the table when it's there (waiting for a read in progress),
+// else read now. Returns malloc'd bytes or NULL.
+static char *bytecode_take(const char *path, size_t *len, bool *from_table) {
+    *from_table = false;
+    pthread_mutex_lock(&bc_lock);
+    bc_entry *e = bc_find(path);
+    while (e && e->state == BC_READING) pthread_cond_wait(&bc_cond, &bc_lock);
+    char *buf = NULL;
+    if (e && e->state == BC_READY) {
+        buf = e->buf, *len = e->len;
+        e->buf = NULL;
+        *from_table = buf != NULL;
+    }
+    if (e) e->state = BC_TAKEN;
+    pthread_mutex_unlock(&bc_lock);
+    return buf ? buf : read_file(path, len);
+}
+
+static void *bytecode_prefetch_thread(void *arg) {
+    (void)arg;
+    plat_thread_setup("pkr_prefetch", 2, 0);
+    for (int i = 0; i < BC_MAX; i++) {
+        pthread_mutex_lock(&bc_lock);
+        bc_entry *e = &bc_tab[i];
+        if (e->state != BC_QUEUED) {
+            pthread_mutex_unlock(&bc_lock);
+            continue;
+        }
+        e->state = BC_READING;
+        char path[sizeof e->path];
+        memcpy(path, e->path, sizeof path);
+        pthread_mutex_unlock(&bc_lock);
+        size_t len = 0;
+        char *buf = read_file(path, &len);
+        pthread_mutex_lock(&bc_lock);
+        e->buf = buf, e->len = len;
+        e->state = buf ? BC_READY : BC_TAKEN;
+        pthread_cond_broadcast(&bc_cond);
+        pthread_mutex_unlock(&bc_lock);
+    }
+    return NULL;
+}
+
+static void bytecode_prefetch_start(void) {
+    char list[700];
+    snprintf(list, sizeof list, "%s/bytecode/startup.txt", g_cfg.data_dir);
+    size_t n = 0;
+    char *txt = read_file(list, &n);
+    if (!txt) return;
+    int count = 0;
+    char *save = NULL;
+    for (char *l = strtok_r(txt, "\r\n", &save); l && count < BC_MAX; l = strtok_r(NULL, "\r\n", &save)) {
+        struct stat st;
+        if (strstr(l, "..") || strncmp(l, g_cfg.data_dir, strlen(g_cfg.data_dir)) || stat(l, &st) != 0) continue;
+        snprintf(bc_tab[count].path, sizeof bc_tab[count].path, "%s", l);
+        bc_tab[count++].state = BC_QUEUED;
+    }
+    free(txt);
+    if (!count) return;
+    pthread_t t;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 128 * 1024);
+    if (pthread_create(&t, &attr, bytecode_prefetch_thread, NULL) == 0) pthread_detach(t);
+    else
+        for (int i = 0; i < count; i++) bc_tab[i].state = 0;
+    pthread_attr_destroy(&attr);
+}
+
+static void bytecode_note_loaded(const char *path) {
+    pthread_mutex_lock(&bc_lock);
+    if (bc_loaded_n < BC_MAX) {
+        snprintf(bc_loaded[bc_loaded_n++], sizeof bc_loaded[0], "%s", path);
+        bc_list_dirty = true;
+        bc_list_t = host_now_ms();
+    }
+    pthread_mutex_unlock(&bc_lock);
+}
+
+// From the main loop: once the modules loaded so far haven't changed for 3 s, remember their order.
+void module_list_flush(void) {
+    if (!bc_list_dirty || host_now_ms() - bc_list_t < 3000) return;
+    bc_list_dirty = false;
+    char path[700], tmp[720], text[BC_MAX * 710];
+    size_t o = 0;
+    pthread_mutex_lock(&bc_lock);
+    for (int i = 0; i < bc_loaded_n; i++) o += snprintf(text + o, sizeof text - o, "%s\n", bc_loaded[i]);
+    pthread_mutex_unlock(&bc_lock);
+    snprintf(path, sizeof path, "%s/bytecode/startup.txt", g_cfg.data_dir);
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    FILE *f = fopen(tmp, "wb");
+    if (!f) return;
+    bool ok = fwrite(text, 1, o, f) == o;
+    ok &= fclose(f) == 0;
+    if (ok) rename(tmp, path);
+    else remove(tmp);
+}
+
+// ---- the module loader. JS_ReadObject loads a module's imports from inside (nested calls), so the
+// time of the callee is subtracted from the caller's in the log.
+static double nested_ms;
+
+// Reads the compiled module in `bc` (taken: freed here). False if it's unusable (file removed).
+static bool read_compiled(JSContext *ctx, char *bc, size_t blen, const char *bc_path, const char *url, const char *base,
+                          JSValue *fn, double *t_load) {
+    char msg[600];
+    if (blen > 512 * 1024) {
+        snprintf(msg, sizeof msg, "PokeRogue\n\nLoading game code\n%s (%lu KB)", base, (unsigned long)(blen / 1024));
+        overlay_present(msg);
+    }
+    double t = host_now_ms();
+    *fn = JS_ReadObject(ctx, (const uint8_t *)bc, blen, JS_READ_OBJ_BYTECODE);
+    *t_load = host_now_ms() - t;
+    free(bc);
+    if (!JS_IsException(*fn) && JS_VALUE_GET_TAG(*fn) == JS_TAG_MODULE) return true;
+    host_log("[module] cached code for %s unusable; compiling", url);
+    if (JS_IsException(*fn)) JS_FreeValue(ctx, JS_GetException(ctx));
+    else JS_FreeValue(ctx, *fn);
+    *fn = JS_UNDEFINED;
+    remove(bc_path);
+    return false;
+}
+
+static JSModuleDef *module_load(JSContext *ctx, const char *url, void *opaque) {
+    double t0 = host_now_ms(), outer_nested = nested_ms;
+    nested_ms = 0;
+    const char *base = strrchr(url, '/');
+    base = base ? base + 1 : url;
+    char msg[600], bc_path[700];
+    bool by_url = chunk_url(url);
+    char *src = NULL, *bc = NULL;
+    size_t len = 0, blen = 0;
+    long status = 0;
+    bool from_table = false, cached = false;
+    double t_fetch = 0, t_read = 0, t_load = 0;
     JSValue fn = JS_UNDEFINED;
-    bool cached = false;
-    size_t blen = 0;
-    char *bc = read_file(bc_path, &blen);
-    if (bc) {
-        fn = JS_ReadObject(ctx, (const uint8_t *)bc, blen, JS_READ_OBJ_BYTECODE);
-        free(bc);
-        if (JS_IsException(fn) || JS_VALUE_GET_TAG(fn) != JS_TAG_MODULE) {
-            host_log("[module] cached code for %s unusable; compiling", url);
-            if (JS_IsException(fn)) JS_FreeValue(ctx, JS_GetException(ctx));
-            else JS_FreeValue(ctx, fn);
-            fn = JS_UNDEFINED;
-            remove(bc_path);
-        } else {
-            cached = true;
+
+    // 1. Compiled code. For a chunk it's found by URL, without looking at the source.
+    if (by_url) {
+        module_bytecode_path(url, bc_path, sizeof bc_path);
+        double t = host_now_ms();
+        bc = bytecode_take(bc_path, &blen, &from_table);
+        t_read = host_now_ms() - t;
+        if (bc) cached = read_compiled(ctx, bc, blen, bc_path, url, base, &fn, &t_load);
+    }
+    // 2. The source (and for other modules, compiled code found by its hash)
+    if (!cached) {
+        double t = host_now_ms();
+        snprintf(msg, sizeof msg, "PokeRogue\n\nDownloading game code\n%s", base);
+        overlay_present(msg);
+        src = net_get_sync(url, &len, &status);
+        t_fetch = host_now_ms() - t;
+        if (!src || status != 200) {
+            JS_ThrowReferenceError(ctx, "could not load module %s (HTTP %ld)", url, status);
+            free(src);
+            nested_ms = outer_nested + (host_now_ms() - t0);
+            return NULL;
+        }
+        if (!by_url) {
+            bytecode_path(url, src, len, bc_path, sizeof bc_path);
+            t = host_now_ms();
+            bc = bytecode_take(bc_path, &blen, &from_table);
+            t_read = host_now_ms() - t;
+            if (bc) cached = read_compiled(ctx, bc, blen, bc_path, url, base, &fn, &t_load);
         }
     }
+    // 3. Compile it
     if (!cached) {
+        snprintf(msg, sizeof msg, "PokeRogue\n\nPreparing game code\n%s (%lu KB)\n\nThe first start after an update takes a while.", base,
+                 (unsigned long)(len / 1024));
+        overlay_present(msg);
+        double t = host_now_ms();
         fn = JS_Eval(ctx, src, len, url, JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+        t_load = host_now_ms() - t;
         if (!JS_IsException(fn)) bytecode_save(ctx, fn, bc_path);
     }
     free(src);
-    if (JS_IsException(fn)) return NULL;
+    if (JS_IsException(fn)) {
+        nested_ms = outer_nested + (host_now_ms() - t0);
+        return NULL;
+    }
+    bytecode_note_loaded(bc_path);
     JSModuleDef *m = JS_VALUE_GET_PTR(fn);
     JSValue meta = JS_GetImportMeta(ctx, m);
     JS_SetPropertyStr(ctx, meta, "url", JS_NewString(ctx, url));
     JS_FreeValue(ctx, meta);
-    host_log("[module] %s (%lu KB) fetched %.0f ms, %s %.0f ms", url, (unsigned long)(len / 1024), t1 - t0,
-             cached ? "loaded compiled code in" : "compiled", host_now_ms() - t1);
-    if (len > 256 * 1024) mem_breakdown("after compiling");
+    double total = host_now_ms() - t0;
+    host_log("[module] %s (%lu KB): %s, %.0f ms of its own (fetch %.0f, read %.0f%s, %s %.0f incl. imports)", url,
+             (unsigned long)((cached ? blen : len) / 1024), cached ? "compiled code loaded" : "compiled now", total - nested_ms, t_fetch,
+             t_read, from_table ? " ahead of time" : "", cached ? "load" : "compile", t_load);
+    nested_ms = outer_nested + total;
+    if (len > 256 * 1024 || blen > 256 * 1024) mem_breakdown("after compiling");
     JS_FreeValue(ctx, fn);
     return m;
 }
@@ -429,6 +645,9 @@ static JSValue n_resolve_url(JSContext *ctx, JSValueConst this_val, int argc, JS
 static JSValue n_import(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     const char *url = JS_ToCString(ctx, argv[0]);
     if (!url) return JS_EXCEPTION;
+    char abs[2048];
+    url_resolve(g_cfg.base_url, url, abs, sizeof abs);
+    precompile_graph(abs); // after a game update: all cores compile its chunks
     JSValue p = JS_LoadModule(ctx, g_cfg.base_url, url);
     JS_FreeCString(ctx, url);
     return p;
@@ -768,6 +987,7 @@ void host_js_set_interrupt(JSInterruptHandler *cb) { JS_SetInterruptHandler(rt, 
 
 JSContext *host_js_init(void) {
     bytecode_cleanup();
+    bytecode_prefetch_start();
     rt = JS_NewRuntime();
     JS_SetMaxStackSize(rt, 4 * 1024 * 1024);
     JS_UpdateStackTop(rt);
