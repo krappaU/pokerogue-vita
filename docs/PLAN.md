@@ -97,8 +97,10 @@ Performance (the main remaining work):
   are re-uploaded. The `[perf]` line now names slow main-loop steps; check the next logs.
 
 Reliability:
-- Downloads occasionally stall for ~16 s and fail with 0 bytes (one per session in the last logs,
-  down from batches before 0.39). Consider retrying failed asset GETs once.
+- Downloads occasionally stall for ~16-20 s and fail with 0 bytes (one per session in the last logs,
+  down from batches before 0.39). A failed asset GET is now repeated twice in `net.js`; before that, one
+  lost download left a wave-60 load stuck for good (0.42 log, 2026-10-17). Check the next logs for
+  `[net] retry` lines.
 - Memory over long sessions: watch heap and GPU pools in `[mem]` lines (0.41 evicts harder under
   pressure).
 - No fallback to the last working game version if a new release breaks the shim (risk 4 above).
