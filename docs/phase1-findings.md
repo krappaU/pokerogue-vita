@@ -379,6 +379,11 @@ Changes (0.52):
   version). The old `http/` folder isn't migrated (each move would be one more slow open in that
   folder): a minute after start, the cache thread deletes it 8 files every 250 ms while it has
   nothing else to do, and its entries are downloaded again as the game asks for them (~25 MB, once).
+  0.52 on the console (log9, 2026-10-19): with no other file work going on, the control channel's
+  twice-a-second open waited ~50-100 ms behind those deletes (7-20 ms per frame), and the folder
+  wasn't gone after 5 minutes. 0.54 deletes one file at a time and waits four times as long as
+  that delete took (at least 100 ms), so it takes at most ~20% of the card's time, and logs its
+  progress every 500 files.
 - Cache reads and writes run on their own thread (`pkr_cache`, core 1, below the network thread);
   a miss goes on to the network thread, a download is written there before it's handed to JS.
 - The control channel (dev builds; player builds have none since 0.51) is read twice a second, and
