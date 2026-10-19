@@ -19,6 +19,7 @@ typedef struct {
     int exit_after_frames;   // 0 = run forever
     const char *local_dir;   // config.txt local=<dir>: play an offline build from this folder
     bool force_online;       // config.txt online=1
+    bool log;                // config.txt log=1: write log.txt in a player build (debug builds always do)
     bool no_profile;         // config.txt profile=0
     bool no_audio;           // config.txt audio=0: no sound (the game gets a silent Web Audio)
     int busy_after_ms;       // config.txt busy=<ms>: loading screen during long frames (0: never)
@@ -41,6 +42,7 @@ extern host_config g_cfg;
 // ---------------------------------------------------------------- logging / time
 
 void host_log(const char *fmt, ...);
+bool host_logging(void); // is there a log to write to (player builds: only with config.txt log=1)
 double host_now_ms(void);
 void mem_breakdown(const char *stage); // logs where main memory goes
 

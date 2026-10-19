@@ -48,7 +48,10 @@
     }
     return args.map((a) => fmt(a)).join(" ");
   }
-  const log = (level) => (...args) => N.log((level ? level + " " : "") + format(args));
+  // Without a log (player builds, unless config.txt log=1) the console does nothing at all: the
+  // game's own logging would otherwise still format every argument.
+  const noop = () => {};
+  const log = (level) => (N.logging ? (...args) => N.log((level ? level + " " : "") + format(args)) : noop);
   const timers = new Map();
   g.console = {
     log: log(""), info: log(""), debug: log("[debug]"), warn: log("[warn]"), error: log("[error]"),

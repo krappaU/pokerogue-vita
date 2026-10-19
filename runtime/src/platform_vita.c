@@ -72,6 +72,7 @@ bool plat_init(int w, int h) {
                  "Install it (e.g. with PIB-Configuration-Tool) to compile shaders.");
         return false;
     }
+#ifdef PKR_DEBUG
     // Debug aid: with a file named "dump-shaders" in the data folder, the shader sources that vitaGL
     // hands to the Cg compiler (after GLSL translation) are written to <data>/shaders/.
     char flag[512];
@@ -81,6 +82,7 @@ bool plat_init(int w, int h) {
         sceIoMkdir(vgl_shader_dump_path, 0777);
         host_log("[gl] writing translated shaders to %s", vgl_shader_dump_path);
     }
+#endif
     // Full float precision: the game samples big texture atlases where half floats misplace pixels.
     vglSetupRuntimeShaderCompiler(SHARK_OPT_FAST, SHARK_ENABLE, SHARK_DISABLE, SHARK_ENABLE);
     // Explicit GPU memory pools: 88 MB video RAM (CDRAM) first, then 64 MB of main RAM, 16 MB physically

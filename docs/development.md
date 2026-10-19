@@ -22,7 +22,8 @@ Homebrew**. Builds are marked unsafe so they can raise the CPU clock.
    curl -T runtime/build-vita/pokerogue-0.41.vpk ftp://VITA_IP:1337/ux0:/data/pokerogue.vpk
    ```
 3. In VitaShell, open `ux0:data/`, press ✕ on the .vpk, install it, and accept the permissions prompt.
-4. Logs are written to `ux0:data/pokerogue/log.txt`:
+4. Logs are written to `ux0:data/pokerogue/log.txt` (dev builds; a player build only with `log=1`
+   in `ux0:data/pokerogue/config.txt`, see "Debug features" below):
    ```bash
    curl ftp://VITA_IP:1337/ux0:/data/pokerogue/log.txt -o log.txt
    ```
@@ -115,6 +116,14 @@ sets the .vpk name (`build-vita/pokerogue-0.18.vpk`) and the LiveArea version (0
 app shows it with the git commit (`scripts/build_id.sh`; "-modified" means uncommitted changes) in
 the first log line and in the corner of the startup and error screens. Commit before building a
 test build so the commit id identifies the code.
+
+**Debug features** are in dev builds (`PKR_DEV=1`), profiling builds and the desktop runtime only
+(CMake `PKR_DEBUG`, on by default except for Vita builds for players): the log file by default, the
+control channel (`ux0:data/pokerogue/control.txt` on the Vita, read every frame), the built-in
+profiler, the debug line, the watchdog thread, `<data>/debug.js` and config.txt's debugging options
+(`url`, `frames`, `interrupt`, `hud`, `profile`, `sample`, `profile_rate`, `sample_ms`, `nettrace`).
+A player build writes no log and its JS `console.*` does nothing, unless `log=1` is in config.txt
+(for a bug report). `-DPKR_DEBUG=OFF` builds the player variant on the desktop for testing.
 
 In the game, SELECT while holding L + R toggles a debug line in the top-right corner: version,
 frame rate, JS time per frame and heap use (`hud=1` in `<data>/config.txt` starts with it on; `hud`

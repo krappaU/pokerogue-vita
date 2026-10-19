@@ -1002,6 +1002,12 @@ JSContext *host_js_init(void) {
     JS_SetPropertyStr(ctx, native, "baseURL", JS_NewString(ctx, g_cfg.base_url));
     JS_SetPropertyStr(ctx, native, "jsDir", JS_NewString(ctx, g_cfg.js_dir));
     JS_SetPropertyStr(ctx, native, "dataDir", JS_NewString(ctx, g_cfg.data_dir));
+#ifdef PKR_DEBUG
+    JS_SetPropertyStr(ctx, native, "debug", JS_TRUE); // debug build: debug.js, the probes' hooks
+#else
+    JS_SetPropertyStr(ctx, native, "debug", JS_FALSE);
+#endif
+    JS_SetPropertyStr(ctx, native, "logging", JS_NewBool(ctx, host_logging())); // console.* writes to the log
     JS_SetPropertyStr(ctx, native, "screenWidth", JS_NewInt32(ctx, g_cfg.win_w));
     JS_SetPropertyStr(ctx, native, "screenHeight", JS_NewInt32(ctx, g_cfg.win_h));
     net_register(ctx, native);

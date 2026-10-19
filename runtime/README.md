@@ -7,7 +7,7 @@ Linux (SDL2 + OpenGL ES 2), where most development and testing happens headless 
 ## Layout
 | file | what it does |
 |---|---|
-| `src/main.c` | config, frame loop, `[perf]`/`[mem]` log lines, watchdog, test control channel, app restart |
+| `src/main.c` | config, frame loop, `[perf]`/`[mem]` log lines, watchdog, test control channel, app restart (the debug features: `PKR_DEBUG`, not in player builds) |
 | `src/platform_vita.c`, `src/platform_sdl.c` | screen, input (W3C "standard" gamepad), audio output, threads |
 | `src/js_host.c` | QuickJS setup, ES module loader with bytecode cache, URL resolution, `__native` helpers |
 | `src/net.c` | HTTP on libcurl in a worker thread; disk cache for versioned assets; the offline game's zip |

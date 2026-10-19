@@ -31,11 +31,13 @@ if [ -f .cache/private/libshacccg.suprx ]; then
   cp -r "tests/$NAME/." "$DATA/$NAME/"
   cp scripts/probe_verify_*.js "$DATA/$NAME/"
   [ -d third_party/test ] && cp -r third_party/test/. "$DATA/$NAME/"
-  printf 'local=%s\nprofile=0\n' "$NAME" > "$DATA/config.txt"
+  printf 'local=%s\nprofile=0\nlog=1\n' "$NAME" > "$DATA/config.txt"
 else
   MODE=boot
   echo "(no .cache/private/libshacccg.suprx: checking the boot only)"
+  echo 'log=1' > "$DATA/config.txt"
 fi
+# log=1: the .vpk under test is the player build, which writes no log otherwise.
 LOG=$DATA/log.txt
 
 export HOME=$OUT/home XDG_RUNTIME_DIR=/tmp SDL_AUDIODRIVER=dummy

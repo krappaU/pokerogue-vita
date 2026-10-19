@@ -13,9 +13,9 @@
   const rt = g.__rt, doc = g.document;
   rt.onPhaserLoaded = rt.onPhaserLoaded || []; // shim code that needs Phaser registers here
 
-  // Debugging aid: <data>/debug.js, if present, runs before the game loads (e.g. to install hooks).
+  // Debugging aid (debug builds): <data>/debug.js, if present, runs before the game loads (hooks).
   // g.__shaderHook(source), if a debug script defines it, can rewrite shader sources.
-  const debugScript = N.readFile("debug.js");
+  const debugScript = N.debug && N.readFile("debug.js");
   if (debugScript) {
     N.log("[debug] running debug.js from the data folder");
     try { (0, eval)(debugScript); } catch (e) { N.log("[debug] debug.js failed: " + e + "\n" + (e && e.stack)); }

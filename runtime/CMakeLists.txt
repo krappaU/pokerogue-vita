@@ -130,3 +130,16 @@ option(PKR_PROFILE_BUILD "profiling build: sample the JS profile from the start,
 if(PKR_PROFILE_BUILD)
   target_compile_definitions(pokerogue-rt PRIVATE PKR_PROFILE_BUILD=1)
 endif()
+# Debug features (log file by default, control channel, profiler, debug line, watchdog, debug.js,
+# config.txt's debugging options): dev and profiling builds and the desktop runtime. Vita builds
+# for players have none of them (a log only with config.txt log=1).
+# -DPKR_DEBUG=OFF on the desktop builds the player variant for testing.
+if(PKR_DEV OR PKR_PROFILE_BUILD OR NOT VITA)
+  set(PKR_DEBUG_DEFAULT ON)
+else()
+  set(PKR_DEBUG_DEFAULT OFF)
+endif()
+option(PKR_DEBUG "debug features (default: on except in Vita builds for players)" ${PKR_DEBUG_DEFAULT})
+if(PKR_DEBUG)
+  target_compile_definitions(pokerogue-rt PRIVATE PKR_DEBUG=1)
+endif()

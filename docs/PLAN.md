@@ -120,4 +120,5 @@ Features and checks:
 - `libshacccg.suprx` in `ur0:data/` (or `ur0:data/external/`), which vitaGL needs to compile shaders.
   Each user installs their own copy, for example with PIB-Configuration-Tool, ShaRKBR33D or ShaRKF00D.
 - Wi-Fi: the app loads the live game from pokerogue.net
-- Logs go to `ux0:data/pokerogue/log.txt`
+- Logs go to `ux0:data/pokerogue/log.txt` (dev builds; player builds only with `log=1` in
+  `ux0:data/pokerogue/config.txt`)

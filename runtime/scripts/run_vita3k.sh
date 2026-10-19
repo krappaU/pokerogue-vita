@@ -14,6 +14,9 @@ FS="$V3K/home/.local/share/Vita3K/Vita3K"
 mkdir -p "$FS/ur0/data" .cache/vita3k-shots
 [ -f .cache/private/libshacccg.suprx ] && cp .cache/private/libshacccg.suprx "$FS/ur0/data/"
 rm -f "$FS/ux0/data/pokerogue/log.txt" .cache/vita3k-shots/*.png
+# The player build writes a log only with log=1.
+mkdir -p "$FS/ux0/data/pokerogue"
+grep -qs '^log=1' "$FS/ux0/data/pokerogue/config.txt" || echo 'log=1' >> "$FS/ux0/data/pokerogue/config.txt"
 # Pre-fill the emulator's HTTP cache from the desktop runtime's (same URLs, same cache keys), so the
 # game's hundreds of asset downloads don't go through Vita3K's fragile network emulation.
 # PREFILL_FROM=<data dir> (default .cache/data); PREFILL_FROM=none to skip.

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // PokeRogue runtime entry point: config, frame loop, and the test control channel.
 //
-// Control channel (--control FILE): append one command per line to FILE while the runtime runs.
+// Control channel (--control FILE; debug builds only): append one command per line to FILE while the
+// runtime runs.
 //   key <Key>        press and release a key (DOM key names: Space, Enter, Backspace, ArrowUp, a, ...)
 //   keydown <Key> / keyup <Key>
 //   tap <x> <y>      touch/click at window coordinates
@@ -10,7 +11,7 @@
 //   evalfile <path>  evaluate a JS file in the page and log the result
 //   ime <text>       answer an open text-entry request (Linux stand-in for the Vita keyboard)
 //   ime-cancel       cancel it
-//   sendlog          upload the log to the dev server (L + R + START on the Vita; devtools.c)
+//   sendlog          upload the log to the log server (L + R + START on the Vita; devtools.c)
 //   quit
 
 #include <errno.h>
@@ -42,7 +43,11 @@ int _newlib_heap_size_user = 256 * 1024 * 1024;
 #include <psp2/kernel/sysmem.h>
 #define DEFAULT_JS_DIR "app0:js"
 #define DEFAULT_DATA_DIR "ux0:data/pokerogue"
+#ifdef PKR_DEBUG
 #define DEFAULT_CONTROL "ux0:data/pokerogue/control.txt"
+#else
+#define DEFAULT_CONTROL NULL // player builds: no control channel (it reads a file every frame)
+#endif
 #else
 #define DEFAULT_JS_DIR "js"
 #define DEFAULT_DATA_DIR "data"
@@ -68,7 +73,12 @@ host_config g_cfg = {
 
 static FILE *log_fp;
 
+bool host_logging(void) { return log_fp != NULL; }
+
 void host_log(const char *fmt, ...) {
+#ifndef PKR_DEBUG
+    if (!log_fp) return; // player builds: nothing to format or print without config.txt log=1
+#endif
     char buf[4096];
     va_list ap;
     va_start(ap, fmt);
@@ -109,6 +119,7 @@ static void mkdirs(const char *path) {
 
 // Logs free system memory (Vita) and the largest block malloc can hand out right now.
 void mem_report(const char *stage) {
+    if (!host_logging()) return;
     static const int sizes_mb[] = {256, 192, 160, 128, 96, 64, 48, 32, 16, 8, 4, 2, 1};
     int largest = 0;
     for (size_t i = 0; i < sizeof sizes_mb / sizeof *sizes_mb; i++) {
@@ -285,6 +296,7 @@ static JSContext *g_ctx_for_mem;
 
 // Where main memory goes: the whole heap, and the parts we can attribute.
 void mem_breakdown(const char *stage) {
+    if (!host_logging()) return;
     struct mallinfo mi = mallinfo();
     size_t img_enc, img_dec, canv, fonts;
     int n_canv;
@@ -349,6 +361,12 @@ static void perf_add(double js_ms) {
     double secs = (host_now_ms() - perf_t0) / 1000.0;
     // A window closes after 300 frames or 10 s, so slow stretches (loading) still get reported.
     if (perf_n < PERF_WINDOW && secs < 10) return;
+    if (!host_logging()) {
+        perf_n = perf_gc = 0;
+        perf_gc_max = perf_swap_ms = perf_after_ms = perf_draw_ms = 0;
+        for (int i = 0; i < N_PHASE_STATS; i++) phase_stats[i].ms = 0;
+        return;
+    }
     double sum = 0;
     for (int i = 0; i < perf_n; i++) sum += perf_js[i];
     qsort(perf_js, perf_n, sizeof *perf_js, cmp_d);
@@ -511,23 +529,26 @@ static void save_screenshot(const char *path) {
 // ---------------------------------------------------------------- config file
 
 // Optional <data dir>/config.txt with key=value lines (overrides defaults; command line wins):
+//   osk=1                           built-in keyboard instead of the system one
+//   audio=0                         no sound
+//   busy=2500                       show a "Loading" screen once one frame's JS has run this long (0: never)
+//   local=game                      play an offline build of the game from <data>/game (no login,
+//                                   saves stay on the console); automatic if <data>/game exists
+//   online=1                        play the live site even if <data>/game exists
+//   log=1                           write log.txt (player builds; debug builds always do)
+// Debug builds only (dev, profiling and desktop builds; PKR_DEBUG in CMakeLists.txt):
 //   url=http://192.168.1.10:8000/   load the game from another server (testing)
 //   frames=600                      quit after N frames
 //   interrupt=20                    stop JS that runs N s in one frame, logging where (debugging)
 //   hud=1                           start with the debug line on (toggle: SELECT while holding L+R)
-//   osk=1                           built-in keyboard instead of the system one
-//   audio=0                         no sound
-//   busy=2500                       show a "Loading" screen once one frame's JS has run this long (0: never)
 //   profile=0                       no built-in profiler (on by default; see profiler.c)
 //   sample=1                        profile from the start (else only with the debug line)
 //   profile_rate=1000               JS operations between profile samples (QuickJS's default 10000)
 //   sample_ms=1                     at most one sample per ms: samples follow time, not JS operations
 //   nettrace=1                      log the headers of requests to the game's API
-//   local=game                      play an offline build of the game from <data>/game (no login,
-//                                   saves stay on the console); automatic if <data>/game exists
-//   online=1                        play the live site even if <data>/game exists
-//   devserver=http://host:8765/     dev builds only: dev server for test builds and log upload
-//   devkey=<secret>                 (devtools.c, tools/devserver); devbranch=<branch>: that branch's builds
+// Dev builds only (devtools.c):
+//   devserver=https://host/         log server for log upload (tools/devserver), devkey=<its key>
+//   devbuilds=off|<url>             test builds: off, or another build.json than the dev-build release
 // Is an offline build of the game in <data>/game? The start screen offers it (unless config.txt
 // decides: online=1, or local=<dir>).
 static char offline_dir[600], offline_version[64] = "?";
@@ -573,7 +594,6 @@ static void load_config_file(void) {
     snprintf(path, sizeof path, "%s/config.txt", g_cfg.data_dir);
     FILE *f = fopen(path, "r");
     if (!f) return;
-    static char url[1024];
     char line[1100];
     while (fgets(line, sizeof line, f)) {
         line[strcspn(line, "\r\n")] = 0;
@@ -581,7 +601,11 @@ static void load_config_file(void) {
         if (!eq || line[0] == '#') continue;
         *eq = 0;
         const char *k = line, *v = eq + 1;
-        if (!strcmp(k, "url")) {
+        if (!strcmp(k, "log")) {
+            g_cfg.log = atoi(v) != 0;
+#ifdef PKR_DEBUG
+        } else if (!strcmp(k, "url")) {
+            static char url[1024];
             snprintf(url, sizeof url, "%s", v);
             g_cfg.base_url = url;
         } else if (!strcmp(k, "frames")) {
@@ -596,6 +620,11 @@ static void load_config_file(void) {
             g_cfg.profile_rate = atoi(v);
         } else if (!strcmp(k, "sample_ms")) {
             g_cfg.sample_ms = atof(v);
+        } else if (!strcmp(k, "nettrace")) {
+            g_cfg.net_trace = atoi(v) != 0;
+        } else if (!strcmp(k, "profile")) {
+            g_cfg.no_profile = atoi(v) == 0;
+#endif
         } else if (!strcmp(k, "osk")) {
             g_cfg.osk = atoi(v) != 0;
         } else if (!strcmp(k, "local") && v[0]) {
@@ -609,10 +638,6 @@ static void load_config_file(void) {
             g_cfg.base_url = LOCAL_ORIGIN "/";
         } else if (!strcmp(k, "online")) {
             g_cfg.force_online = atoi(v) != 0;
-        } else if (!strcmp(k, "nettrace")) {
-            g_cfg.net_trace = atoi(v) != 0;
-        } else if (!strcmp(k, "profile")) {
-            g_cfg.no_profile = atoi(v) == 0;
         } else if (!strcmp(k, "audio")) {
             g_cfg.no_audio = atoi(v) == 0;
         } else if (!strcmp(k, "busy")) {
@@ -691,9 +716,14 @@ int main(int argc, char **argv) {
     snprintf(path, sizeof path, "%s/log.txt", g_cfg.data_dir);
     // The previous run's log is kept: after a crash it is the one that matters.
     snprintf(prev_log, sizeof prev_log, "%s/log-prev.txt", g_cfg.data_dir);
-    remove(prev_log);
-    rename(path, prev_log);
-    log_fp = fopen(path, "w");
+#ifndef PKR_DEBUG
+    if (g_cfg.log)
+#endif
+    {
+        remove(prev_log);
+        rename(path, prev_log);
+        log_fp = fopen(path, "w");
+    }
     host_log("%s, built %s | QuickJS-ng %s | page %s", host_version_string(), __DATE__, JS_GetVersion(), g_cfg.base_url);
 
 
@@ -756,8 +786,11 @@ int main(int argc, char **argv) {
 
     host_js_set_interrupt(js_interrupt);
     set_phase("loading the game code");
+#ifdef PKR_DEBUG
     if (!g_cfg.no_profile) prof_init();
+#endif
     if (g_cfg.profile_rate > 0) JS_SetInterruptCounterInit(g_cfg.profile_rate);
+#ifdef PKR_DEBUG
     {
         pthread_t wd;
         pthread_attr_t attr;
@@ -766,6 +799,7 @@ int main(int argc, char **argv) {
         if (pthread_create(&wd, &attr, watchdog, NULL) == 0) pthread_detach(wd);
         pthread_attr_destroy(&attr);
     }
+#endif
 
     snprintf(path, sizeof path, "%s/bootstrap.js", g_cfg.js_dir);
     if (host_eval_file(ctx, path)) {
@@ -784,7 +818,9 @@ int main(int argc, char **argv) {
                 continue;
             }
             if (ev.type == PEV_TOGGLE_HUD) {
+#ifdef PKR_DEBUG
                 g_cfg.hud = !g_cfg.hud;
+#endif
                 continue;
             }
             if (ev.type == PEV_SEND_LOG) {
