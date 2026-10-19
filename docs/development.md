@@ -52,10 +52,11 @@ install from VitaShell. Without the updater app the download stays in
 `devbuilds=off` in `config.txt` turns the check off (`devbuilds=<url>` reads another `build.json`).
 The updater (like VitaShell's VSUPDATER) is built with every dev build.
 
-Publishing: only builds published on purpose reach the console, never a plain push. Actions ->
-"Publish dev build" -> Run workflow, with what to test as the label and optionally a CI run (empty:
-the newest successful CI run on `main`). It replaces the release with that run's dev .vpk and its
-`build.json`. Publishing an older run again is a rollback. From a shell:
+Publishing: every push to `main` whose CI run passes is published by itself ("Publish dev build"
+runs after CI, with the commit title as the label); pull requests and other branches never are. It
+replaces the release with that run's dev .vpk and its `build.json`. By hand (Actions -> "Publish dev
+build" -> Run workflow, with a label and optionally a CI run; empty: the newest successful CI run on
+`main`) it publishes another run: an older one is a rollback. From a shell:
 `gh workflow run publish-dev.yml -f label="what to test" [-f run=<run id>]`.
 
 **Logs (log server):** `tools/devserver/` (README there; Docker Compose with a Cloudflare tunnel).

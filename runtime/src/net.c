@@ -769,29 +769,39 @@ static void cache_job(req *r) {
     }
 }
 
-// The old one-folder cache (<data>/http/) is deleted a few files at a time while the cache thread
-// has nothing else to do, starting a minute after launch so it stays out of the start-up's reads.
-// Its entries are downloaded again as the game asks for them.
+// The old one-folder cache (<data>/http/) is deleted one file at a time while the cache thread has
+// nothing else to do, starting a minute after launch so it stays out of the start-up's reads. A
+// delete in that big folder is slow (0.52: other file opens waited ~50-100 ms behind them), so each
+// one is timed and the next waits four times as long: at most ~20% of the memory card's time. Its
+// entries are downloaded again as the game asks for them.
 static DIR *legacy;
 static char legacy_dir[512];
-static double legacy_after;
+static double legacy_next;  // host_now_ms() when the next file may be deleted
+static int legacy_count;
+static double legacy_ms;    // time spent deleting
 
 static void legacy_step(void) {
-    if (host_now_ms() < legacy_after) return;
-    for (int i = 0; i < 8; i++) {
-        struct dirent *e = readdir(legacy);
-        if (!e) {
-            closedir(legacy);
-            legacy = NULL;
-            rmdir(legacy_dir);
-            host_log("[net] old disk cache folder %s removed", legacy_dir);
-            return;
-        }
-        if (e->d_name[0] == '.') continue;
-        char path[800];
-        snprintf(path, sizeof path, "%s/%s", legacy_dir, e->d_name);
-        remove(path);
+    double t0 = host_now_ms();
+    if (t0 < legacy_next) return;
+    struct dirent *e;
+    do e = readdir(legacy);
+    while (e && e->d_name[0] == '.');
+    if (!e) {
+        closedir(legacy);
+        legacy = NULL;
+        rmdir(legacy_dir);
+        host_log("[net] old disk cache folder %s removed (%d files here, %.0f ms each)", legacy_dir, legacy_count,
+                 legacy_count ? legacy_ms / legacy_count : 0);
+        return;
     }
+    char path[800];
+    snprintf(path, sizeof path, "%s/%s", legacy_dir, e->d_name);
+    remove(path);
+    double took = host_now_ms() - t0;
+    legacy_ms += took;
+    if (++legacy_count % 500 == 0)
+        host_log("[net] old disk cache: %d files deleted so far, %.0f ms each", legacy_count, legacy_ms / legacy_count);
+    legacy_next = host_now_ms() + (took * 4 > 100 ? took * 4 : 100);
 }
 
 static void *cache_thread(void *arg) {
@@ -799,14 +809,17 @@ static void *cache_thread(void *arg) {
     plat_thread_setup("pkr_cache", 1, -5); // below the network thread, above image decoding
     snprintf(legacy_dir, sizeof legacy_dir, "%s/" LEGACY_CACHE_DIR, g_cfg.data_dir);
     legacy = opendir(legacy_dir);
-    legacy_after = host_now_ms() + 60000;
+    legacy_next = host_now_ms() + 60000;
     for (;;) {
         pthread_mutex_lock(&cache_lock);
-        if (!cache_q && legacy) { // idle: wake now and then to delete old files
+        if (!cache_q && legacy) { // idle: wake when the next old file may go
+            double wait = legacy_next - host_now_ms();
+            if (wait < 1) wait = 1;
             struct timespec ts;
             clock_gettime(CLOCK_REALTIME, &ts);
-            ts.tv_nsec += 250 * 1000000L;
-            if (ts.tv_nsec >= 1000000000L) ts.tv_sec++, ts.tv_nsec -= 1000000000L;
+            long long ns = ts.tv_nsec + (long long)(wait * 1e6);
+            ts.tv_sec += (time_t)(ns / 1000000000LL);
+            ts.tv_nsec = (long)(ns % 1000000000LL);
             pthread_cond_timedwait(&cache_cond, &cache_lock, &ts);
         }
         while (!cache_q && !legacy) pthread_cond_wait(&cache_cond, &cache_lock);
