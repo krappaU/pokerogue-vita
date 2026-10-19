@@ -38,7 +38,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       RUN_INPUT: ${{ inputs.run || github.event.workflow_run.id }}
-      LABEL: ${{ inputs.label || github.event.workflow_run.display_title }}
+      LABEL: ${{ inputs.label || github.event.workflow_run.head_commit.message }}
     steps:
       - name: Find the CI run
         run: |
@@ -70,8 +70,8 @@ jobs:
           asset, version, sha, run = sys.argv[1:]
           b = json.load(open("run.json"))
           label = f"{version} {b['headBranch']} {sha[:7]}"
-          if os.environ.get("LABEL"):
-              label += " - " + os.environ["LABEL"]
+          if os.environ.get("LABEL", "").strip():
+              label += " - " + os.environ["LABEL"].strip().splitlines()[0]  # a commit message: its title
           label = re.sub(r"[^ -~]", "?", label).replace('"', "'").replace("\\", "/")[:150]
           url = f"https://github.com/{os.environ['GH_REPO']}/releases/download/dev-build/{asset}"
           print(json.dumps({"id": f"run{run}", "commit": sha[:7], "label": label,
