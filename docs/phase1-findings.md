@@ -359,3 +359,34 @@ branch, live site, desktop runtime; **nothing here is timed on the Vita yet**.
   decoded: N, ms` and `t=` (seconds since start), and `net:` says how many MB came over the network.
   The idle ~25 s of asset loading is either slow cache reads (the `disk cache` ms will show it),
   Phaser's loader queue, or I/O latency on the card; that decides what is worth doing next.
+
+### File opens on the memory card (0.50 logs, 2026-10-19; runtime 0.52)
+Three 0.50 dev logs (online, live site of that day: a 70 s start to the title screen and two
+~6.5 min sessions with a battle) agree:
+- **Disk cache reads cost 20-40 ms each, 70-120 ms while the game loads**, whatever their size:
+  `109 reads, 6.3 MB, 9875 ms`, `75 reads, 1.4 MB, 9198 ms`, and even 0.1 MB in ~100 reads took
+  ~4 s. They ran one after the other on the network thread, which ran no transfers meanwhile, so
+  asset loading went at the speed of single file opens (the "main thread ~80% idle" while loading,
+  see "Startup" above). Likely cause: every entry was in one folder, `<data>/http/` (~800 for one
+  session of the game, thousands after a few game releases), and exFAT finds a name by scanning
+  its folder.
+- **The control channel cost 3 ms per frame, 30-45 ms while loading**: it opened
+  `ux0:data/pokerogue/control.txt` every frame, waiting behind the cache's opens.
+- One log line was garbled by two threads logging at once (the watchdog and the main thread).
+
+Changes (0.52):
+- The cache moved to `<data>/http-cache/<2 hex>/<14 hex>` (256 folders, ~3 entries each per game
+  version). The old `http/` folder isn't migrated (each move would be one more slow open in that
+  folder): a minute after start, the cache thread deletes it 8 files every 250 ms while it has
+  nothing else to do, and its entries are downloaded again as the game asks for them (~25 MB, once).
+- Cache reads and writes run on their own thread (`pkr_cache`, core 1, below the network thread);
+  a miss goes on to the network thread, a download is written there before it's handed to JS.
+- The control channel (dev builds; player builds have none since 0.51) is read twice a second, and
+  right away again after a `key`/`wait` that left commands behind it.
+- `host_log` takes a lock.
+
+Checked on desktop with the live site: from an empty cache, 808 entries in 245 folders; next start
+808 of 811 requests from the cache (the rest: page, manifest, API); a stand-in old `http/` folder of
+300 files was gone ~70 s after start; queued control commands ran in order without added delays.
+**Not timed on the Vita yet**: the next log's `disk cache: N reads, MB, ms` shows whether the
+folder size was the cause. If opens stay slow, the next step is fewer, bigger files (a pack file).

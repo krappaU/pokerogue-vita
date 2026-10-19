@@ -21,10 +21,10 @@ grep -qs '^log=1' "$FS/ux0/data/pokerogue/config.txt" || echo 'log=1' >> "$FS/ux
 # game's hundreds of asset downloads don't go through Vita3K's fragile network emulation.
 # PREFILL_FROM=<data dir> (default .cache/data); PREFILL_FROM=none to skip.
 PREFILL_FROM=${PREFILL_FROM:-.cache/data}
-if [ "$PREFILL_FROM" != none ] && [ -d "$PREFILL_FROM/http" ]; then
-  mkdir -p "$FS/ux0/data/pokerogue/http"
-  cp -n "$PREFILL_FROM"/http/* "$FS/ux0/data/pokerogue/http/" 2>/dev/null || true
-  echo "prefilled $(ls "$FS/ux0/data/pokerogue/http" | wc -l) cached files from $PREFILL_FROM"
+if [ "$PREFILL_FROM" != none ] && [ -d "$PREFILL_FROM/http-cache" ]; then
+  mkdir -p "$FS/ux0/data/pokerogue/http-cache"
+  cp -rn "$PREFILL_FROM"/http-cache/. "$FS/ux0/data/pokerogue/http-cache/" 2>/dev/null || true
+  echo "prefilled $(find "$FS/ux0/data/pokerogue/http-cache" -type f | wc -l) cached files from $PREFILL_FROM"
 fi
 docker rm -f pkr-vita3k >/dev/null 2>&1 || true
 docker run --rm --init --name pkr-vita3k ${DOCKER_ARGS:-} -e XDG_RUNTIME_DIR=/tmp -e SDL_AUDIODRIVER=dummy -v "$(cd "$V3K" && pwd)":/v -v "$(cd "$V3K/home" && pwd)":/root \

@@ -72,6 +72,7 @@ host_config g_cfg = {
 };
 
 static FILE *log_fp;
+static pthread_mutex_t log_lock = PTHREAD_MUTEX_INITIALIZER; // the watchdog and worker threads log too
 
 bool host_logging(void) { return log_fp != NULL; }
 
@@ -84,13 +85,16 @@ void host_log(const char *fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
+    bool nl = buf[0] && buf[strlen(buf) - 1] != '\n';
+    pthread_mutex_lock(&log_lock);
     fputs(buf, stderr);
-    if (buf[0] && buf[strlen(buf) - 1] != '\n') fputc('\n', stderr);
+    if (nl) fputc('\n', stderr);
     if (log_fp) {
         fputs(buf, log_fp);
-        if (buf[0] && buf[strlen(buf) - 1] != '\n') fputc('\n', log_fp);
+        if (nl) fputc('\n', log_fp);
         fflush(log_fp);
     }
+    pthread_mutex_unlock(&log_lock);
 }
 
 double host_now_ms(void) {
@@ -157,6 +161,7 @@ static int pending_tap_up = -1;
 static float tap_x, tap_y;
 
 static double ctl_wait_until; // "wait": no further commands before this time
+static bool ctl_more;        // a "key"/"wait" left more commands to read: read again without delay
 
 static void control_line(JSContext *ctx, char *line, bool *quit) {
     char *arg = strchr(line, ' ');
@@ -252,6 +257,13 @@ static void control_poll(JSContext *ctx, bool *quit) {
     for (int i = 0; i < 8; i++)
         if (pending_release[i].key[0]) return;
     if (host_now_ms() < ctl_wait_until) return;
+    // Opening the file is a memory-card access: 3 ms per frame on the Vita, 30-45 ms while the game
+    // loads (0.50 logs). Twice a second is enough for scripts; a command with more queued behind it
+    // ("key", "wait") comes back sooner, when it has run.
+    static double next_check;
+    if (host_now_ms() < next_check) return;
+    next_check = host_now_ms() + (ctl_more ? 0 : 500);
+    ctl_more = false;
     FILE *f = fopen(g_cfg.control, "r");
     if (!f) return;
     fseek(f, 0, SEEK_END);
@@ -267,7 +279,10 @@ static void control_poll(JSContext *ctx, bool *quit) {
             line[--n] = 0;
             bool hold = !strncmp(line, "key ", 4) || !strncmp(line, "wait ", 5);
             control_line(ctx, line, quit);
-            if (hold) break; // the rest waits for the release or the pause (see above)
+            if (hold) {
+                ctl_more = true; // read on as soon as the release or the pause is over
+                break;           // the rest waits for it (see above)
+            }
         }
     }
     fclose(f);

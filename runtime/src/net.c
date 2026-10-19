@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // HTTP for fetch/XHR and the module loader, on libcurl.
 //
-// Requests run on a network thread (CPU core 2 on the Vita): it reads disk-cache hits and files of
-// the offline game, runs curl's multi interface (connections, TLS, decompression) and writes the disk
-// cache. The main thread only creates requests and, once per frame, hands finished ones to JS. A
-// request belongs to the network thread from submission until it comes back on the done queue.
+// Requests run on a network thread (CPU core 1 on the Vita): it reads files of the offline game and
+// runs curl's multi interface (connections, TLS, decompression). Disk-cache reads and writes run on a
+// cache thread next to it, so the memory card's slow file opens never hold up transfers; a cache miss
+// goes on to the network thread. The main thread only creates requests and, once per frame, hands
+// finished ones to JS. A request belongs to these threads from submission until it comes back on the
+// done queue.
 // Responses for versioned static files (hashed /assets/ chunks, or URLs carrying ?t=/?v= cache
 // busters from the game's manifest) are cached on disk, which is what makes later boots fast.
 // The page itself, the manifest and all API calls always go to the network.
@@ -17,6 +19,8 @@
 #include <string.h>
 #include <strings.h>
 #include <time.h>
+#include <dirent.h>
+#include <unistd.h>
 #include <sys/stat.h>
 
 #include <curl/curl.h>
@@ -103,6 +107,12 @@ static CURLcode ssl_ctx_cb(CURL *curl, void *sslctx, void *userptr) {
     return CURLE_OK;
 }
 
+// <data>/http-cache/<2 hex>/<14 hex> from a hash of the URL (the disk cache). exFAT finds a name by scanning its
+// folder: with every entry in one folder (the old <data>/http/, thousands of files) each open on the
+// Vita's memory card took 20-120 ms (0.50 logs). 256 folders keep each one small.
+#define CACHE_DIR "http-cache"
+#define LEGACY_CACHE_DIR "http"
+
 // Cloudflare in front of pokerogue.net rejects requests that don't look like a browser.
 #define USER_AGENT "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36"
 
@@ -152,6 +162,8 @@ typedef struct req {
     int local_status; // local mode: 200 or 404 (delivered like a cache hit)
     bool from_cache;
     bool local;            // offline game file
+    bool cache_checked;    // the cache thread found no copy: download it
+    bool cache_store;      // the cache thread writes the downloaded body, then hands it back
     // Set by the network thread before the request comes back:
     long status;
     const char *error;     // curl's static error string, or NULL
@@ -163,6 +175,7 @@ typedef struct req {
 
 static CURLM *multi;
 static void net_thread_start(void);
+static void cache_thread_start(void);
 static req *reqs;
 // Queues between the main thread and the network thread.
 static pthread_mutex_t qlock = PTHREAD_MUTEX_INITIALIZER;
@@ -224,9 +237,10 @@ void net_init(void) {
     curl_multi_setopt(multi, CURLMOPT_MAX_TOTAL_CONNECTIONS, 8L);
     curl_multi_setopt(multi, CURLMOPT_PIPELINING, CURLPIPE_MULTIPLEX);
     char dir[512];
-    snprintf(dir, sizeof dir, "%s/http", g_cfg.data_dir);
+    snprintf(dir, sizeof dir, "%s/" CACHE_DIR, g_cfg.data_dir);
     mkdir(dir, 0777);
     net_thread_start();
+    cache_thread_start();
 }
 
 void net_shutdown(void) {
@@ -253,10 +267,12 @@ static bool cache_unversioned(const char *url) {
     return p && !strchr(p, '?');
 }
 
+// Each entry's path: <data>/http-cache/<2 hex>/<14 hex> (see CACHE_DIR).
 static void cache_path(const char *url, char *out, size_t n) {
     uint64_t h = 1469598103934665603ULL; // FNV-1a
     for (const char *p = url; *p; p++) h = (h ^ (uint8_t)*p) * 1099511628211ULL;
-    snprintf(out, n, "%s/http/%016llx", g_cfg.data_dir, (unsigned long long)h);
+    snprintf(out, n, "%s/" CACHE_DIR "/%02x/%014llx", g_cfg.data_dir, (unsigned)(h >> 56),
+             (unsigned long long)(h & 0xffffffffffffffULL));
 }
 
 // Read time of the disk cache, for the [perf] line (written by whichever thread reads, polled by
@@ -307,7 +323,12 @@ static void cache_write(const char *url, const char *data, size_t len) {
     cache_path(url, path, sizeof path);
     snprintf(tmp, sizeof tmp, "%s.tmp", path);
     FILE *f = fopen(tmp, "wb");
-    if (!f) return;
+    if (!f) { // the entry's folder doesn't exist yet
+        char dir[600];
+        snprintf(dir, sizeof dir, "%.*s", (int)(strrchr(path, '/') - path), path);
+        mkdir(dir, 0777);
+        if (!(f = fopen(tmp, "wb"))) return;
+    }
     bool ok = fwrite(data, 1, len, f) == len;
     if (fclose(f) == 0 && ok) rename(tmp, path);
 }
@@ -690,7 +711,7 @@ static void submit(req *r) {
     curl_multi_wakeup(multi);
 }
 
-static void finish(req *r) { // network thread: hand back to the main thread
+static void finish(req *r) { // network or cache thread: hand back to the main thread
     if (r->easy) {
         curl_multi_remove_handle(multi, r->easy);
         curl_easy_cleanup(r->easy);
@@ -709,6 +730,106 @@ static bool is_aborted(req *r) {
     bool a = r->aborted;
     pthread_mutex_unlock(&qlock);
     return a;
+}
+
+// ---------------------------------------------------------------- cache thread
+
+static pthread_mutex_t cache_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t cache_cond = PTHREAD_COND_INITIALIZER;
+static req *cache_q, *cache_tail;
+
+static void cache_push(req *r) {
+    pthread_mutex_lock(&cache_lock);
+    r->qnext = NULL;
+    if (cache_tail) cache_tail->qnext = r;
+    else cache_q = r;
+    cache_tail = r;
+    pthread_cond_signal(&cache_cond);
+    pthread_mutex_unlock(&cache_lock);
+}
+
+static void cache_job(req *r) {
+    if (r->cache_store) { // a finished download: keep a copy, then deliver it
+        if (!is_aborted(r)) cache_write(r->url, r->body.data, r->body.len);
+        finish(r);
+        return;
+    }
+    size_t len = 0;
+    char *d = is_aborted(r) ? NULL : cache_read(r->url, &len);
+    if (d || is_aborted(r)) {
+        r->body.data = d;
+        r->body.len = r->body.cap = d ? len : 0;
+        r->from_cache = d != NULL;
+        curl_easy_cleanup(r->easy); // never added to the multi handle
+        r->easy = NULL;
+        finish(r);
+    } else {
+        r->cache_checked = true;
+        submit(r);
+    }
+}
+
+// The old one-folder cache (<data>/http/) is deleted a few files at a time while the cache thread
+// has nothing else to do, starting a minute after launch so it stays out of the start-up's reads.
+// Its entries are downloaded again as the game asks for them.
+static DIR *legacy;
+static char legacy_dir[512];
+static double legacy_after;
+
+static void legacy_step(void) {
+    if (host_now_ms() < legacy_after) return;
+    for (int i = 0; i < 8; i++) {
+        struct dirent *e = readdir(legacy);
+        if (!e) {
+            closedir(legacy);
+            legacy = NULL;
+            rmdir(legacy_dir);
+            host_log("[net] old disk cache folder %s removed", legacy_dir);
+            return;
+        }
+        if (e->d_name[0] == '.') continue;
+        char path[800];
+        snprintf(path, sizeof path, "%s/%s", legacy_dir, e->d_name);
+        remove(path);
+    }
+}
+
+static void *cache_thread(void *arg) {
+    (void)arg;
+    plat_thread_setup("pkr_cache", 1, -5); // below the network thread, above image decoding
+    snprintf(legacy_dir, sizeof legacy_dir, "%s/" LEGACY_CACHE_DIR, g_cfg.data_dir);
+    legacy = opendir(legacy_dir);
+    legacy_after = host_now_ms() + 60000;
+    for (;;) {
+        pthread_mutex_lock(&cache_lock);
+        if (!cache_q && legacy) { // idle: wake now and then to delete old files
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            ts.tv_nsec += 250 * 1000000L;
+            if (ts.tv_nsec >= 1000000000L) ts.tv_sec++, ts.tv_nsec -= 1000000000L;
+            pthread_cond_timedwait(&cache_cond, &cache_lock, &ts);
+        }
+        while (!cache_q && !legacy) pthread_cond_wait(&cache_cond, &cache_lock);
+        req *r = cache_q;
+        if (r) {
+            cache_q = r->qnext;
+            if (!cache_q) cache_tail = NULL;
+        }
+        pthread_mutex_unlock(&cache_lock);
+        if (r) cache_job(r);
+        else legacy_step();
+    }
+    return NULL;
+}
+
+static void cache_thread_start(void) {
+    pthread_t t;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 64 * 1024);
+    if (pthread_create(&t, &attr, cache_thread, NULL) == 0) pthread_detach(t);
+    else host_log("[net] could not start the cache thread");
+    pthread_attr_destroy(&attr);
 }
 
 static void *net_thread(void *arg) {
@@ -732,21 +853,12 @@ static void *net_thread(void *arg) {
                 r->body.len = r->body.cap = d ? len : 0;
                 r->from_cache = true;
                 finish(r);
+            } else if (r->cacheable && !r->cache_checked) {
+                cache_push(r); // comes back through submit() if there is no copy
             } else {
-                size_t len = 0;
-                char *d = r->cacheable ? cache_read(r->url, &len) : NULL;
-                if (d) {
-                    r->body.data = d;
-                    r->body.len = r->body.cap = len;
-                    r->from_cache = true;
-                    curl_easy_cleanup(r->easy); // never added to the multi handle
-                    r->easy = NULL;
-                    finish(r);
-                } else {
-                    curl_multi_add_handle(multi, r->easy);
-                    r->qnext = inflight;
-                    inflight = r;
-                }
+                curl_multi_add_handle(multi, r->easy);
+                r->qnext = inflight;
+                inflight = r;
             }
         }
         int running = 0;
@@ -767,14 +879,20 @@ static void *net_thread(void *arg) {
                 r->status = 0;
             }
             if (fu) r->final_url = strdup(fu);
-            if (!r->error && r->status == 200 && r->cacheable && r->body.data && !is_aborted(r))
-                cache_write(r->url, r->body.data, r->body.len);
             for (req **pp = &inflight; *pp; pp = &(*pp)->qnext)
                 if (*pp == r) {
                     *pp = r->qnext;
                     break;
                 }
-            finish(r);
+            if (!r->error && r->status == 200 && r->cacheable && r->body.data && !is_aborted(r)) {
+                curl_multi_remove_handle(multi, r->easy);
+                curl_easy_cleanup(r->easy);
+                r->easy = NULL;
+                r->cache_store = true;
+                cache_push(r); // written to the disk cache, then handed back
+            } else {
+                finish(r);
+            }
         }
         // Aborted transfers stop now.
         for (req **pp = &inflight; *pp;) {
