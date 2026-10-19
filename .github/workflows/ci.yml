@@ -24,8 +24,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - run: sudo apt-get install -y -qq shellcheck >/dev/null
@@ -37,11 +37,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: scripts/fetch_deps.sh
       - run: scripts/build_linux.sh
       - run: scripts/test_linux.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: linux-test-results
@@ -56,9 +56,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Our own libcurl and vitaGL builds take a while; rebuilt when their scripts or patches change.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             runtime/third_party/vita-curl
@@ -67,7 +67,7 @@ jobs:
       - run: scripts/fetch_deps.sh
       - run: scripts/build_vita.sh
       - run: echo "VERSION=$(cat VERSION)" >> "$GITHUB_ENV"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: pokerogue-${{ env.VERSION }}-${{ github.sha }}
           path: runtime/build-vita/pokerogue-${{ env.VERSION }}.vpk
@@ -75,7 +75,7 @@ jobs:
       # The dev build (test builds and log upload, src/devtools.c) for the developer's console;
       # publish-dev.yml puts it in the dev-build release. Never for players.
       - run: PKR_DEV=1 scripts/build_vita.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: pokerogue-dev-${{ env.VERSION }}-${{ github.sha }}
           path: runtime/build-vita-dev/pokerogue-${{ env.VERSION }}-dev.vpk
@@ -94,9 +94,9 @@ jobs:
       SHACCCG_URL: https://raw.githubusercontent.com/AnimMouse/SceShaccCg/f9511fc20ce905704f384b3a99a17c5e97f9a92c/libshacccg.suprx
       SHACCCG_SHA256: 188adb8c34c3983d63244c32d981fd7b518a8dcfd200f5886233fface6b5fa40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: echo "VERSION=$(cat VERSION)" >> "$GITHUB_ENV"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: pokerogue-${{ env.VERSION }}-${{ github.sha }}
           path: runtime/build-vita
@@ -112,7 +112,7 @@ jobs:
       - name: Remove the shader compiler
         if: always()
         run: rm -f .cache/private/libshacccg.suprx
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: vita3k-test-results
