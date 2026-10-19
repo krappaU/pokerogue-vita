@@ -390,3 +390,17 @@ Checked on desktop with the live site: from an empty cache, 808 entries in 245 f
 300 files was gone ~70 s after start; queued control commands ran in order without added delays.
 **Not timed on the Vita yet**: the next log's `disk cache: N reads, MB, ms` shows whether the
 folder size was the cause. If opens stay slow, the next step is fewer, bigger files (a pack file).
+
+### Installing test builds needs a second app (0.50 on the console, 2026-10-19; runtime 0.53)
+The dev build found and downloaded 0.52 from the `dev-build` release, then failed on its first
+file: `couldn't write ux0:app/PKRV00001/eboot.bin.new`. A running app can't write its own app folder
+(the in-place install had never been tried on the console). VitaShell updates itself with a second
+app, VSUPDATER, that installs while VitaShell isn't running. 0.53 does the same with
+`runtime/updater/` (PokeRogue Updater, `PKRVUPD01`, installed once with VitaShell): the game unpacks
+the build to `<data>/update/files/` and starts it; it copies the files (eboot.bin last, `.new` copies
+first so a failure keeps the old program) and starts the game again. The copy code was checked on
+the desktop (`cc -DUPDATER_TEST`); **not yet run on the console**, in particular whether one homebrew
+app may write another's `ux0:app` folder (FTP and VitaShell do). VitaSDK's `vita_create_vpk` is a
+macro that appends to `VITA_MKSFOEX_FLAGS`/`VITA_PACK_VPK_FLAGS` in the caller's scope: a second
+call in the same CMakeLists must reset them, or the second .vpk gets the first one's files and
+`TITLE_ID`.

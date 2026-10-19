@@ -70,10 +70,14 @@ jobs:
           EOF
           cat build.json
           notes="Test build for the developer's console, not for players: install a release instead.
+          Install pokerogue-updater.vpk once with VitaShell; the dev build then installs new test builds by itself.
           $(jq -r .label build.json)
           From CI run https://github.com/$GH_REPO/actions/runs/$RUN"
           # A new release each time: the tag moves to the build's commit, and the old .vpk is gone.
           # The .vpk goes up before build.json, so a console never sees a build.json without it.
           gh release delete dev-build --cleanup-tag --yes 2>/dev/null || true
-          gh release create dev-build "$asset" --prerelease --target "$sha" --title "Dev build $version" --notes "$notes"
+          # The updater app (installed once with VitaShell; it installs the test builds), from runs
+          # that have one.
+          updater=; [ -f dl/pokerogue-updater.vpk ] && updater=dl/pokerogue-updater.vpk
+          gh release create dev-build "$asset" $updater --prerelease --target "$sha" --title "Dev build $version" --notes "$notes"
           gh release upload dev-build build.json

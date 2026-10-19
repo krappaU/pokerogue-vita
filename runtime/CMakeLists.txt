@@ -106,6 +106,23 @@ if(VITA)
   # Extended memory mode: lets the app use more of the Vita's main RAM.
   set(VITA_MKSFOEX_FLAGS "${VITA_MKSFOEX_FLAGS} -d ATTRIBUTE2=12")
   vita_create_vpk(pokerogue-${PKR_VERSION}${PKR_VPK_SUFFIX}.vpk "${PKR_TITLE_ID}" eboot.bin VERSION "${PKR_SFO_VERSION}" NAME "PokeRogue" ${VPK_FILES})
+  if(PKR_DEV)
+    # The updater app (updater/updater.c): installs test builds into the game's folder, which the
+    # running game can't write. A separate .vpk, installed once with VitaShell.
+    add_executable(pokerogue-updater updater/updater.c)
+    target_compile_options(pokerogue-updater PRIVATE -Wall)
+    target_link_libraries(pokerogue-updater SceAppMgr_stub SceLibKernel_stub)
+    vita_create_self(updater.bin pokerogue-updater UNSAFE)
+    # vita_create_vpk is a macro that appends to these in this scope: without a reset the updater
+    # would get the game's files, memory mode and TITLE_ID (and replace the game when installed).
+    set(VITA_MKSFOEX_FLAGS "")
+    set(VITA_PACK_VPK_FLAGS "")
+    vita_create_vpk(pokerogue-updater.vpk PKRVUPD01 updater.bin VERSION "01.00" NAME "PokeRogue Updater"
+      FILE sce_sys/icon0.png sce_sys/icon0.png
+      FILE sce_sys/livearea/contents/bg.png sce_sys/livearea/contents/bg.png
+      FILE sce_sys/livearea/contents/startup.png sce_sys/livearea/contents/startup.png
+      FILE sce_sys/livearea/contents/template.xml sce_sys/livearea/contents/template.xml)
+  endif()
 else()
   add_executable(pokerogue-rt ${RT_SRC} src/platform_sdl.c)
   target_include_directories(pokerogue-rt PRIVATE src third_party/stb third_party)

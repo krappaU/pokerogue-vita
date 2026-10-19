@@ -2,23 +2,32 @@
 // Dev builds only: test builds onto the console and logs off it without FTP.
 //   - Test builds: before the start screen, the app reads build.json of the "dev-build" GitHub
 //     pre-release (.github/workflows/publish-dev.yml; config.txt devbuilds=<url> for another, or
-//     devbuilds=off). If it isn't the build running, the app offers to install it: the app's files
-//     (eboot.bin, js/, cacert.pem) in ux0:app/<title id> are replaced and the app restarts.
-//     sce_sys/ (LiveArea, param.sfo) is left alone; changes there need VitaShell.
+//     devbuilds=off). If it isn't the build running, the app offers to install it: the updater app
+//     (updater/updater.c) replaces the app's files (eboot.bin, js/, cacert.pem) in ux0:app/<title
+//     id> and starts the game again. sce_sys/ (LiveArea, param.sfo) is left alone; changes there
+//     need VitaShell.
 //   - Logs, when config.txt names a log server (devserver=<url>, devkey=<secret>;
 //     tools/devserver/devserver.py): at start, the previous run's log (log-prev.txt, kept so a
 //     crash's log survives the restart) is uploaded in the background; L + R + START in game
 //     uploads the current one. The console makes every connection, so the server can be anywhere.
 
+#include <dirent.h>
+#include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "miniz.h"
 
 #include "host.h"
+
+#ifdef __vita__
+#include <psp2/appmgr.h>
+#include <psp2/kernel/processmgr.h>
+#endif
 
 #define DEV_BUILDS_URL "https://github.com/krappaU/pokerogue-vita/releases/download/dev-build/build.json"
 
@@ -155,9 +164,16 @@ void dev_frame(void) {
 
 // ---------------------------------------------------------------- test builds
 
-// <data>/dev-build.txt: "<build id> <commit>" of the build installed from the dev server. The
-// commit is filled in by the first start of that build ("pending" until then), so a build
-// installed some other way (VitaShell) doesn't count as the server's.
+// A running app can't write its own ux0:app folder, so a test build is installed by a second app,
+// the updater (updater/updater.c, title PKRVUPD01, installed once with VitaShell): the build is
+// unpacked to <data>/update/files/, <data>/update/ready.txt says it's complete, the updater is
+// started and this app quits. The updater copies the files over, writes <data>/update/result.txt and
+// starts the game again, which shows the result (dev_offer_update).
+#define UPDATER_TITLE_ID "PKRVUPD01"
+
+// <data>/dev-build.txt: "<build id> <commit>" of the build installed from the dev-build release. The
+// commit is filled in by the first start of that build ("pending" until then), so a build installed
+// some other way (VitaShell) doesn't count as the release's.
 static void build_file(char *out, size_t n, const char *name) { snprintf(out, n, "%s/%s", g_cfg.data_dir, name); }
 
 static bool read_pair(const char *name, char *a, size_t an, char *b, size_t bn) {
@@ -198,57 +214,90 @@ static void mkdirs_for(const char *file) {
     }
 }
 
-// Unpacks the .vpk into the app folder: every file is written next to its old version first
-// (".new"), and only once all are written are they swapped in, eboot.bin last.
-static bool install_vpk(const char *vpk, char *err, size_t errn) {
+static bool is_dir(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+static void remove_tree(const char *path) {
+    DIR *d = opendir(path);
+    if (!d) {
+        remove(path);
+        return;
+    }
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        char sub[900];
+        snprintf(sub, sizeof sub, "%s/%s", path, e->d_name);
+        if (is_dir(sub)) remove_tree(sub);
+        else remove(sub);
+    }
+    closedir(d);
+    rmdir(path);
+}
+
+// Unpacks the .vpk's program files (not sce_sys/) into dir for the updater.
+static bool unpack_vpk(const char *vpk, const char *dir, char *err, size_t errn) {
     mz_zip_archive z;
     memset(&z, 0, sizeof z);
     if (!mz_zip_reader_init_file(&z, vpk, 0)) {
         snprintf(err, errn, "the download isn't a valid .vpk");
         return false;
     }
+    bool ok = true, eboot = false;
     int n = (int)mz_zip_reader_get_num_files(&z);
-    char (*names)[MZ_ZIP_MAX_ARCHIVE_FILENAME_SIZE] = calloc((size_t)n + 1, sizeof *names);
-    int count = 0, eboot = -1;
-    bool ok = names != NULL;
     for (int i = 0; ok && i < n; i++) {
         mz_zip_archive_file_stat st;
         if (!mz_zip_reader_file_stat(&z, (mz_uint)i, &st) || st.m_is_directory) continue;
         if (!strncmp(st.m_filename, "sce_sys/", 8) || strstr(st.m_filename, "..")) continue;
-        char tmp[700];
-        snprintf(tmp, sizeof tmp, "%s/%s.new", app_dir, st.m_filename);
-        mkdirs_for(tmp);
-        if (!mz_zip_reader_extract_to_file(&z, (mz_uint)i, tmp, 0)) {
-            snprintf(err, errn, "couldn't write %s", tmp);
+        char path[900];
+        snprintf(path, sizeof path, "%s/%s", dir, st.m_filename);
+        mkdirs_for(path);
+        if (!mz_zip_reader_extract_to_file(&z, (mz_uint)i, path, 0)) {
+            snprintf(err, errn, "couldn't write %s (%s)", path, strerror(errno));
             ok = false;
-            break;
         }
-        snprintf(names[count], sizeof names[count], "%s", st.m_filename);
-        if (!strcmp(st.m_filename, "eboot.bin")) eboot = count;
-        count++;
+        eboot |= !strcmp(st.m_filename, "eboot.bin");
     }
     mz_zip_reader_end(&z);
-    if (ok && eboot < 0) snprintf(err, errn, "the .vpk has no eboot.bin"), ok = false;
-    // Swap: eboot.bin goes last, so a failure leaves the old program with at most some new files.
-    for (int k = 0; ok && k < count; k++) {
-        int i = k < eboot ? k : k + 1 < count ? k + 1 : eboot; // every other file in order, then eboot.bin
-        char dst[700], tmp[720];
-        snprintf(dst, sizeof dst, "%s/%s", app_dir, names[i]);
-        snprintf(tmp, sizeof tmp, "%s.new", dst);
-        remove(dst);
-        if (rename(tmp, dst) != 0) {
-            snprintf(err, errn, "couldn't replace %s", dst);
-            ok = false;
-        }
-    }
-    host_log("[dev] installed %d files into %s%s", count, app_dir, ok ? "" : " (failed)");
-    free(names);
+    if (ok && !eboot) snprintf(err, errn, "the .vpk has no eboot.bin"), ok = false;
     return ok;
+}
+
+// What the updater reported after the last install, shown once.
+static void updater_result(void) {
+    char dir[700], path[760], line[700] = "";
+    build_file(dir, sizeof dir, "update");
+    snprintf(path, sizeof path, "%s/result.txt", dir);
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        if (is_dir(dir)) remove_tree(dir); // an install that never reached the updater
+        return;
+    }
+    if (!fgets(line, sizeof line, f)) line[0] = 0;
+    fclose(f);
+    line[strcspn(line, "\r\n")] = 0;
+    remove_tree(dir);
+    host_log("[dev] updater: %s", line);
+    if (strncmp(line, "ok", 2)) {
+        build_file(path, sizeof path, "dev-build.txt");
+        remove(path); // the build running now is the old one
+        char msg[900];
+        snprintf(msg, sizeof msg, "The updater couldn't install the test build:\n%s\n\nThe download can be installed with VitaShell\nfrom the dev-build release.", line[0] ? line : "(no result)");
+        ui_message_wait(msg);
+    }
+}
+
+static bool updater_installed(void) {
+    struct stat st;
+    return stat("ux0:app/" UPDATER_TITLE_ID "/eboot.bin", &st) == 0;
 }
 
 bool dev_offer_update(void) {
     const char *builds = g_cfg.dev_builds ? g_cfg.dev_builds : DEV_BUILDS_URL;
     if (!app_dir || !strcmp(builds, "off")) return false;
+    updater_result();
     char commit[64], inst_id[128] = "", inst_commit[64] = "";
     running_commit(commit, sizeof commit);
     if (read_pair("dev-build.txt", inst_id, sizeof inst_id, inst_commit, sizeof inst_commit)) {
@@ -271,7 +320,7 @@ bool dev_offer_update(void) {
     long long size = json_num(json, "size");
     free(json);
     srv_commit[strcspn(srv_commit, "-")] = 0;
-    // CI builds name their commit; builds made on the server are known by the id recorded at install.
+    // CI builds name their commit; builds made elsewhere are known by the id recorded at install.
     bool same = (strlen(srv_commit) >= 7 && strlen(commit) >= 7 && !strncmp(srv_commit, commit, 7)) || !strcmp(id, inst_id);
     host_log("[dev] newest test build: %s (%s)%s", label, id, same ? ": running it" : "");
     if (same) return false;
@@ -280,14 +329,16 @@ bool dev_offer_update(void) {
         return false;
 
     char msg[900];
-    snprintf(msg, sizeof msg, "New test build:\n%s\n(%.1f MB)\n\nRunning now: %s\n\nInstall it? The app restarts.",
-             label, size > 0 ? size / 1048576.0 : 0, host_version_string());
+    bool have_updater = updater_installed();
+    snprintf(msg, sizeof msg, "New test build:\n%s\n(%.1f MB)\n\nRunning now: %s\n\n%s", label,
+             size > 0 ? size / 1048576.0 : 0, host_version_string(),
+             have_updater ? "Install it? The app restarts." : "Download it? (Installing needs the updater app,\nsee below, or VitaShell.)");
     if (!ui_confirm(msg)) {
         write_pair("dev-declined.txt", id, "-"); // not asked again for this build
         return false;
     }
     // A partial download resumes only for the same build.
-    char vpk[700], part_id[128] = "", err[400] = "";
+    char vpk[700], part_id[128] = "", err[600] = "";
     build_file(vpk, sizeof vpk, "dev-update.vpk");
     if (!read_pair("dev-update.id", part_id, sizeof part_id, unused, sizeof unused) || strcmp(part_id, id)) {
         remove(vpk);
@@ -303,21 +354,41 @@ bool dev_offer_update(void) {
         }
         return false;
     }
-    overlay_present("PokeRogue\n\nInstalling the test build...");
-    if (!install_vpk(vpk, err, sizeof err)) {
-        // The .vpk stays in the data folder: VitaShell can install it by hand.
-        host_log("[dev] install failed: %s", err);
-        snprintf(msg, sizeof msg, "Installing failed: %s\n\nThe download is in %s:\ninstall it with VitaShell.", err, vpk);
+    if (!have_updater) {
+        host_log("[dev] no updater app (" UPDATER_TITLE_ID "); the download is in %s", vpk);
+        snprintf(msg, sizeof msg, "Downloaded to %s.\n\nInstall it with VitaShell (press X on the file).\n\n"
+                 "To install test builds from here, install the updater\nonce: pokerogue-updater.vpk from the dev-build release.", vpk);
         ui_message_wait(msg);
         return false;
+    }
+    overlay_present("PokeRogue\n\nUnpacking the test build...");
+    char dir[700], files[760], ready[760];
+    build_file(dir, sizeof dir, "update");
+    remove_tree(dir);
+    snprintf(files, sizeof files, "%s/files", dir);
+    if (!unpack_vpk(vpk, files, err, sizeof err)) {
+        host_log("[dev] unpacking failed: %s", err);
+        remove_tree(dir);
+        snprintf(msg, sizeof msg, "Unpacking failed: %s\n\nThe download is in %s:\ninstall it with VitaShell.", err, vpk);
+        ui_message_wait(msg);
+        return false;
+    }
+    snprintf(ready, sizeof ready, "%s/ready.txt", dir);
+    FILE *f = fopen(ready, "w");
+    if (f) {
+        fprintf(f, "%s\n", id);
+        fclose(f);
     }
     write_pair("dev-build.txt", id, "pending");
     remove(vpk);
     build_file(vpk, sizeof vpk, "dev-update.id");
     remove(vpk);
-    host_log("[dev] test build %s installed; restarting", id);
-    overlay_present("PokeRogue\n\nTest build installed. Restarting...");
-    plat_relaunch(0, NULL);
-    ui_message_wait("Installed, but the app couldn't restart itself.\nClose it and start it again.");
+    host_log("[dev] test build %s unpacked; starting the updater", id);
+    overlay_present("PokeRogue\n\nInstalling the test build...");
+#ifdef __vita__
+    sceAppMgrLaunchAppByUri(0xFFFFF, "psgm:play?titleid=" UPDATER_TITLE_ID);
+    sceKernelExitProcess(0);
+#endif
+    ui_message_wait("The updater didn't start.\nClose the game and start the updater (PokeRogue Updater) by hand.");
     return true;
 }

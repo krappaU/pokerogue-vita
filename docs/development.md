@@ -39,12 +39,18 @@ show "dev" after the version. The app side is `runtime/src/devtools.c`.
 
 **Test builds (GitHub):** before the start screen a dev build reads `build.json` of the
 [`dev-build` pre-release](https://github.com/krappaU/pokerogue-vita/releases/tag/dev-build). If it
-names another build than the one running, the app asks, downloads the .vpk from the release,
-replaces its own files in `ux0:app/PKRV00001` (eboot.bin, js/, cacert.pem) and restarts. `sce_sys/`
-(LiveArea, param.sfo) is left alone, so changes there still need an install from VitaShell. If
-installing fails, the download stays in `ux0:data/pokerogue/dev-update.vpk` for VitaShell. A build
-that was declined isn't offered again. `devbuilds=off` in `config.txt` turns the check off
-(`devbuilds=<url>` reads another `build.json`).
+names another build than the one running, the app asks and downloads the .vpk from the release. A
+running app can't write its own `ux0:app/PKRV00001` folder (0.50 on the console: "couldn't write
+ux0:app/PKRV00001/eboot.bin.new"), so a second app installs it: **PokeRogue Updater**
+(`runtime/updater/updater.c`, title `PKRVUPD01`; `pokerogue-updater.vpk` in the same release,
+**installed once with VitaShell**). The game unpacks the build to `ux0:data/pokerogue/update/files/`,
+starts the updater and quits; the updater copies the files into `ux0:app/PKRV00001` (eboot.bin
+last; js/, cacert.pem), writes `update/result.txt` and starts the game again, which shows an error
+if there was one. `sce_sys/` (LiveArea, param.sfo) is left alone, so changes there still need an
+install from VitaShell. Without the updater app the download stays in
+`ux0:data/pokerogue/dev-update.vpk` for VitaShell. A build that was declined isn't offered again.
+`devbuilds=off` in `config.txt` turns the check off (`devbuilds=<url>` reads another `build.json`).
+The updater (like VitaShell's VSUPDATER) is built with every dev build.
 
 Publishing: only builds published on purpose reach the console, never a plain push. Actions ->
 "Publish dev build" -> Run workflow, with what to test as the label and optionally a CI run (empty:
