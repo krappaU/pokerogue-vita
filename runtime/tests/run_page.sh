@@ -23,9 +23,13 @@ cp scripts/probe_verify_*.js "$OUT/www/"
 [ -d third_party/test ] && cp -r third_party/test/. "$OUT/www/"
 # Offline mode from the page folder (no start screen, no network), no profiler.
 printf 'local=%s\nprofile=0\n' "$PWD/$OUT/www" > "$OUT/data/config.txt"
-: > "$OUT/data/control.txt"
 LOG=$OUT/data/log.txt
 
+# Twice: the second start loads the compiled code the first one wrote, as every start after the
+# first does on the console (0.49-0.54 lost their fast paths only there: Phaser without source).
+for pass in 1 2; do
+: > "$OUT/data/control.txt"
+rm -f "$LOG"
 SDL_AUDIODRIVER=${SDL_AUDIODRIVER:-dummy} xvfb-run -a -s "-screen 0 960x544x24" \
   "$RT" --js js --data "$OUT/data" --control "$OUT/data/control.txt" >"$OUT/stdout.txt" 2>&1 &
 PID=$!
@@ -45,7 +49,7 @@ if [ "$status" != exited ]; then
 fi
 wait $PID 2>/dev/null
 
-echo "== $NAME: test results"
+echo "== $NAME: test results$([ "$pass" = 2 ] && echo " (from compiled code)")"
 grep -E '^\[test\]' "$LOG" 2>/dev/null
 # Errors the page didn't catch also fail the run.
 errors=$(grep -cE '^\[js\] (uncaught|unhandled)|^\[boot\] failed|^bootstrap failed' "$LOG" 2>/dev/null)
@@ -54,4 +58,11 @@ if [ "$status" != finished ] || ! grep -q '^\[test\] DONE .*failed=0$' "$LOG" ||
   tail -40 "$LOG" 2>/dev/null || cat "$OUT/stdout.txt"
   exit 1
 fi
+# A page that loads Phaser must get every checked fast path (js/fastpath.js logs which).
+if grep -q "^\[fastpath\].*left to Phaser" "$LOG"; then
+  echo "== $NAME: FAILED: fast paths not installed:"
+  grep "^\[fastpath\]" "$LOG"
+  exit 1
+fi
+done
 echo "== $NAME: ok"

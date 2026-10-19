@@ -145,6 +145,7 @@ void host_js_set_interrupt(JSInterruptHandler *cb);
 // Compiled-code cache (js_host.c), used by precompile.c
 bool module_chunk_url(const char *url);                           // "/assets/name-HASH.js": compiled code is keyed by URL
 void module_bytecode_path(const char *url, char *out, size_t n);  // the cache file of such a chunk
+int bytecode_write_flags(const char *src, size_t len);           // JS_WriteObject flags for a chunk
 bool module_bytecode_write(const char *path, const void *bc, size_t len); // any thread
 void module_bytecode_put(const char *path, char *buf, size_t len);        // hand a compiled chunk to the loader (takes buf)
 void module_list_flush(void);                                     // from the main loop

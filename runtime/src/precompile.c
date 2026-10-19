@@ -109,9 +109,10 @@ static void compile_one(const char *url) {
     JS_SetModuleLoaderFunc(rt, NULL, stub_loader, NULL);
     JSContext *ctx = JS_NewContext(rt);
     JSValue fn = JS_Eval(ctx, src, len, url, JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+    int flags = bytecode_write_flags(src, len);
     free(src);
     size_t blen = 0;
-    uint8_t *bc = JS_IsException(fn) ? NULL : JS_WriteObject(ctx, &blen, fn, JS_WRITE_OBJ_BYTECODE | JS_WRITE_OBJ_STRIP_SOURCE);
+    uint8_t *bc = JS_IsException(fn) ? NULL : JS_WriteObject(ctx, &blen, fn, flags);
     if (!bc) {
         JSValue exc = JS_GetException(ctx);
         const char *m = JS_ToCString(ctx, exc);

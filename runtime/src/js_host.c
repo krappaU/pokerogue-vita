@@ -203,9 +203,20 @@ static char *module_normalize(JSContext *ctx, const char *base, const char *name
 // The bundler names its chunks by content hash ("assets/name-HASH.js"), so those are keyed by URL
 // and, once compiled, never fetched again; other modules are keyed by a hash of URL, source and
 // engine version. Entries older than 14 days are deleted at startup (and rewritten when used).
-#define BYTECODE_SALT "pkr-bytecode-2"
-#define BYTECODE_EXT ".qbc2"
-#define BYTECODE_WRITE_FLAGS (JS_WRITE_OBJ_BYTECODE | JS_WRITE_OBJ_STRIP_SOURCE)
+#define BYTECODE_SALT "pkr-bytecode-3" // -3: Phaser's chunk with its source (see bytecode_write_flags)
+#define BYTECODE_EXT ".qbc3"
+
+// Phaser's chunk keeps its source: js/fastpath.js installs each native fast path only after
+// checking Phaser's code (String(fn)), and a function without source prints as "[native code]",
+// so from stripped bytecode every check failed and none was installed (0.49-0.54 on the Vita).
+// The chunk is recognised by a method only Phaser defines.
+int bytecode_write_flags(const char *src, size_t len) {
+    static const char mark[] = "createAttribLocation";
+    bool phaser = false;
+    for (size_t i = 0; !phaser && i + sizeof mark - 1 <= len; i++)
+        phaser = src[i] == 'c' && !memcmp(src + i, mark, sizeof mark - 1);
+    return JS_WRITE_OBJ_BYTECODE | (phaser ? 0 : JS_WRITE_OBJ_STRIP_SOURCE);
+}
 
 static uint64_t fnv64(uint64_t h, const void *data, size_t n) {
     const uint8_t *p = data;
@@ -280,9 +291,9 @@ bool module_bytecode_write(const char *path, const void *bc, size_t blen) {
     return ok;
 }
 
-static void bytecode_save(JSContext *ctx, JSValueConst fn, const char *path) {
+static void bytecode_save(JSContext *ctx, JSValueConst fn, const char *path, int flags) {
     size_t blen = 0;
-    uint8_t *bc = JS_WriteObject(ctx, &blen, fn, BYTECODE_WRITE_FLAGS);
+    uint8_t *bc = JS_WriteObject(ctx, &blen, fn, flags);
     if (!bc) {
         JS_FreeValue(ctx, JS_GetException(ctx));
         return;
@@ -509,7 +520,7 @@ static JSModuleDef *module_load(JSContext *ctx, const char *url, void *opaque) {
         double t = host_now_ms();
         fn = JS_Eval(ctx, src, len, url, JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
         t_load = host_now_ms() - t;
-        if (!JS_IsException(fn)) bytecode_save(ctx, fn, bc_path);
+        if (!JS_IsException(fn)) bytecode_save(ctx, fn, bc_path, bytecode_write_flags(src, len));
     }
     free(src);
     if (JS_IsException(fn)) {

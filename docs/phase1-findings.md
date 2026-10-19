@@ -409,3 +409,27 @@ app may write another's `ux0:app` folder (FTP and VitaShell do). VitaSDK's `vita
 macro that appends to `VITA_MKSFOEX_FLAGS`/`VITA_PACK_VPK_FLAGS` in the caller's scope: a second
 call in the same CMakeLists must reset them, or the second .vpk gets the first one's files and
 `TITLE_ID`.
+
+### The fast paths were off on the Vita since 0.49 (log16, 0.54, 2026-10-19; runtime 0.55)
+The first battle profile from the console (`sample=1`, `sample_ms=1`, `profile_rate=1000`; two
+~35 s windows in a battle, 3500-4500 samples each, consistent): PokeRogue's sprite pipelines 41-42%,
+Phaser's render JS 22-23%, tweens 10-11%, frame events 5-13%, sprite animations 4-5%, our native
+render code 3-4%. Phaser's own `setUniform1` (5% self), `setBlendMode` and `PipelineManager.set`
+(27% on the stack) were in it as JS, though C versions of them exist since 0.38 and 0.42.
+
+Cause: the startup work of 0.42-0.49 stores compiled code without function source
+(`JS_WRITE_OBJ_STRIP_SOURCE`), and such a function prints as `function f() { [native code] }`.
+`js/fastpath.js` installs uniforms (part 13), pipeline switching (14), Graphics (15),
+Rectangle/GeometryMask (16), emit (17) and the UUID wrapper (12) only after checking Phaser's code
+with `String(fn)`: from the compiled-code cache, i.e. on every start but the first, all of them
+were skipped without a word. Merging that work with the native renderer into 0.49 made this
+happen on the console; the tests always started from an empty cache.
+
+Fix (0.55): Phaser's chunk (recognised by `createAttribLocation`) is compiled with its source
+(7.0 MB instead of 1.4 MB on the memory card: ~1.4 s more to read, partly ahead of time; every
+other chunk stays stripped). The compiled-code format is now `.qbc3` (the old files are deleted
+at the first start, and the game is compiled once more). `js/fastpath.js` logs
+`[fastpath] native: ... | left to Phaser's JS: ...`, and `tests/run_page.sh` runs each page a second
+time from the compiled code it wrote, failing if a fast path was left out (checked: with the old
+flags the second run fails). On desktop with the live site: all six installed on both starts. A
+way to drop the 5.6 MB later: check Phaser's source once when compiling and remember the result.

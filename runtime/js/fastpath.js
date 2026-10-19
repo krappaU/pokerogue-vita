@@ -737,6 +737,7 @@
   if (g.__native.replaceWrap && /xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx/.test(String(Phaser.Utils.String.UUID))) {
     const wrapped = g.__native.replaceWrap(String.prototype.replace);
     Object.defineProperty(String.prototype, "replace", { value: wrapped, writable: true, configurable: true, enumerable: false });
+    g.__rt.uuidWrap = true;
   }
 
   // 13. WebGLShader.setUniform1..4: Phaser's code in C (src/fastpath.c js_set_uniform).
@@ -858,6 +859,17 @@
       g.__rt.emitSwap = [[EEP, "emit", EEP.emit, nat]];
       EEP.emit = nat;
     }
+  }
+
+  // Which of the checked fast paths went in. Each one is skipped silently when Phaser's code no
+  // longer looks like 3.90's, or when its source isn't there to check (0.49-0.54: compiled code
+  // without source, so none were installed on the Vita); this line makes that visible.
+  {
+    const rt = g.__rt, parts = [["uniforms", rt.origSetUniform], ["pipeline", rt.pipelineSwaps && rt.pipelineSwaps.length],
+      ["graphics", rt.graphicsSwap], ["shapes", rt.shapesSwap], ["emit", rt.emitSwap], ["uuid", rt.uuidWrap]];
+    const on = parts.filter((p) => p[1]).map((p) => p[0] + (typeof p[1] === "number" ? " (" + p[1] + " functions)" : ""));
+    const off = parts.filter((p) => !p[1]).map((p) => p[0]);
+    g.__native.log("[fastpath] native: " + (on.join(", ") || "none") + (off.length ? " | left to Phaser's JS: " + off.join(", ") : ""));
   }
 
   g.__rt.fastpath = g.__fastpath = {
