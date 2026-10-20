@@ -144,9 +144,10 @@ A player build writes no log and its JS `console.*` does nothing, unless `log=1`
 (for a bug report). `-DPKR_DEBUG=OFF` builds the player variant on the desktop for testing.
 
 **Releases for players:** write the notes as `docs/releases/v<version>-beta.md`, commit, and push a
-tag `v<version>-beta` on that commit (`runtime/VERSION` must match). `.github/workflows/release.yml`
-waits for the commit's CI run to pass and publishes its player .vpk (the file CI ran in Vita3K) as
-a release with those notes.
+tag `v<version>-beta` on that commit (`runtime/VERSION` must match), or run the "Release" workflow
+by hand with that tag name, which tags main's newest commit itself (cloud sessions can't push
+tags). `.github/workflows/release.yml` waits for the commit's CI run to pass and publishes its
+player .vpk (the file CI ran in Vita3K) as a release with those notes.
 
 In the game, SELECT while holding L + R toggles a debug line in the top-right corner: version,
 frame rate, JS time per frame and heap use (`hud=1` in `<data>/config.txt` starts with it on; `hud`
