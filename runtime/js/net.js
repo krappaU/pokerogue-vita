@@ -123,8 +123,16 @@
 
   const GET_RETRIES = 2;
 
+  // Which battle background the game loads, for bug reports ("the bug was on one of the maps").
+  let lastArena = "";
+  function noteArena(url) {
+    const m = /\/images\/arenas\/([a-z0-9_]+?)_bg\b/.exec(url);
+    if (m && m[1] !== lastArena) N.log("[arena] " + (lastArena = m[1]));
+  }
+
   // Low-level request: resolves {status, statusText, headers, body: ArrayBuffer, url}.
   function request(method, url, headers, body, signal) {
+    noteArena(url);
     return new Promise((resolve, reject) => {
       if (url.startsWith("blob:") || url.startsWith("data:")) {
         rt.fetchBytes(url).then((ab) => resolve({ status: 200, statusText: "OK", headers: new Headers(), body: ab, url }), reject);

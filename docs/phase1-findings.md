@@ -665,3 +665,25 @@ lines and timings named them:
 - Under the loading screen (once per long frame), if the JS heap is at least a third of the way to
   QuickJS's next collection, it collects then (`[gc] collected under the loading screen`), which
   also puts the next collection further off.
+
+### 0.68 in play (log71, 2026-10-20; runtime 0.69)
+- Garbage collection under the loading screen worked (372 and 908 ms, hidden); no collection
+  landed mid-battle in this session.
+- The profiler report was down from 0.5-5 s to 0.3-0.7 s, still a stall every 30 s. The rest was
+  the log itself: host_log wrote and flushed each line to the memory card from the calling
+  thread, several ms per line on the Vita, and the report is ~45 lines.
+- Battles at 22-37 fps. The `[slow]` frames left in play are mostly the game's own work: the party
+  and summary screens building their text objects (30-60 ms per stack), ability checks (~110 ms).
+  One runtime cost: each stat-change animation spent ~320 ms in a single native call while
+  Phaser created its TileSprite (no JS ran and no collection happened; the canvas pool and the
+  canvas resize are fast on the desktop).
+- A bug report: in a trainer battle in the temple, a mirrored copy of a Pokémon's sprite showed
+  under it, where its shadow goes. That part of the sprite's quad is stretched below the frame for
+  the shadow, and the shader is meant to darken or discard every pixel there. Not reproduced yet.
+
+0.69:
+- Log lines go to a writer thread (another core) through a 256 KB ring; host_log_flush() waits for
+  it before the log is uploaded and before the app quits, restarts or starts the updater.
+- `[arena] <name>` when the game loads a battle background, so a bug report can be placed.
+- `[gl] texImage2D WxH took N ms` and `[canvas] a WxH canvas took N ms to allocate` for calls of
+  30 ms or more, to find the stat-change stall.

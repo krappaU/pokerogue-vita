@@ -73,9 +73,51 @@ host_config g_cfg = {
 };
 
 static FILE *log_fp;
+
+// Log lines are written by a thread of their own: written and flushed to the memory card from the
+// main loop, each line cost several ms on the Vita (the profiler's 45-line report: 0.3-0.7 s every
+// 30 s, log71). host_log queues the line; the writer writes it at once, from another core, so
+// little is lost if the app crashes. host_log_flush waits until everything queued is written
+// (before the log is uploaded, and before the app quits or restarts).
+#define LOG_BUF (256 * 1024)
+static char log_buf[LOG_BUF];
+static uint64_t log_queued, log_written; // bytes, ever
 static pthread_mutex_t log_lock = PTHREAD_MUTEX_INITIALIZER; // the watchdog and worker threads log too
+static pthread_cond_t log_more = PTHREAD_COND_INITIALIZER, log_done = PTHREAD_COND_INITIALIZER;
+static int log_thread_state; // 0: not started, 1: running, -1: couldn't start (written in place)
 
 bool host_logging(void) { return log_fp != NULL; }
+
+static void log_out(const char *p, size_t n) {
+    fwrite(p, 1, n, stderr);
+    if (log_fp) {
+        fwrite(p, 1, n, log_fp);
+        fflush(log_fp);
+    }
+}
+
+static void *log_thread(void *arg) {
+    (void)arg;
+    pthread_mutex_lock(&log_lock);
+    for (;;) {
+        while (log_written == log_queued) pthread_cond_wait(&log_more, &log_lock);
+        size_t at = (size_t)(log_written % LOG_BUF), n = (size_t)(log_queued - log_written);
+        if (n > LOG_BUF - at) n = LOG_BUF - at; // up to the end of the ring; the rest next round
+        pthread_mutex_unlock(&log_lock);
+        log_out(log_buf + at, n);
+        pthread_mutex_lock(&log_lock);
+        log_written += n;
+        pthread_cond_broadcast(&log_done);
+    }
+    return NULL;
+}
+
+void host_log_flush(void) {
+    pthread_mutex_lock(&log_lock);
+    uint64_t target = log_queued;
+    while (log_thread_state == 1 && log_written < target) pthread_cond_wait(&log_done, &log_lock);
+    pthread_mutex_unlock(&log_lock);
+}
 
 void host_log(const char *fmt, ...) {
 #ifndef PKR_DEBUG
@@ -84,16 +126,31 @@ void host_log(const char *fmt, ...) {
     char buf[4096];
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(buf, sizeof buf, fmt, ap);
+    int len = vsnprintf(buf, sizeof buf - 1, fmt, ap);
     va_end(ap);
-    bool nl = buf[0] && buf[strlen(buf) - 1] != '\n';
+    if (len < 0) return;
+    size_t n = (size_t)len < sizeof buf - 1 ? (size_t)len : sizeof buf - 2;
+    if (!n || buf[n - 1] != '\n') buf[n++] = '\n';
     pthread_mutex_lock(&log_lock);
-    fputs(buf, stderr);
-    if (nl) fputc('\n', stderr);
-    if (log_fp) {
-        fputs(buf, log_fp);
-        if (nl) fputc('\n', log_fp);
-        fflush(log_fp);
+    if (!log_thread_state) {
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setstacksize(&attr, 32 * 1024);
+        pthread_t t;
+        log_thread_state = pthread_create(&t, &attr, log_thread, NULL) == 0 ? 1 : -1;
+        if (log_thread_state == 1) pthread_detach(t);
+        pthread_attr_destroy(&attr);
+    }
+    if (log_thread_state < 0) {
+        log_out(buf, n);
+    } else {
+        while (log_queued + n - log_written > LOG_BUF) pthread_cond_wait(&log_done, &log_lock); // full: wait
+        for (size_t i = 0; i < n;) {
+            size_t at = (size_t)(log_queued % LOG_BUF), k = n - i < LOG_BUF - at ? n - i : LOG_BUF - at;
+            memcpy(log_buf + at, buf + i, k);
+            i += k, log_queued += k;
+        }
+        pthread_cond_signal(&log_more);
     }
     pthread_mutex_unlock(&log_lock);
 }
@@ -801,7 +858,7 @@ static void relaunch(JSContext *ctx, int argc, char **argv) {
         fclose(f);
     }
     host_log("[app] restarting (the game asked to reload the page)");
-    if (log_fp) fflush(log_fp);
+    host_log_flush();
     plat_relaunch(argc, argv);
     host_log("[app] restart failed; carrying on");
     g_relaunch = false;
@@ -1044,6 +1101,7 @@ int main(int argc, char **argv) {
     host_js_shutdown();
     net_shutdown();
     plat_shutdown();
+    host_log_flush();
     if (log_fp) fclose(log_fp);
     return 0;
 }

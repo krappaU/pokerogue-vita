@@ -82,6 +82,7 @@ typedef struct {
 static void *upload_thread(void *arg) {
     upload_job *j = arg;
     size_t len = 0;
+    host_log_flush(); // the lines logged so far, when it's this run's log
     char *body = read_file(j->path, &len);
     char msg[300];
     if (!body) {
@@ -426,6 +427,7 @@ void dev_early(void) {
         build_file(path, sizeof path, "dev-update.id");
         remove(path);
         host_log("[dev] starting the updater");
+        host_log_flush();
         sceAppMgrLaunchAppByUri(0xFFFFF, "psgm:play?titleid=" UPDATER_TITLE_ID);
         sceKernelExitProcess(0);
         write_result("error the updater didn't start");
@@ -536,6 +538,7 @@ bool dev_offer_update(void) {
     write_pair("dev-build.txt", id, "pending");
     host_log("[dev] test build %s unpacked; restarting to install the updater", id);
     overlay_present("PokeRogue\n\nInstalling the test build...");
+    host_log_flush();
     plat_relaunch(0, NULL);
     ui_message_wait("The app didn't restart.\nClose it and start it again to install the test build.");
     return true;

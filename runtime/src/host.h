@@ -48,6 +48,7 @@ extern host_config g_cfg;
 
 void host_log(const char *fmt, ...);
 bool host_logging(void); // is there a log to write to (player builds: only with config.txt log=1)
+void host_log_flush(void); // wait until queued log lines are in log.txt
 double host_now_ms(void);
 void mem_breakdown(const char *stage); // logs where main memory goes
 

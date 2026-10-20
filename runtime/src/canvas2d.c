@@ -480,7 +480,10 @@ static bool c2d_alloc(c2d *c, int w, int h) {
     c->canvas = NULL;
     c->w = w > 0 ? w : 1;
     c->h = h > 0 ? h : 1;
+    double t0 = host_now_ms();
     c->surface = plutovg_surface_create(c->w, c->h);
+    double ms = host_now_ms() - t0;
+    if (ms >= 30) host_log("[canvas] a %dx%d canvas took %.0f ms to allocate", c->w, c->h, ms);
     if (!c->surface) {
         static int warned;
         if (warned++ < 5) host_log("[canvas] out of memory for a %dx%d canvas", c->w, c->h);

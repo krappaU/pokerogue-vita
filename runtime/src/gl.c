@@ -1591,7 +1591,21 @@ static const uint8_t *unpack(const uint8_t *src, int w, int h, bool owned, bool 
 
 // texImage2D(target, level, internalformat, format, type, source)
 // texImage2D(target, level, internalformat, width, height, border, format, type, pixels)
+static JSValue tex_image_2d(JSContext *ctx, int argc, JSValueConst *argv, int *ow, int *oh);
+
+// Uploads are timed: with the GPU pools nearly full, vitaGL can stall on an allocation (log71: a
+// 320 ms native call while a stat-change animation was created, cause not yet known).
 FN(w_texImage2D) {
+    double t0 = host_now_ms();
+    int w = 0, h = 0;
+    JSValue r = tex_image_2d(ctx, argc, argv, &w, &h);
+    double ms = host_now_ms() - t0;
+    if (ms >= 30)
+        host_log("[gl] texImage2D %dx%d took %.0f ms (%s)", w, h, ms, argc == 6 ? "from an image or canvas" : "from data, or empty");
+    return r;
+}
+
+static JSValue tex_image_2d(JSContext *ctx, int argc, JSValueConst *argv, int *ow, int *oh) {
     int target = gi(ctx, A(0)), level = gi(ctx, A(1)), ifmt = gi(ctx, A(2));
     if (argc == 6) {
         int fmt = gi(ctx, A(3)), type = gi(ctx, A(4)), w, h;
@@ -1607,6 +1621,7 @@ FN(w_texImage2D) {
             if (level == 0) tex_account(bound_tex_id(), 4), tex_forget(ctx, bound_tex_id());
             return JS_UNDEFINED;
         }
+        *ow = w, *oh = h;
         const uint8_t *up = unpack(px, w, h, owned, &fr);
         gl_pixel_store(GL_UNPACK_ALIGNMENT, 4);
         glTexImage2D(target, level, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, up);
@@ -1633,6 +1648,7 @@ FN(w_texImage2D) {
     bool fr = false;
     const uint8_t *up = px;
     if (px && fmt == GL_RGBA && type == GL_UNSIGNED_BYTE && len >= (size_t)w * h * 4) up = unpack(px, w, h, false, &fr);
+    *ow = w, *oh = h;
     glTexImage2D(target, level, ifmt, w, h, 0, fmt, type, up);
     if (level == 0) tex_account(bound_tex_id(), (size_t)w * h * 4);
     if (fr) free((void *)up);
