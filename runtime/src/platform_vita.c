@@ -89,6 +89,13 @@ bool plat_init(int w, int h) {
     //    the system's installer needs in dev builds (0.59 gave vitaGL all of it, and PAF failed to
     //    load with "no free physical page"; devtools.c also calls the installer before this init).
     // vitaGL fills them in that order (video RAM first for textures); after them comes the heap.
+    // Compiled shaders are kept in <data>/shader-cache (vitaGL's HAVE_SHADER_CACHE, keyed by a hash
+    // of each shader's source): compiling one takes ~1 s here, so later starts and shader variants
+    // (gl.c) skip that after the first time.
+    static char cache[128];
+    snprintf(cache, sizeof cache, "%s/shader-cache", g_cfg.data_dir);
+    sceIoMkdir(cache, 0777);
+    vglSetShaderCachePath(cache);
     // Note: the return value only says whether vitaGL fell back to another resolution.
     if (vglInitWithCustomSizes(0, SCREEN_W, SCREEN_H, 64 * 1024 * 1024, 95 * 1024 * 1024, 16 * 1024 * 1024,
                                4 * 1024 * 1024, SCE_GXM_MULTISAMPLE_NONE))

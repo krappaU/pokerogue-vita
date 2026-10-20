@@ -32,7 +32,7 @@ typedef struct {
     bool plain_shaders;      // config.txt plainshaders=1 (debug builds): trivial fragment shaders, to measure
     bool gpu_profile;        // config.txt gpuprofile=1 (debug builds): GPU time per shader, one frame every 10 s
     bool no_shader_fix;      // config.txt shaderfix=0 (debug builds): the game's shaders without js/webgl.js's rewrites
-    bool bench;              // config.txt bench=shaders (dev builds): the shader benchmark (bench/) instead of the game
+    bool no_precompile;      // config.txt precompile=0 (debug builds): shader variants only built when first drawn
     int profile_rate;        // JS operations between samples (config.txt profile_rate=N; 0: QuickJS's 10000)
     double sample_ms;        // at most one sample per this many ms, so samples follow time rather than
                              // operation counts (config.txt sample_ms=1; 0: every check)
@@ -194,6 +194,8 @@ void gl_buffer_sub_data(int target, int offset, const void *p, size_t len); // g
 void gl_draw_stats(double *total_ms, double *max_frame_ms, int *restores, int *draws); // gl.c
 void gl_after_frame(void);
 void gl_restore_state(void); // after drawing over the game mid-frame
+int gl_precompile(double budget_ms); // shader variants built ahead of use; returns how many are left
+int gl_precompile_left(int *total);
 void gl_texture_memory(size_t *bytes, size_t *peak, int *count);
 enum { GL_POOL_VIDEO, GL_POOL_RAM, GL_POOL_PHYCONT, GL_POOL_DIALOG, GL_POOL_HEAP, GL_POOLS };
 void gl_texture_pools(size_t bytes[GL_POOLS], size_t largest_out[3]); // Vita: texture bytes per memory pool
@@ -212,6 +214,7 @@ void overlay_disable(void);
 bool overlay_active(void);
 void overlay_hud_draw(const char *text); // debug line over the game (top-right)
 void overlay_busy_draw(const char *text); // full-screen message during a long frame (caller swaps)
+void overlay_notice_draw(const char *text); // short line over the game (bottom-left)
 void overlay_blit_text(uint8_t *px, int W, int H, int x, int y, const char *text, int scale, const uint8_t rgba[4]);
 void overlay_image_draw(const uint8_t *rgba, int w, int h, bool changed, int *ox, int *oy);
 void overlay_rgba_at(int slot, const uint8_t *rgba, int w, int h, bool changed, float x, float y, float dw, float dh);

@@ -234,6 +234,12 @@ without a copy.
   are recorded and copied into a copy before it draws. `tests/shaders` compares the pixels; a copy
   may differ by at most 1/255 (it is compiled as a different shader, so rounding can move; leaving
   out an effect that is on changes far more, which the test catches).
+  Building a copy takes ~1 s on the console, so since 0.66 the likely copies are queued when the
+  program is linked and built ahead of use: under the game's loading screen during its long
+  frames ("Preparing shaders N/M"), else between frames with a notice in the bottom-left corner
+  (`precompile=0` turns this off). vitaGL keeps every compiled shader in `<data>/shader-cache/`
+  (`HAVE_SHADER_CACHE` in `build_vita_vitagl.sh`), so later starts load them from the card; delete
+  that folder to measure a first start.
 - `bench=shaders` in config.txt (dev builds, 0.64): instead of the game, the shader benchmark
   (`runtime/bench/`, packed into the dev .vpk with PokeRogue's shaders) draws the full screen with
   PokeRogue's field and sprite shaders and Phaser's multi-texture shader, as shipped, as rewritten

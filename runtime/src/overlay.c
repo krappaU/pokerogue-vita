@@ -25,7 +25,7 @@ typedef struct {
 
 static char message[2048];
 static bool disabled;
-static textbox msg_box, footer_box, hud_box, busy_box;
+static textbox msg_box, footer_box, hud_box, busy_box, notice_box;
 static GLuint prog, vbo;
 static GLint a_pos, a_uv, u_tex;
 
@@ -245,6 +245,19 @@ void overlay_hud_draw(const char *text) {
         build_texture(&hud_box, hud_box.text, 1, false, SMALL_FG, SMALL_BG, 3);
     }
     draw_box(&hud_box, w - hud_box.w - 4, 4, w, h);
+    end_draw();
+}
+
+// A short notice over the game in the bottom-left corner (shaders still being prepared). Like the
+// debug line, the caller lets Phaser know that GL state changed.
+void overlay_notice_draw(const char *text) {
+    int w, h;
+    begin_draw(&w, &h);
+    if (!notice_box.tex || strcmp(notice_box.text, text)) {
+        snprintf(notice_box.text, sizeof notice_box.text, "%s", text);
+        build_texture(&notice_box, notice_box.text, 1, false, SMALL_FG, SMALL_BG, 3);
+    }
+    draw_box(&notice_box, 4, h - notice_box.h - 4, w, h);
     end_draw();
 }
 

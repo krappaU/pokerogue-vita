@@ -894,6 +894,8 @@ static int family_uniform(vfamily *f, const char *name) {
     return -1;
 }
 
+static void precompile_queue(GLuint prog, unsigned present);
+
 // After a successful link: a family if the fragment shader has marked effects.
 static void family_setup(GLuint prog) {
     family_free(prog);
@@ -946,6 +948,7 @@ static void family_setup(GLuint prog) {
         return;
     }
     families[prog] = f;
+    precompile_queue(prog, f->present);
 }
 
 // A uniform write to the bound program, as the GL got it.
@@ -1092,6 +1095,63 @@ static GLuint var_begin(void) {
 }
 static inline void var_end(GLuint prog) {
     if (prog) glUseProgram(prog);
+}
+
+// Precompiling. Building a copy when a draw first needs it stalls that frame: 0.8-1 s per copy on
+// the console (0.65), until vitaGL's shader cache in <data>/shader-cache has it. So when a family is
+// linked, the copies it is likely to need are queued and built ahead of use: during the game's
+// long loading frames (main.c's busy_poll, which shows the progress on its loading screen), else
+// between frames with a notice over the game. Likely: terrain, day/night and shadow each on or off,
+// with at most one of tera, shiny variants and fusion palettes on (16 copies of the sprite shader).
+#define PRE_MAX 256
+static struct { GLuint prog; unsigned off; } pre_queue[PRE_MAX];
+static int pre_n, pre_done, pre_built;
+static double pre_ms;
+
+static void precompile_queue(GLuint prog, unsigned present) {
+    int n = pre_done; // a relinked program: drop what was queued for it
+    for (int i = pre_done; i < pre_n; i++)
+        if (pre_queue[i].prog != prog) pre_queue[n++] = pre_queue[i];
+    pre_n = n;
+    if (g_cfg.no_precompile) return;
+    const unsigned common = present & (1u << VF_TERRAIN | 1u << VF_DAYNIGHT | 1u << VF_SHADOW);
+    static const int rare[] = {-1, VF_TERA, VF_VARIANTS, VF_FUSION};
+    for (int r = 0; r < 4; r++) {
+        unsigned one = rare[r] < 0 ? 0 : 1u << rare[r];
+        if (rare[r] >= 0 && !(present & one)) continue;
+        for (unsigned s = common;; s = (s - 1) & common) { // every subset of `common` switched on
+            unsigned off = present & ~(s | one);
+            if (off && pre_n < PRE_MAX) pre_queue[pre_n].prog = prog, pre_queue[pre_n++].off = off;
+            if (!s) break;
+        }
+    }
+}
+
+// Builds queued copies for about budget_ms (at least one). Returns how many are still left.
+int gl_precompile(double budget_ms) {
+    if (pre_done == pre_n) return 0;
+    double t0 = host_now_ms();
+    while (pre_done < pre_n) {
+        GLuint prog = pre_queue[pre_done].prog;
+        unsigned off = pre_queue[pre_done++].off;
+        vfamily *f = families[prog];
+        if (!f || (off & ~f->present)) continue;
+        vcopy *c = &f->copies[off];
+        if (c->prog || c->failed) continue; // a draw needed it first
+        copy_build(prog, f, off, c);
+        pre_built++;
+        if (host_now_ms() - t0 >= budget_ms) break;
+    }
+    pre_ms += host_now_ms() - t0;
+    if (pre_done == pre_n)
+        host_log("[gl] shader variants precompiled: %d in %.1f s", pre_built, pre_ms / 1000);
+    return pre_n - pre_done;
+}
+
+// Queued copies left; *total: queued in all (for "N/M" on the screen).
+int gl_precompile_left(int *total) {
+    if (total) *total = pre_n;
+    return pre_n - pre_done;
 }
 
 // gl.pkrShaderVariants() -> {built, draws}: copies built and draws they made (tests/shaders).

@@ -507,12 +507,18 @@ static void draw_hud(JSContext *ctx, double js_ms) {
 
 // Native drawing over the game's frame: the built-in keyboard and the debug line.
 static void draw_over_game(JSContext *ctx, double js_ms) {
-    if (!osk_active() && !link_active() && !g_cfg.hud && !fields_draw_pending()) return;
+    int pre_total, pre_left = gl_precompile_left(&pre_total);
+    if (!osk_active() && !link_active() && !g_cfg.hud && !fields_draw_pending() && !pre_left) return;
     host_call_rt(ctx, "beforeExternalGL", 0, NULL);
     fields_draw();
     osk_draw();
     link_draw();
     if (g_cfg.hud) draw_hud(ctx, js_ms);
+    if (pre_left) {
+        char text[80];
+        snprintf(text, sizeof text, "Preparing shaders %d/%d: the game may stutter", pre_total - pre_left, pre_total);
+        overlay_notice_draw(text);
+    }
     host_call_rt(ctx, "afterExternalGL", 0, NULL);
 }
 
@@ -534,9 +540,29 @@ static void busy_poll(void) {
     if (logged_t0 != phase_t0 && g_cfg.busy_after_ms >= 1000) host_log("[busy] loading screen (frame running for %.0f s)", (now - phase_t0) / 1000);
     logged_t0 = phase_t0;
     static const char *dots[] = {"Loading   ", "Loading.  ", "Loading.. ", "Loading..."};
-    overlay_busy_draw(dots[tick++ % 4]);
+    int pre_total, pre_left = gl_precompile_left(&pre_total);
+    char text[80];
+    if (pre_left) snprintf(text, sizeof text, "%s\n\nPreparing shaders %d/%d", dots[tick % 4], pre_total - pre_left, pre_total);
+    else snprintf(text, sizeof text, "%s", dots[tick % 4]);
+    tick++;
+    overlay_busy_draw(text);
     plat_swap();
     gl_restore_state();
+    // The game is busy anyway: a good time to build shader variants (gl.c, which leaves the GL
+    // state as it was). The next poll redraws the screen right after a slow one.
+    if (pre_left) gl_precompile(BUSY_EVERY_MS / 2);
+}
+
+// Shader variants not built during loading (gl_precompile): between frames, at most one slow build
+// (~1 s on the console when not in vitaGL's cache) every PRECOMPILE_GAP_MS, so input still gets
+// through; draw_over_game shows a notice meanwhile.
+#define PRECOMPILE_GAP_MS 300
+static void precompile_between_frames(void) {
+    static double next;
+    double now = host_now_ms();
+    if (now < next || !gl_precompile_left(NULL)) return;
+    gl_precompile(8);
+    if (host_now_ms() - now > 100) next = host_now_ms() + PRECOMPILE_GAP_MS;
 }
 
 static int js_interrupt(JSRuntime *rt, void *opaque) {
@@ -591,6 +617,7 @@ static void save_screenshot(const char *path) {
 //                                   (wrong colours, effects gone), to see how much GPU time the shaders cost
 //   gpuprofile=1                    every 10 s, GPU time per shader program for one frame ([gpu] lines)
 //   shaderfix=0                     the game's shaders as they are, without js/webgl.js's rewrites (to compare)
+//   precompile=0                    shader variants built only when first drawn, not ahead (to compare)
 //   bench=shaders                   dev builds: the shader benchmark (bench/) instead of the game; its log
 //                                   goes to the log server by itself, marked "shader benchmark"
 // Dev builds only (devtools.c):
@@ -677,6 +704,8 @@ static void load_config_file(void) {
             g_cfg.gpu_profile = atoi(v) != 0;
         } else if (!strcmp(k, "shaderfix")) {
             g_cfg.no_shader_fix = atoi(v) == 0;
+        } else if (!strcmp(k, "precompile")) {
+            g_cfg.no_precompile = atoi(v) == 0;
 #ifdef PKR_DEV
         } else if (!strcmp(k, "bench") && !strcmp(v, "shaders")) {
             // The shader benchmark page the dev build carries (bench/), run instead of the game.
@@ -688,7 +717,6 @@ static void load_config_file(void) {
 #endif
             g_cfg.local_dir = dir;
             g_cfg.base_url = LOCAL_ORIGIN "/";
-            g_cfg.bench = true;
 #endif
         } else if (!strcmp(k, "profile")) {
             g_cfg.no_profile = atoi(v) == 0;
@@ -810,7 +838,7 @@ int main(int argc, char **argv) {
     bool have_offline = offline_installed();
     char again[16];
     relaunch_mode(again, sizeof again);
-    if (!again[0] && !g_cfg.bench) dev_offer_update(); // a newer test build in the dev-build release (restarts the app)
+    if (!again[0]) dev_offer_update(); // a newer test build in the dev-build release (restarts the app; also before bench=shaders)
     if (!strcmp(again, "offline") && have_offline && !g_cfg.local_dir) {
         g_cfg.local_dir = offline_dir;
         g_cfg.base_url = LOCAL_ORIGIN "/";
@@ -960,6 +988,7 @@ int main(int argc, char **argv) {
         plat_swap();
         double t_after = host_now_ms();
         gl_after_frame();
+        precompile_between_frames();
         perf_draw_ms += t_swap - t_draw, perf_swap_ms += t_after - t_swap, perf_after_ms += host_now_ms() - t_after;
         set_phase("input");
         frame_no++;

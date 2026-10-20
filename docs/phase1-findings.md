@@ -594,3 +594,27 @@ numbers above: the field quad ~15 -> ~8-9 ms (no terrain), an ordinary Pokémon 
 tera, no palette loops). Day/night (6.5-8 ms) and the shadow (6.5 ms) stay while they are on.
 **To measure:** `bench=shaders` again (the "rewritten + variants" lines), and a battle with
 `gpuprofile=1`.
+
+### Shader variants on the console (log61, 0.65, 2026-10-20; runtime 0.66)
+`bench=shaders` with the variants: field shader 10.9 ms per full screen (19.0 as shipped), sprite
+12.0 (23.8). In battle 16-25 fps, up from 7-14; a battle frame is now bound by its ~40 ms of JS,
+not the GPU. But each copy took 0.78-0.98 s to build the first time a draw needed it, and the
+game stood still meanwhile: the stutters that sometimes swallowed a button press.
+
+0.66: the copies are built ahead of use, and vitaGL keeps compiled shaders on the memory card.
+- vitaGL's shader cache (`HAVE_SHADER_CACHE`, `<data>/shader-cache/`, keyed by a hash of the
+  source; 512 folders made on the first start): a shader compiled once loads from the card on
+  later starts, the game's own included.
+- Precompiling (`gl.c`): when a family is linked, the copies it is likely to need are queued
+  (terrain, day/night and shadow each on or off, with at most one of tera, shiny palettes and
+  fusion palettes on: 16 for the sprite shader, 3 for the field shader). They are built while the
+  game's long loading frames run, under the loading screen ("Preparing shaders N/M"), and
+  otherwise between frames, at most one slow build per 300 ms, with "Preparing shaders N/M: the
+  game may stutter" in the bottom-left corner. A copy no one queued is still built on first use.
+  `precompile=0` in config.txt (debug builds) builds them only on first use, to compare.
+- On the desktop (Mesa) the 19 copies take 0.3 s; the PokeRogue pipelines are linked inside the
+  game's first long frame, so all of them were built under its loading screen.
+- `bench=shaders` now waits for the dev build's update check, like the game (it ran first before).
+**To measure:** the `[gl] shader variants precompiled: N in S s` line on the first start after
+installing (expected ~15-20 s, under the loading screen) and on the next start (from the cache),
+and whether the game's own start (after `[phaser] renderer`) got shorter.
