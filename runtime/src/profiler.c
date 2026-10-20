@@ -13,6 +13,7 @@
 // total = anywhere on the stack) and the main-loop split; <data>/profile.txt gets all stacks in
 // collapsed form (one "frame;frame;frame count" line each, for flame graph tools).
 
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -192,17 +193,27 @@ static void slow_report(double js_ms) {
 
 // ---------------------------------------------------------------- report
 
-typedef struct { const char *name; size_t len; unsigned self, total; } fstat;
+typedef struct { const char *name; size_t len; unsigned self, total; int stack; } fstat;
 
 static int by_self(const void *a, const void *b) { return (int)((const fstat *)b)->self - (int)((const fstat *)a)->self; }
 static int by_total(const void *a, const void *b) { return (int)((const fstat *)b)->total - (int)((const fstat *)a)->total; }
 
-static fstat *find_fn(fstat *fs, int *n, int cap, const char *name, size_t len) {
-    for (int i = 0; i < *n; i++)
+// Functions by name, through a hash index (FN_SLOTS > cap): a linear search over ~2000 functions
+// for each frame of ~3000 stacks took seconds on the Vita, every 30 s.
+#define FN_SLOTS 4096
+static fstat *find_fn(fstat *fs, int *n, int cap, int *index, const char *name, size_t len) {
+    unsigned h = 2166136261u;
+    for (size_t i = 0; i < len; i++) h = (h ^ (unsigned char)name[i]) * 16777619u;
+    for (unsigned k = h % FN_SLOTS;; k = (k + 1) % FN_SLOTS) {
+        int i = index[k];
+        if (i < 0) {
+            if (*n >= cap) return NULL;
+            fs[*n] = (fstat){name, len, 0, 0, 0};
+            index[k] = *n;
+            return &fs[(*n)++];
+        }
         if (fs[i].len == len && !memcmp(fs[i].name, name, len)) return &fs[i];
-    if (*n >= cap) return NULL;
-    fs[*n] = (fstat){name, len, 0, 0};
-    return &fs[(*n)++];
+    }
 }
 
 // ---------------------------------------------------------------- groups
@@ -281,27 +292,63 @@ static void report_groups(unsigned total) {
     host_log("[prof] groups: %s", line);
 }
 
+// <data>/profile.txt, written by a thread of its own: in small pieces to the memory card from the
+// main loop, it was part of a 1-5 s stall every 30 s on the Vita.
+static int profile_writing; // one at a time: skipped while the last one is still being written
+static void *profile_thread(void *arg) {
+    char path[600];
+    snprintf(path, sizeof path, "%s/profile.txt", g_cfg.data_dir);
+    FILE *f = fopen(path, "w");
+    if (f) {
+        fputs(arg, f);
+        fclose(f);
+    }
+    free(arg);
+    __atomic_store_n(&profile_writing, 0, __ATOMIC_RELEASE);
+    return NULL;
+}
+
+static void write_profile(unsigned total) {
+    if (__atomic_load_n(&profile_writing, __ATOMIC_ACQUIRE)) return;
+    size_t size = 200;
+    for (int i = 0; i < MAX_STACKS; i++)
+        if (stacks[i].key) size += strlen(stacks[i].key) + 12;
+    char *buf = malloc(size), *w = buf;
+    if (!buf) return;
+    w += snprintf(w, size, "# %s: %u samples; collapsed stacks (frame;frame;... count)\n", host_version_string(), total);
+    for (int i = 0; i < MAX_STACKS; i++)
+        if (stacks[i].key) w += snprintf(w, size - (size_t)(w - buf), "%s %u\n", stacks[i].key, stacks[i].count);
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 32 * 1024);
+    pthread_t t;
+    __atomic_store_n(&profile_writing, 1, __ATOMIC_RELEASE);
+    if (pthread_create(&t, &attr, profile_thread, buf) == 0) pthread_detach(t);
+    else free(buf), __atomic_store_n(&profile_writing, 0, __ATOMIC_RELEASE);
+    pthread_attr_destroy(&attr);
+}
+
 static void report(void) {
     unsigned total = n_samples;
     if (!total) return;
     int cap = 2048, n = 0;
     fstat *fs = calloc(cap, sizeof *fs);
-    if (!fs) return;
+    int *index = malloc(FN_SLOTS * sizeof *index);
+    if (!fs || !index) {
+        free(fs), free(index);
+        return;
+    }
+    for (int i = 0; i < FN_SLOTS; i++) index[i] = -1;
     for (int i = 0; i < MAX_STACKS; i++) {
         if (!stacks[i].key) continue;
         const char *k = stacks[i].key, *p = k;
-        // Each function once per stack for "total"; the last frame gets "self".
-        const char *seen[64];
-        size_t seen_len[64];
-        int ns = 0;
+        // Each function once per stack for "total" (marked with the stack's slot); the last frame
+        // gets "self".
         for (;;) {
             const char *e = strchr(p, ';');
             size_t len = e ? (size_t)(e - p) : strlen(p);
-            bool dup = false;
-            for (int j = 0; j < ns; j++) dup |= seen_len[j] == len && !memcmp(seen[j], p, len);
-            fstat *f = find_fn(fs, &n, cap, p, len);
-            if (f && !dup) f->total += stacks[i].count;
-            if (ns < 64) seen[ns] = p, seen_len[ns++] = len;
+            fstat *f = find_fn(fs, &n, cap, index, p, len);
+            if (f && f->stack != i + 1) f->total += stacks[i].count, f->stack = i + 1;
             if (!e) {
                 if (f) f->self += stacks[i].count;
                 break;
@@ -330,17 +377,8 @@ static void report(void) {
         host_log("[prof]   %4.1f%%  %.*s", 100.0 * fs[i].total / total, (int)fs[i].len, fs[i].name);
         shown++;
     }
-    free(fs);
-
-    char path[600];
-    snprintf(path, sizeof path, "%s/profile.txt", g_cfg.data_dir);
-    FILE *f = fopen(path, "w");
-    if (f) {
-        fprintf(f, "# %s: %u samples; collapsed stacks (frame;frame;... count)\n", host_version_string(), total);
-        for (int i = 0; i < MAX_STACKS; i++)
-            if (stacks[i].key) fprintf(f, "%s %u\n", stacks[i].key, stacks[i].count);
-        fclose(f);
-    }
+    free(fs), free(index);
+    write_profile(total);
 }
 
 // Called once per frame with its JS time: reports a slow frame at once, and everything every 30 s,

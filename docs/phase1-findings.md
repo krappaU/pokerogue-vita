@@ -640,3 +640,28 @@ re-uploads per 10 s; battle menus used every turn fit that pattern.
 - `[prof] (this report took N ms)`: the 30 s report writes profile.txt to the card.
 **Next:** if the re-uploads are the stutters, decode them on the other cores (the image thread)
 instead of in the frame.
+
+### What the slow frames were (log68, 0.67, 2026-10-20; runtime 0.68)
+Second start of 0.67: the 19 shader variants came from vitaGL's cache in 0.5 s (12-22 ms each,
+against 0.3-3.8 s on the first start). Play felt smoother, with some stutters left. The `[slow]`
+lines and timings named them:
+- The profiler's own 30 s report: 0.5-5.0 s (`this report took`), between frames, so the frame
+  statistics never showed it. Each function was looked up by a linear search over ~2000 names
+  for every frame of ~3000 stacks, and profile.txt was written to the card in small pieces.
+- The `[mem]` breakdown every ~40 s counts the JS heap by walking every object: 37-45 ms on the
+  desktop for 104 MB, so likely most of a second on the Vita, also between frames.
+- One garbage collection mid-battle: 2.4 s (with a 1.4 s `addAt` charged to it).
+- The game's own work, on one core: building move animations (`populateMoveAnim`, 300-500 ms
+  when a move is first used), saving (`saveAll`, JSON.stringify, 200-450 ms), the party screen's
+  text objects (~400 ms), reading system data (JSON.parse, 760 ms, once).
+- Texture re-uploads: 31-42 ms each, 17 in the session: not the problem.
+
+0.68:
+- profiler.c: functions found through a hash index; a stack's functions counted once with a
+  marker instead of comparing names; profile.txt written whole by a thread of its own. The report
+  took 0-2 ms on the desktop (5 ms before).
+- `[mem] running` lines take the JS heap from QuickJS's GC threshold (1.5x what the last
+  collection left) instead of counting it; startup stages still count.
+- Under the loading screen (once per long frame), if the JS heap is at least a third of the way to
+  QuickJS's next collection, it collects then (`[gc] collected under the loading screen`), which
+  also puts the next collection further off.

@@ -321,7 +321,13 @@ void mem_breakdown(const char *stage) {
     canvas_image_memory(&img_enc, &img_dec);
     canvas_memory(&canv, &n_canv, &fonts);
     double js = 0;
-    if (g_ctx_for_mem) {
+    bool js_estimate = !strcmp(stage, "running");
+    if (g_ctx_for_mem && js_estimate) {
+        // Counting walks every JS object: ~40 ms on the desktop for 100 MB, likely most of a second
+        // on the Vita, every 40 s of play. QuickJS's next collection is due at 1.5x what the last
+        // one left, so that is known for free.
+        js = JS_GetGCThreshold(JS_GetRuntime(g_ctx_for_mem)) / 1.5 / 1048576.0;
+    } else if (g_ctx_for_mem) {
         JSMemoryUsage m;
         JS_ComputeMemoryUsage(JS_GetRuntime(g_ctx_for_mem), &m);
         js = m.malloc_size / 1048576.0;
@@ -334,9 +340,9 @@ void mem_breakdown(const char *stage) {
     audio_memory(&a_pcm, &a_mp3, &a_voices);
     host_log("[mem] %s: audio %.1f MB decoded + %.1f MB streamed music, %d playing", stage, a_pcm / 1048576.0,
              a_mp3 / 1048576.0, a_voices);
-    host_log("[mem] %s: heap in use %.0f MB | JS %.0f MB | canvases %.1f MB (%d) | fonts %.1f MB | images %.1f MB "
+    host_log("[mem] %s: heap in use %.0f MB | JS %.0f MB%s | canvases %.1f MB (%d) | fonts %.1f MB | images %.1f MB "
              "files + %.1f MB decoded | GPU textures %.1f MB (%d), peak %.1f MB",
-             stage, (unsigned)mi.uordblks / 1048576.0, js, canv / 1048576.0, n_canv, fonts / 1048576.0,
+             stage, (unsigned)mi.uordblks / 1048576.0, js, js_estimate ? " after the last collection" : "", canv / 1048576.0, n_canv, fonts / 1048576.0,
              img_enc / 1048576.0, img_dec / 1048576.0, tex / 1048576.0, n_tex, tex_peak / 1048576.0);
 #ifdef __vita__
     // vitaGL's GPU memory pools (textures, buffers); when they're full it falls back to the heap.
@@ -528,6 +534,30 @@ static void draw_over_game(JSContext *ctx, double js_ms) {
 // BUSY_EVERY_MS; the game's GL state is put back afterwards. Only once the game's renderer has
 // taken over from the startup overlay (which covers loading the code).
 #define BUSY_EVERY_MS 400
+// QuickJS collects cycles when its heap reaches 1.5x what was left after the last collection; with
+// the game's ~60 MB of JS objects that takes 1.5-2.5 s on the Vita, often mid-battle (log65,
+// log68). Under the loading screen (once per long frame) a collection costs nothing visible: if
+// the heap is at least a third of the way to the next one, run it now, which also puts the next one
+// further off.
+static void gc_during_loading(void) {
+    static double done_t0;
+    if (!g_ctx_for_mem || done_t0 == phase_t0) return;
+    done_t0 = phase_t0;
+    JSRuntime *rt = JS_GetRuntime(g_ctx_for_mem);
+    JSMemoryUsage m;
+    JS_ComputeMemoryUsage(rt, &m);
+    double threshold = (double)JS_GetGCThreshold(rt), after_last = threshold / 1.5;
+    if (m.malloc_size < after_last + (threshold - after_last) / 3) return;
+    double t0 = host_now_ms();
+    JS_RunGC(rt);
+    double ms = host_now_ms() - t0;
+    size_t before = m.malloc_size;
+    JS_ComputeMemoryUsage(rt, &m);
+    JS_SetGCThreshold(rt, m.malloc_size + m.malloc_size / 2);
+    host_log("[gc] collected under the loading screen: %.0f ms, JS heap %.1f -> %.1f MB", ms, before / 1048576.0,
+             m.malloc_size / 1048576.0);
+}
+
 static void busy_poll(void) {
     static double last;
     static int tick;
@@ -551,6 +581,7 @@ static void busy_poll(void) {
     // The game is busy anyway: a good time to build shader variants (gl.c, which leaves the GL
     // state as it was). The next poll redraws the screen right after a slow one.
     if (pre_left) gl_precompile(BUSY_EVERY_MS / 2);
+    else gc_during_loading();
 }
 
 // Shader variants not built during loading (gl_precompile): between frames, at most one slow build
