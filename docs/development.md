@@ -43,14 +43,18 @@ names another build than the one running, the app asks and downloads the .vpk fr
 running app can't write its own `ux0:app/PKRV00001` folder (0.50 on the console: "couldn't write
 ux0:app/PKRV00001/eboot.bin.new"), so a second app installs it, the way VitaShell updates
 itself: **PokeRogue Updater** (`runtime/updater/updater.c`, title `PKRVUPD01`), which the dev build
-carries as `updater.vpk`. The game unpacks the build to `ux0:data/pokerogue/update/files/`, installs
-the updater with the system's installer (ScePromoterUtil, `runtime/updater/promoter.h`), starts it
-and quits; the updater installs the build the same way (a full install: LiveArea and param.sfo
-too), writes `update/result.txt` and starts the game again, which shows an error if there was one
-and uninstalls the updater (at every start, also one installed by hand). The installer needs
+carries as `updater.vpk`. The game unpacks the build to `ux0:data/pokerogue/update/files/` and
+restarts; early in that start, before its graphics take the memory the installer's PAF module
+needs, it installs the updater with the system's installer (ScePromoterUtil,
+`runtime/updater/promoter.h`), starts it and quits. The updater installs the build the same way (a
+full install: LiveArea and param.sfo too), writes `update/result.txt` and starts the game again,
+which uninstalls the updater early in that start and shows an error if there was one. A marker
+file (`<data>/installer.txt`) brackets every installer call: if a start finds it, the call never
+came back (crash or hang), and the installer stays off for that build. The installer needs
 `sce_sys/package/head.bin` in the folder: every .vpk carries one, made at build time by
 `runtime/scripts/make_head_bin.py` from VitaShell's template (the same bytes VitaShell would write).
-If something fails the download stays in `ux0:data/pokerogue/dev-update.vpk` for VitaShell. A build that was declined isn't offered again.
+If something fails the download stays in `ux0:data/pokerogue/dev-update.vpk` for VitaShell. A
+build that was declined isn't offered again.
 `devbuilds=off` in `config.txt` turns the check off (`devbuilds=<url>` reads another `build.json`).
 The updater (like VitaShell's VSUPDATER) is built with every dev build.
 
@@ -103,7 +107,9 @@ Without `devserver=`, a dev build sends no logs.
   reserved. Phaser's main shader has a variable named `texture`; `js/webgl.js` renames such
   identifiers before handing shaders over.
 - Crash dumps (`ux0:data/psp2core-*.psp2dmp`) decode with vita-parse-core and the unstripped
-  `build-vita/pokerogue-rt` (the tool needs small Python 3 fixes).
+  `build-vita/pokerogue-rt` (or `build-vita-dev/`) of the same commit. The tool needs small Python 3
+  fixes (`elftools.common.py3compat` is gone, `xrange`, `string.letters`, bytes in `c_str`) and
+  runs in the VitaSDK image, which has `arm-vita-eabi-objdump` and `addr2line`.
 - Don't offer zstd in Accept-Encoding: each stream needs megabytes of buffer.
 - LiveArea images must be 8-bit palette PNGs (`runtime/scripts/make_livearea.py` writes them, for
   the game and the updater; the game's use a CC BY-NC-SA arena backdrop, see
@@ -184,8 +190,9 @@ App downloads for its offline mode (`game.zip` from github.com/Admiral-Billy/pok
 
 ## Memory budget
 Extended memory mode (`ATTRIBUTE2=12`). Heap 256 MB (`_newlib_heap_size_user`), vitaGL pools: 95 MB
-CDRAM, 64 MB RAM, 16 MB phycont and the whole system dialogs' budget (8.8 MB; no system dialog is
-used). An app gets 112 MB of CDRAM; libgxm takes 16 MB of it for the GPU's parameter buffer
+CDRAM, 64 MB RAM, 16 MB phycont and 4 MB of the system dialogs' 8.8 MB budget (no system dialog is
+used, but the system's installer in dev builds needs the rest for its PAF module: 0.59 took all of
+it, and PAF failed to load). An app gets 112 MB of CDRAM; libgxm takes 16 MB of it for the GPU's parameter buffer
 (vitaGL's default size), so ~1 MB stays free. vitaGL puts textures in the first pool with room in
 that order (CDRAM is the fastest for the GPU), then in the heap; debug builds log where the
 textures are (`[mem] ...: textures in video RAM ... MB, main RAM ..., heap ...`). On the test

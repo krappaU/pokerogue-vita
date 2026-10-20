@@ -84,13 +84,14 @@ bool plat_init(int w, int h) {
     //  - 95 MB of video RAM (CDRAM). An app gets 112 MB; libgxm takes 16 MB of it for the GPU's
     //    parameter buffer (vitaGL keeps the default size), and 1 MB stays free as a margin.
     //  - 64 MB of main RAM and 16 MB of physically contiguous RAM: slower for the GPU than CDRAM.
-    //  - the system dialogs' memory budget (8.8 MB of main RAM): no system dialog is used (text is
-    //    typed on the built-in keyboard, osk.c), so vitaGL may have all of it. It used to get 4 MB,
-    //    which is probably why the system keyboard never opened on the console (0x800204c4).
+    //  - 4 MB of the system dialogs' memory budget (8.8 MB of main RAM). No system dialog is used
+    //    (text is typed on the built-in keyboard, osk.c), but the rest stays free for the PAF module
+    //    the system's installer needs in dev builds (0.59 gave vitaGL all of it, and PAF failed to
+    //    load with "no free physical page"; devtools.c also calls the installer before this init).
     // vitaGL fills them in that order (video RAM first for textures); after them comes the heap.
     // Note: the return value only says whether vitaGL fell back to another resolution.
     if (vglInitWithCustomSizes(0, SCREEN_W, SCREEN_H, 64 * 1024 * 1024, 95 * 1024 * 1024, 16 * 1024 * 1024,
-                               0x8C6000, SCE_GXM_MULTISAMPLE_NONE))
+                               4 * 1024 * 1024, SCE_GXM_MULTISAMPLE_NONE))
         host_log("vitaGL: requested resolution unavailable, using a fallback");
     vglWaitVblankStart(GL_TRUE);
 

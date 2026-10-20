@@ -498,3 +498,19 @@ timer waits for the frame before first; debug builds log how many MB of textures
 and the biggest ones outside CDRAM; `plainshaders=1` swaps every textured fragment shader for a
 plain texture read, to measure what the shaders cost. **To check on the console:** the title
 screen and a battle with and without `plainshaders=1`, and the new `[mem]` line.
+
+### 0.59 crashed at start: the installer ran out of memory (2026-10-20; runtime 0.60)
+0.56 installed 0.59 with the hand-installed copying updater (`updater: ok 16 files`); 0.59 then
+uninstalled that updater at its first start, after graphics init, and the console hung (a partial
+crash dump only); later starts crashed. The full dump (vita-parse-core, see "Vita gotchas" in
+development.md): `PC 0x0`, a prefetch abort in `scePromoterUtilityExit`. Loading PAF, which the
+system's installer needs, had failed with `0x80024302` (`SCE_KERNEL_ERROR_NO_FREE_PHYSICAL_PAGE`),
+and the cleanup called into the promoter module that never loaded (VitaShell returns at the first
+error instead). 0.59 had just given vitaGL the whole system dialogs' budget and more CDRAM.
+
+0.60: the cleanup only unloads what loaded; the game calls the installer only early in a start,
+before vitaGL takes memory (installing the updater now restarts the game once first); vitaGL gets
+4 MB of the dialogs' budget again (no dialog is used, but PAF likely needs the rest); every
+installer call is bracketed by a marker file, so a crash or hang in it turns the installer off for
+that build instead of repeating at every start. To leave 0.59: install 0.60 with VitaShell (0.59's
+own update path still crashes), after deleting `ux0:app/PKRVUPD01`.

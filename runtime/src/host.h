@@ -96,11 +96,13 @@ bool ui_download(const char *url, const char *path, const char *what, char *err,
 // Dev server (devtools.c): test builds and log upload. Dev builds only (PKR_DEV): a player's build
 // never replaces its own code or sends data anywhere but the game's servers.
 #ifdef PKR_DEV
+void dev_early(void);                  // before graphics init: the steps that need the system's installer
 void dev_start(const char *prev_log);  // after net_init: uploads the previous run's log
 bool dev_offer_update(void);           // start screen: installs a newer test build (restarts the app)
 void dev_send_log(void);               // L + R + START in game: uploads the current log
 void dev_frame(void);                  // main loop: shows upload results
 #else
+static inline void dev_early(void) {}
 static inline void dev_start(const char *prev_log) { (void)prev_log; }
 static inline bool dev_offer_update(void) { return false; }
 static inline void dev_send_log(void) {}

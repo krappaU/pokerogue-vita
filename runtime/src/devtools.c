@@ -318,28 +318,108 @@ static void updater_result(void) {
     }
 }
 
-// The updater is only needed during an install: uninstalled at every start (as VitaShell does with
-// its updater), also one installed by hand with VitaShell before the game carried its own.
-static void remove_updater(void) {
-#ifdef __vita__
-    if (!file_exists("ux0:app/" UPDATER_TITLE_ID "/eboot.bin")) return;
-    sceAppMgrDestroyOtherApp(); // the updater, if it hasn't quit yet
-    int r = delete_app(UPDATER_TITLE_ID);
-    host_log("[dev] updater app uninstalled%s", r < 0 ? " (failed)" : "");
-    if (r < 0) host_log("[dev] uninstalling the updater: error 0x%08X", (unsigned)r);
-#endif
+// The system's installer (updater/promoter.h) is only used early in a start, before vitaGL takes
+// the GPU and dialog memory: 0.59 called it after graphics init, its PAF module failed to load (no
+// free physical page) and the game crashed (and once the console hung). Every call is bracketed by
+// <data>/installer.txt ("<step> <commit>"); one still there at the next start never returned, and
+// the installer stays off for this build (<data>/installer-off.txt) until another build is
+// installed, so a crash or hang can't repeat at every start.
+static bool installer_off;
+static char installer_hung[100]; // the step that never returned, shown once the UI is up
+
+static void installer_check(void) {
+    char commit[64], step[100] = "", off_commit[64] = "";
+    running_commit(commit, sizeof commit);
+    if (read_pair("installer.txt", step, sizeof step, off_commit, sizeof off_commit)) {
+        snprintf(installer_hung, sizeof installer_hung, "%s", step);
+        host_log("[dev] the last start never came back from the system installer (%s); it stays off for this build",
+                 step);
+        write_pair("installer-off.txt", commit, step);
+        char path[700];
+        build_file(path, sizeof path, "installer.txt");
+        remove(path);
+    }
+    if (read_pair("installer-off.txt", off_commit, sizeof off_commit, step, sizeof step)) {
+        installer_off = !strcmp(off_commit, commit);
+        if (!installer_off) {
+            char path[700];
+            build_file(path, sizeof path, "installer-off.txt");
+            remove(path);
+        }
+    }
 }
 
-// Installs the updater app from the updater.vpk this app carries.
-static bool install_updater(const char *dir, char *err, size_t errn) {
 #ifdef __vita__
-    if (!unpack_vpk("app0:updater.vpk", dir, err, errn)) return false;
-    int r = promote_app(dir);
-    if (r < 0) snprintf(err, errn, "the system installer failed (0x%08X)", (unsigned)r);
-    return r >= 0;
-#else
-    snprintf(err, errn, "only on the Vita");
-    return false;
+static int installer_call(const char *step, const char *arg, bool install) {
+    char commit[64], path[700];
+    running_commit(commit, sizeof commit);
+    write_pair("installer.txt", step, commit);
+    host_log("[dev] system installer: %s...", step);
+    int r = install ? promote_app(arg) : delete_app(arg);
+    build_file(path, sizeof path, "installer.txt");
+    remove(path);
+    host_log("[dev] system installer: %s: %s (0x%08X)", step, r < 0 ? "failed" : "done", (unsigned)r);
+    return r;
+}
+#endif
+
+static void write_result(const char *line) {
+    char path[700];
+    build_file(path, sizeof path, "update/result.txt");
+    mkdirs_for(path);
+    FILE *f = fopen(path, "w");
+    if (f) {
+        fprintf(f, "%s\n", line);
+        fclose(f);
+    }
+}
+
+// Before graphics init. An update in progress (<data>/update/install-updater.txt, written by
+// dev_offer_update before it restarts the app): install the updater from the updater.vpk this app
+// carries, start it and quit. Right after an update (update/result.txt): uninstall the updater, as
+// VitaShell does with its own; also one installed by hand before the game carried its own.
+void dev_early(void) {
+    if (!app_dir) return;
+    installer_check();
+#ifdef __vita__
+    char dir[700], step[760], upd[760], err[600] = "";
+    build_file(dir, sizeof dir, "update");
+    snprintf(step, sizeof step, "%s/install-updater.txt", dir);
+    snprintf(upd, sizeof upd, "%s/updater", dir);
+    if (file_exists(step)) {
+        remove(step);
+        if (installer_off) {
+            write_result("error the system installer is off for this build (it never came back once)");
+            return;
+        }
+        if (!unpack_vpk("app0:updater.vpk", upd, err, sizeof err)) {
+            char line[700];
+            snprintf(line, sizeof line, "error couldn't unpack the updater: %s", err);
+            write_result(line);
+            return;
+        }
+        int r = installer_call("installing the updater", upd, true);
+        if (r < 0) {
+            char line[700];
+            snprintf(line, sizeof line, "error the system installer couldn't install the updater (0x%08X)", (unsigned)r);
+            write_result(line);
+            return;
+        }
+        char path[700];
+        build_file(path, sizeof path, "dev-update.vpk");
+        remove(path);
+        build_file(path, sizeof path, "dev-update.id");
+        remove(path);
+        host_log("[dev] starting the updater");
+        sceAppMgrLaunchAppByUri(0xFFFFF, "psgm:play?titleid=" UPDATER_TITLE_ID);
+        sceKernelExitProcess(0);
+        write_result("error the updater didn't start");
+        return;
+    }
+    snprintf(step, sizeof step, "%s/result.txt", dir);
+    if (installer_off || !file_exists(step) || !file_exists("ux0:app/" UPDATER_TITLE_ID "/eboot.bin")) return;
+    sceAppMgrDestroyOtherApp(); // the updater, if it hasn't quit yet
+    installer_call("uninstalling the updater", UPDATER_TITLE_ID, false);
 #endif
 }
 
@@ -347,7 +427,13 @@ bool dev_offer_update(void) {
     const char *builds = g_cfg.dev_builds ? g_cfg.dev_builds : DEV_BUILDS_URL;
     if (!app_dir) return false;
     updater_result();
-    remove_updater();
+    if (installer_hung[0]) {
+        char msg[400];
+        snprintf(msg, sizeof msg, "The last start never came back from the system's installer\n(%s).\n\n"
+                 "Test builds from here are off until another build\nis installed with VitaShell.", installer_hung);
+        installer_hung[0] = 0;
+        ui_message_wait(msg);
+    }
     if (!strcmp(builds, "off")) return false;
     char commit[64], inst_id[128] = "", inst_commit[64] = "";
     running_commit(commit, sizeof commit);
@@ -403,38 +489,39 @@ bool dev_offer_update(void) {
         }
         return false;
     }
-    overlay_present("PokeRogue\n\nUnpacking the test build...");
-    char dir[700], files[760], upd[760], ready[760];
-    build_file(dir, sizeof dir, "update");
-    remove_tree(dir);
-    snprintf(files, sizeof files, "%s/files", dir);
-    snprintf(upd, sizeof upd, "%s/updater", dir);
-    bool unpacked = unpack_build(vpk, files, err, sizeof err);
-    if (unpacked) overlay_present("PokeRogue\n\nInstalling the updater...");
-    if (!unpacked || !install_updater(upd, err, sizeof err)) {
-        host_log("[dev] %s failed: %s", unpacked ? "installing the updater" : "unpacking", err);
-        remove_tree(dir);
-        snprintf(msg, sizeof msg, "%s failed: %s\n\nThe download is in %s:\ninstall it with VitaShell.",
-                 unpacked ? "Installing the updater" : "Unpacking", err, vpk);
+    if (installer_off) {
+        host_log("[dev] the system installer is off for this build; the download is in %s", vpk);
+        snprintf(msg, sizeof msg, "Downloaded to %s.\n\nInstall it with VitaShell (press X on the file).", vpk);
         ui_message_wait(msg);
         return false;
     }
-    snprintf(ready, sizeof ready, "%s/ready.txt", dir);
-    FILE *f = fopen(ready, "w");
-    if (f) {
-        fprintf(f, "%s\n", id);
-        fclose(f);
+    overlay_present("PokeRogue\n\nUnpacking the test build...");
+    char dir[700], files[760], path[760];
+    build_file(dir, sizeof dir, "update");
+    remove_tree(dir);
+    snprintf(files, sizeof files, "%s/files", dir);
+    if (!unpack_build(vpk, files, err, sizeof err)) {
+        host_log("[dev] unpacking failed: %s", err);
+        remove_tree(dir);
+        snprintf(msg, sizeof msg, "Unpacking failed: %s\n\nThe download is in %s:\ninstall it with VitaShell.", err, vpk);
+        ui_message_wait(msg);
+        return false;
+    }
+    // The updater reads ready.txt; this app, restarted, installs the updater first (dev_early).
+    // The download stays until the updater is started, for VitaShell if something fails.
+    const char *steps[] = {"ready.txt", "install-updater.txt"};
+    for (int i = 0; i < 2; i++) {
+        snprintf(path, sizeof path, "%s/%s", dir, steps[i]);
+        FILE *f = fopen(path, "w");
+        if (f) {
+            fprintf(f, "%s\n", id);
+            fclose(f);
+        }
     }
     write_pair("dev-build.txt", id, "pending");
-    remove(vpk);
-    build_file(vpk, sizeof vpk, "dev-update.id");
-    remove(vpk);
-    host_log("[dev] test build %s unpacked; starting the updater", id);
+    host_log("[dev] test build %s unpacked; restarting to install the updater", id);
     overlay_present("PokeRogue\n\nInstalling the test build...");
-#ifdef __vita__
-    sceAppMgrLaunchAppByUri(0xFFFFF, "psgm:play?titleid=" UPDATER_TITLE_ID);
-    sceKernelExitProcess(0);
-#endif
-    ui_message_wait("The updater didn't start.\nClose the game and start PokeRogue Updater by hand.");
+    plat_relaunch(0, NULL);
+    ui_message_wait("The app didn't restart.\nClose it and start it again to install the test build.");
     return true;
 }

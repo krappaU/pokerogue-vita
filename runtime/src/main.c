@@ -775,6 +775,7 @@ int main(int argc, char **argv) {
 
 
     mem_report("start");
+    dev_early(); // may start the updater and quit
     if (!plat_init(g_cfg.win_w, g_cfg.win_h)) return 1;
     mem_report("after graphics init");
 
