@@ -969,6 +969,20 @@ JSValue bitmap_ref(JSContext *ctx, JSValueConst obj) {
     return JS_UNDEFINED;
 }
 
+// A canvas whose pixels were never drawn since it was sized (resized canvases allocate lazily):
+// it is all transparent, so an upload needs no pixels (gl.c). Its size goes to *w, *h.
+bool canvas_is_blank(JSContext *ctx, JSValueConst obj, int *w, int *h) {
+    c2d *c = JS_GetOpaque(obj, canvas_class);
+    if (!c && JS_IsObject(obj) && !JS_GetOpaque(obj, bitmap_class)) {
+        JSValue inner = JS_GetPropertyStr(ctx, obj, "_native");
+        c = JS_GetOpaque(inner, canvas_class);
+        JS_FreeValue(ctx, inner); // the element keeps it alive
+    }
+    if (!c || !c->released) return false;
+    *w = c->w, *h = c->h;
+    return true;
+}
+
 const uint8_t *pixels_from_js(JSContext *ctx, JSValueConst obj, int *w, int *h, bool *owned) {
     *owned = false;
     bitmap *b = JS_GetOpaque(obj, bitmap_class);
