@@ -562,6 +562,7 @@ typedef struct {
     uint16_t w, h;
     bool has_src, flip, premul, evicted;
     uint8_t restores; // times it came back: each doubles the idle time before it can go again
+    uint32_t evicted_at; // frame number
 } tex_rec;
 static tex_rec texrec[TEX_MAX];
 static uint32_t gl_frame;
@@ -600,6 +601,7 @@ static const uint8_t *unpack(const uint8_t *src, int w, int h, bool owned, bool 
 // Re-uploads an evicted texture; it must be bound to the active unit.
 static void tex_restore(JSContext *ctx, GLuint id) {
     tex_rec *t = &texrec[id];
+    double t0 = host_now_ms();
     int w, h;
     bool owned, fr;
     const uint8_t *px = pixels_from_js(ctx, t->src, &w, &h, &owned);
@@ -617,6 +619,11 @@ static void tex_restore(JSContext *ctx, GLuint id) {
     evictable_bytes += (size_t)t->w * t->h * 4;
     if (t->restores < 4) t->restores++;
     n_restores++;
+    // The PNG is decoded again, in the middle of the frame that needs it: a stutter if it is large.
+    double ms = host_now_ms() - t0;
+    if (ms >= 30)
+        host_log("[gl] texture %u (%dx%d) re-uploaded in %.0f ms, %u frames after its eviction (back %d times)", id, w, h,
+                 ms, gl_frame - t->evicted_at, t->restores);
 }
 
 static void tex_use(JSContext *ctx, GLuint id) {
@@ -666,8 +673,11 @@ static void textures_evict(void) {
             tex_rec *t = &texrec[id];
             if (!t->has_src || t->evicted) continue;
             // Textures used every few waves (the shop, per-wave UI) would otherwise be evicted and
-            // decoded again each time: 20-30 at once froze the game for half a second.
-            uint32_t idle = pressure ? TEX_PRESSURE_IDLE_FRAMES : (uint32_t)TEX_IDLE_FRAMES << t->restores;
+            // decoded again each time: 20-30 at once froze the game for half a second. Under
+            // pressure too, though less (0.66: battle menus used every turn were evicted between
+            // turns at ~12 fps, and each came back with a stutter when a button opened it).
+            uint32_t idle = pressure ? (uint32_t)TEX_PRESSURE_IDLE_FRAMES << (t->restores < 2 ? t->restores : 2)
+                                     : (uint32_t)TEX_IDLE_FRAMES << t->restores;
             if (gl_frame - t->last_used < idle) continue;
             if (t->last_used < oldest) oldest = t->last_used, victim = id;
         }
@@ -683,6 +693,7 @@ static void textures_evict(void) {
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, clear);
         tex_account(victim, 4);
         texrec[victim].evicted = true;
+        texrec[victim].evicted_at = gl_frame;
         evictable_bytes -= (size_t)texrec[victim].w * texrec[victim].h * 4;
         n_evictions++;
         glBindTexture(GL_TEXTURE_2D, oid(st.bound_texture[0]));

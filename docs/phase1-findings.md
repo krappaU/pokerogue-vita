@@ -618,3 +618,25 @@ game stood still meanwhile: the stutters that sometimes swallowed a button press
 **To measure:** the `[gl] shader variants precompiled: N in S s` line on the first start after
 installing (expected ~15-20 s, under the loading screen) and on the next start (from the cache),
 and whether the game's own start (after `[phaser] renderer`) got shorter.
+
+### Stutters after precompiling (log65, 0.66, 2026-10-20; runtime 0.67)
+The first start built all 19 shader variants under the loading screen (25.6 s in one 42 s frame;
+0.3-3.8 s each), and none were built in play. Frame rates were better, but play still stuttered:
+in battle, most 10 s windows had a frame of 400-1000 ms, some several of ~600 ms (p95 590 ms).
+One was a garbage collection (1.5 s, JS heap 62 MB). The sampler put 30% of JS time under the
+game's gamepad handler (`processInput`), and the GPU took 53-57 ms per frame in that battle.
+Texture memory was nearly full (video RAM 2.3 of 95 MB free, RAM pool 6.9 of 64), so eviction ran
+under pressure: anything not drawn for 90 frames (~7 s at 12 fps) was dropped, however often it
+came back, and re-decoded from its PNG in the frame that drew it next. The log shows 1-11 such
+re-uploads per 10 s; battle menus used every turn fit that pattern.
+
+0.67, to find and cut the stutters:
+- `[slow]` lines (profiler.c, while sampling): for each frame with 250 ms or more of JS, the stacks
+  its time went to. Each sample is charged with the time since the one before, so a long native
+  call or a garbage collection shows up on the stack right after it.
+- `[gl] texture N (WxH) re-uploaded in X ms, F frames after its eviction (back K times)` for each
+  re-upload of 30 ms or more.
+- Under pressure, a texture that came back now waits 2x, then 4x, 90 frames before it can go again.
+- `[prof] (this report took N ms)`: the 30 s report writes profile.txt to the card.
+**Next:** if the re-uploads are the stutters, decode them on the other cores (the image thread)
+instead of in the frame.

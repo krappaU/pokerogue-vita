@@ -974,7 +974,7 @@ int main(int argc, char **argv) {
         }
         perf_add(js_ms);
         module_list_flush();
-        prof_frame();
+        prof_frame(js_ms);
 
         set_phase("drawing");
         double t_draw = host_now_ms();

@@ -46,6 +46,7 @@ void prof_init(void) {
 // earlier than sample_ms into a main-loop step, so time spent in C between two JS runs (GL, swap,
 // waiting) isn't charged to whatever JS runs first afterwards.
 static double next_sample;
+static double last_sample_t; // see slow_report
 
 // A random interval averaging sample_ms: a fixed one lines up with the frame (each frame starts a
 // step) and keeps sampling the same spot.
@@ -58,7 +59,8 @@ static double sample_gap(void) {
 // Time spent in one step of the main loop (called by the loop when it moves to the next step).
 void prof_phase(const char *name, double ms) {
     if (!started) return;
-    if (g_cfg.sample_ms > 0) next_sample = host_now_ms() + sample_gap();
+    last_sample_t = host_now_ms();
+    if (g_cfg.sample_ms > 0) next_sample = last_sample_t + sample_gap();
     for (int i = 0; i < MAX_PHASES; i++) {
         if (phase_names[i] == name || !phase_names[i]) {
             phase_names[i] = name;
@@ -90,18 +92,29 @@ static char *arena_strdup(const char *s) {
     return p;
 }
 
-static void count_stack(const char *key) {
+// Returns the stored copy of the stack (NULL if dropped).
+static const char *count_stack(const char *key) {
     unsigned h = hash(key) % MAX_STACKS;
     for (int probe = 0; probe < MAX_STACKS; probe++, h = (h + 1) % MAX_STACKS) {
         if (!stacks[h].key) {
-            if (n_stacks >= MAX_STACKS * 3 / 4 || !(stacks[h].key = arena_strdup(key))) { n_dropped++; return; }
+            if (n_stacks >= MAX_STACKS * 3 / 4 || !(stacks[h].key = arena_strdup(key))) { n_dropped++; return NULL; }
             stacks[h].count = 1;
             n_stacks++;
-            return;
+            return stacks[h].key;
         }
-        if (!strcmp(stacks[h].key, key)) { stacks[h].count++; return; }
+        if (!strcmp(stacks[h].key, key)) { stacks[h].count++; return stacks[h].key; }
     }
+    return NULL;
 }
+
+// Slow frames: each sample of the current frame, with the time since the sample before it (or
+// since the main-loop step began). A long native call or a garbage collection shows up as a long
+// gap before the next sample, which is charged to that sample's stack (usually the caller's).
+#define SLOW_FRAME_MS 250
+#define SLOW_REPORTS 20 // per 30 s report, to bound the log
+#define FRAME_SAMPLES 1024
+static struct { const char *key; double ms; } fsamp[FRAME_SAMPLES];
+static int n_fsamp, n_slow;
 
 // "name@preload-helper-CoW3Hs31.js:64:120" -> "name@preload-helper:64:120": the build hash makes
 // stacks long (and they're stored for each distinct stack).
@@ -135,8 +148,45 @@ void prof_poll(JSContext *ctx) {
     static char buf[4096];
     if (JS_SampleStack(ctx, buf, sizeof buf) > 0 && buf[0]) {
         shorten(buf);
-        count_stack(buf);
+        const char *key = count_stack(buf);
         n_samples++;
+        double now = host_now_ms();
+        if (n_fsamp < FRAME_SAMPLES) fsamp[n_fsamp].key = key, fsamp[n_fsamp++].ms = now - last_sample_t;
+        last_sample_t = now;
+    }
+}
+
+// The innermost `n` frames of a stack ("a;b;c;d" -> "c;d" for n = 2).
+static const char *stack_tail(const char *key, int n) {
+    const char *p = key + strlen(key);
+    while (p > key) {
+        if (p[-1] == ';' && --n == 0) break;
+        p--;
+    }
+    return p;
+}
+
+// A frame whose JS ran for SLOW_FRAME_MS or more: where its time went, by stack.
+static void slow_report(double js_ms) {
+    if (n_slow++ >= SLOW_REPORTS) return;
+    static struct { const char *key; double ms; } agg[FRAME_SAMPLES];
+    int na = 0;
+    double sampled = 0;
+    for (int i = 0; i < n_fsamp; i++) {
+        sampled += fsamp[i].ms;
+        int k = 0;
+        while (k < na && agg[k].key != fsamp[i].key) k++;
+        if (k == na) agg[na].key = fsamp[i].key, agg[na++].ms = 0;
+        agg[k].ms += fsamp[i].ms;
+    }
+    host_log("[slow] frame with %.0f ms of JS: %d samples over %.0f ms; the most time in:", js_ms, n_fsamp, sampled);
+    for (int r = 0; r < 3 && na; r++) {
+        int best = 0;
+        for (int k = 1; k < na; k++)
+            if (agg[k].ms > agg[best].ms) best = k;
+        if (agg[best].ms < 20) break;
+        host_log("[slow]   %4.0f ms  %.300s", agg[best].ms, agg[best].key ? stack_tail(agg[best].key, 8) : "(stack not stored)");
+        agg[best] = agg[--na];
     }
 }
 
@@ -293,15 +343,20 @@ static void report(void) {
     }
 }
 
-// Called once per frame: reports every 30 s, then starts counting afresh.
-void prof_frame(void) {
+// Called once per frame with its JS time: reports a slow frame at once, and everything every 30 s,
+// then starts counting afresh.
+void prof_frame(double js_ms) {
     if (!started) return;
+    if (js_ms >= SLOW_FRAME_MS && n_fsamp) slow_report(js_ms);
+    n_fsamp = 0;
     double now = host_now_ms();
     if (now - last_report < REPORT_MS) return;
     last_report = now;
     report();
+    host_log("[prof] (this report took %.0f ms)", host_now_ms() - now);
     for (int i = 0; i < MAX_STACKS; i++) stacks[i].key = NULL;
     arena_used = 0;
+    n_slow = 0;
     n_stacks = 0, n_samples = 0, n_dropped = 0, phase_total = 0;
     for (int i = 0; i < MAX_PHASES; i++) phase_ms[i] = 0;
 }

@@ -169,7 +169,7 @@ void mem_report(const char *stage); // largest malloc + system free memory, to t
 void prof_init(void);
 void prof_phase(const char *name, double ms); // time spent in one main-loop step
 void prof_poll(JSContext *ctx); // from the JS interrupt handler
-void prof_frame(void);          // once per frame
+void prof_frame(double js_ms); // once per frame, with its JS time (slow frames are reported)
 void net_poll(JSContext *ctx);                 // deliver finished requests
 void net_pump(void);                           // progress transfers only (from long JS runs)
 void net_set_origin(const char *page_url);
