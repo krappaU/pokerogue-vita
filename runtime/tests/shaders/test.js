@@ -5,6 +5,8 @@
 // and compares the pixels byte for byte. Shaders: PokeRogue's sprite and field shaders
 // (third_party/test/pokerogue, tests/fetch_test_deps.sh) and Phaser's multi-texture shader, all with
 // 4 texture units as the runtime gives Phaser. Logs "[test] PASS/FAIL" lines and "[test] DONE ...".
+// On vitaGL (Vita3K in CI) pixels can't be read back (always zeros): there the shaders are compiled
+// by the Vita's own shader compiler, both ways, and drawn without GL errors, but not compared.
 import * as Phaser from "./phaser.js";
 
 const rt = globalThis.__rt;
@@ -22,6 +24,7 @@ const W = 96, H = 32, CELL = 16, UNITS = 4;
 const canvas = document.createElement("canvas");
 canvas.width = W, canvas.height = H;
 const gl = canvas.getContext("webgl");
+const vitagl = /SGX543/.test(String(gl.getParameter(gl.RENDERER)));
 
 // 4 textures, 8x8: a fixed palette (the colours the variant tests swap) and pseudo-random texels,
 // some transparent or half transparent.
@@ -204,6 +207,7 @@ async function phaserShader(name) {
 
 async function run() {
   if (!rt || !rt.rewriteShader) throw new Error("js/webgl.js has no rewriteShader");
+  if (vitagl) console.log("[test] note: vitaGL: pixel readback not available, pixels not compared");
   const text = async (f) => (await fetch("pokerogue/" + f)).text();
   const parse = (src) => Phaser.Renderer.WebGL.Utils.parseFragmentShaderMaxTextures(src, UNITS);
   const spriteVert = await text("sprite-shader.vert");
@@ -225,6 +229,16 @@ async function run() {
     }
     const missing = expected.filter((r) => !marks[r].test(fixed.fragSource) || marks[r].test(orig.fragSource));
     report(name + ": rewrites applied (" + expected.join(", ") + ")", !missing.length, missing.length ? "missing: " + missing.join(", ") : "");
+    if (vitagl) {
+      while (gl.getError()) { /* earlier errors aren't this shader's */ }
+      for (const uniforms of Object.values(CASES[name])) {
+        render(orig, { ...SPRITE_DEFAULTS, ...uniforms });
+        render(fixed, { ...SPRITE_DEFAULTS, ...uniforms });
+      }
+      const err = gl.getError();
+      report(name + ": draws (both ways, every case) without GL errors", !err, err ? "GL error " + err : "");
+      continue;
+    }
     const exact = render(fixed, SPRITE_DEFAULTS), rough = render(fixed, SPRITE_DEFAULTS, roughBuf);
     const before = diff(render(orig, SPRITE_DEFAULTS), render(orig, SPRITE_DEFAULTS, roughBuf)).n;
     report(name + ": tint effects 0.99/1.99 draw as 1/2", !diff(exact, rough).n && before > 0,

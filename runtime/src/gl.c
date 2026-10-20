@@ -877,9 +877,13 @@ FN(w_getProgramInfoLog) {
     glGetProgramInfoLog(oid(A(0)), sizeof log, NULL, log);
     return JS_NewString(ctx, log);
 }
+// The source as given to the GL (after js/webgl.js's changes), from our own copy: vitaGL's
+// glGetShaderSource returns nothing.
 FN(w_getShaderSource) {
+    GLuint id = oid(A(0));
+    if (id < MAX_GL_IDS && shader_src[id]) return JS_NewString(ctx, shader_src[id]);
     char src[65536] = "";
-    glGetShaderSource(oid(A(0)), sizeof src, NULL, src);
+    glGetShaderSource(id, sizeof src, NULL, src);
     return JS_NewString(ctx, src);
 }
 FN(w_getShaderPrecisionFormat) {
