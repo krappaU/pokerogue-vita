@@ -1094,9 +1094,9 @@ static void prof_draw(int verts, double t0) {
 
 // After the frame's swap (gl_after_frame): logs a profiled frame, or starts one.
 static void prof_after_frame(void) {
-    if (prof_on && !n_prof) { // nothing drawn (loading screens): profile the next frame instead
+    if (prof_on && !n_prof) { // nothing drawn (loading screens): try again a little later
         prof_on = false;
-        prof_next = 0;
+        prof_next = host_now_ms() + 500;
     }
     if (prof_on) {
         prof_on = false;

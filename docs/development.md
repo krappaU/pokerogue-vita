@@ -214,6 +214,14 @@ without a copy.
   their `SHADER_NAME`, PokeRogue's as "PokeRogue sprite" / "PokeRogue field"). Each wait also ends
   the GPU's scene, which every draw pays for too (about the smallest draw's time, in the line):
   compare programs with it, not with the `[perf]` line's GPU time.
+- `js/webgl.js` rewrites the game's fragment shaders so the Vita's shader compiler gets cheaper code
+  for the same pixels (`rewriteShader`, 0.62): Phaser's texture pick reads every unit and then
+  chooses (no texture read inside an if-chain), PokeRogue's colour loops are skipped when their
+  palette is empty, and a condition that mixes a per-pixel test with a setting tests the setting
+  first, on its own (tera, day/night, terrain). The log names what each shader got (`[shaderfix]`).
+  `tests/shaders` renders each rewritten shader against the original (PokeRogue's sprite and field
+  shaders of a pinned commit, Phaser's multi-texture shader) with the settings the game uses and
+  compares every byte. `shaderfix=0` in config.txt keeps the originals, to compare on the console.
 
 ## Memory: texture eviction
 Phaser never frees textures. When GPU texture memory exceeds 64 MB, image-backed textures not drawn

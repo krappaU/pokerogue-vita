@@ -23,9 +23,98 @@
     src = splitSamplerArrays(src, arrays);
     if (shader) shader.pkrSamplerArrays = arrays;
     if (g.__shaderHook) src = g.__shaderHook(src); // set by a debug script (see bootstrap.js)
+    if (rt.shaderFix) {
+      const r = rewriteShader(src);
+      if (r.applied.length) {
+        const name = (/#define SHADER_NAME (\w+)/.exec(src) || [])[1] ||
+          (/spriteColors/.test(src) ? "PokeRogue sprite" : /terrainColor/.test(src) ? "PokeRogue field" : "a shader");
+        const line = "[shaderfix] " + name + ": " + r.applied.join(", ");
+        if (!shaderFixLogged.has(line)) shaderFixLogged.add(line), console.log(line);
+      }
+      src = r.src;
+    }
     if (N.plainShaders) src = plainShader(src);
     return nativeShaderSource.call(this, shader, src);
   };
+
+  // Rewrites that leave every pixel the same but give vitaGL's GLSL -> Cg -> SGX compiler cheaper
+  // code. On the console (0.61, gpuprofile=1) one full-screen quad of PokeRogue's field shader took
+  // ~19 ms of GPU time and one Pokémon of its sprite shader ~11 ms, against ~3 ms for a whole battle
+  // with plain texture reads (plainshaders=1). The suspects: a condition that mixes a per-pixel test
+  // with a setting seems to run its block for every pixel (both sides computed), the sprite shader's
+  // 32-step colour loops, and Phaser's texture read inside an if-chain (no early fetch). Each rewrite
+  // matches a pattern and leaves shaders without it alone; tests/shaders compares the pixels with and
+  // without. config.txt shaderfix=0 (debug builds) or __rt.shaderFix = false keeps the originals.
+  rt.shaderFix = N.shaderFix !== false;
+  const shaderFixLogged = new Set();
+
+  // The index just past the block that starts at src[open] === "{".
+  function blockEnd(src, open) {
+    for (let i = open, depth = 0; i < src.length; i++) {
+      if (src[i] === "{") depth++;
+      else if (src[i] === "}" && --depth === 0) return i + 1;
+    }
+    return -1;
+  }
+  // `if (A && B) { ... }` -> `if (A) { if (B) { ... } }` for every match of re (A, B from its groups
+  // through split), unless an else follows (it would change owner).
+  function splitIf(src, re, split) {
+    let out = "", from = 0, n = 0, m;
+    re.lastIndex = 0;
+    while ((m = re.exec(src))) {
+      const open = m.index + m[0].length - 1, end = blockEnd(src, open);
+      if (end < 0 || /^\s*else\b/.test(src.slice(end))) continue;
+      const [outer, inner] = split(m);
+      out += src.slice(from, m.index) + "if (" + outer + ") { if (" + inner + ") " + src.slice(open, end) + " }";
+      from = end;
+      re.lastIndex = end;
+      n++;
+    }
+    return [out + src.slice(from), n];
+  }
+  // `for (...) { if (C[i].a == 0.0) break; ... }` -> `if (C[0].a != 0.0) { for ... }`
+  function guardLoops(src) {
+    const re = /for \(int i = 0; i < 32; i\+\+\) \{\s*if \((\w+)\[i\](\.a|\[3\]) == 0\.0\)\s*break;/g;
+    let out = "", from = 0, n = 0, m;
+    while ((m = re.exec(src))) {
+      const end = blockEnd(src, src.indexOf("{", m.index));
+      if (end < 0) continue;
+      out += src.slice(from, m.index) + "if (" + m[1] + "[0]" + m[2] + " != 0.0) { " + src.slice(m.index, end) + " }";
+      from = end;
+      re.lastIndex = end;
+      n++;
+    }
+    return [out + src.slice(from), n];
+  }
+  function rewriteShader(src) {
+    const applied = [];
+    let n;
+    // Phaser's texture pick (WebGL Utils.parseFragmentShaderMaxTextures, sampler arrays already split):
+    // every unit read unconditionally, then the result chosen.
+    src = src.replace(/if \(outTexId < 0\.5\)\s*\{\s*pkr_texture = texture2D\(\w+, outTexCoord\);\s*\}(?:\s*else\s*(?:if \(outTexId < \d+\.5\))?\s*\{\s*pkr_texture = texture2D\(\w+, outTexCoord\);\s*\})+/g, (chain) => {
+      const s = [...chain.matchAll(/texture2D\((\w+), outTexCoord\)/g)].map((x) => x[1]);
+      let pick = "pkr_t" + (s.length - 1);
+      for (let i = s.length - 2; i >= 0; i--) pick = "(outTexId < " + i + ".5 ? pkr_t" + i + " : " + pick + ")";
+      applied.push("texture pick (" + s.length + ")");
+      return s.map((name, i) => "vec4 pkr_t" + i + " = texture2D(" + name + ", outTexCoord);").join(" ") + " pkr_texture = " + pick + ";";
+    });
+    // PokeRogue's colour loops stop at the first entry with alpha 0: skip them when that's the first.
+    [src, n] = guardLoops(src);
+    if (n) applied.push("colour loops (" + n + ")");
+    // Per-pixel test && setting: the setting first, on its own.
+    const splits = [
+      [/if \(color\.a > 0\.0 && (all\(lessThan\(vec3\(0\.0\), teraColor\)\))\) \{/g, (m) => [m[1], "color.a > 0.0"], "tera"],
+      [/if \(color\.a > 0\.0 && (!ignoreTimeTint)\) \{/g, (m) => [m[1], "color.a > 0.0"], "day/night"],
+      [/if \(\s*(terrainColorRatio > 0\.0)\s*&& (\(1\.0 - terrainColorRatio\) < outTexCoord\.y)\s*&& (color\.a > 0\.0)\s*&& (\(any\(lessThan\(vec3\(0\.0\), terrainColor\)\)\))\s*\) \{/g,
+        (m) => [m[1] + " && " + m[4], m[2] + " && " + m[3]], "terrain"],
+    ];
+    for (const [re, split, name] of splits) {
+      [src, n] = splitIf(src, re, split);
+      if (n) applied.push(name);
+    }
+    return { src, applied };
+  }
+  rt.rewriteShader = rewriteShader; // tests/shaders
 
   // config.txt plainshaders=1 (debug builds, measuring only): a textured fragment shader becomes
   // "sample the texture, nothing else" (its first texture2D call, unit 0's sampler for Phaser's

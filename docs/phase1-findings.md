@@ -535,3 +535,23 @@ then tera, day/night and shadow branches, all in highp; `FieldSpritePipeline` (t
 other sprites) picks the texture with an `if` per unit, then day/night and terrain branches. How
 vitaGL's GLSL-to-Cg path compiles those loops and branches for the SGX is the open question. Next:
 GPU time per shader program, then shader rewrites that keep the output identical.
+
+### GPU time per shader (log40/log42, 0.61, 2026-10-20; PokeRogue live build of that day)
+`gpuprofile=1` (one frame every 10 s waits for the GPU after each draw; ~0.8 ms of that is the
+wait's own scene overhead per draw). With Phaser told of 4 texture units (log40), in battle:
+PokeRogue's field shader 37-58 ms in 3-7 draws, of which the full-screen arena backdrop alone,
+one quad, ~19.5 ms; PokeRogue's sprite shader ~10-12 ms per Pokémon (11-28 ms in 1-6 draws);
+Phaser's multi-texture shader ~1-3 ms per draw, up to 10 ms for a full-screen one (5-57 ms per
+frame). With 16 units (log42) the field quad stayed at ~19 ms, but Phaser's biggest draws took
+~19 ms instead of ~10: the texture if-chain costs Phaser's shader, not the field's. With 1 unit
+the sprite shader can't link (it reads `uMainSampler[1]` for the tera pattern) and the game stops.
+The sprite shader reads its texture unconditionally, so its cost is elsewhere: its 32-step colour
+loops and blocks under conditions that mix a per-pixel test with a setting (tera, day/night), which
+the compiler may run for every pixel. The field shader has such a block too (terrain, with two
+RGB/HSL conversions).
+
+0.62: `js/webgl.js` rewrites those shaders for the same pixels (texture pick without branches,
+colour loops skipped when their palette is empty, setting tested first), checked byte for byte by
+`tests/shaders` on the desktop (23 checks; a deliberately broken rewrite fails 11). The profiler no
+longer waits for the GPU every frame on screens with nothing drawn. **To measure on the console:**
+`gpuprofile=1`, and one run with `shaderfix=0` for the old numbers.

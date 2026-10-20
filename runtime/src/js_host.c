@@ -1016,6 +1016,7 @@ JSContext *host_js_init(void) {
 #ifdef PKR_DEBUG
     JS_SetPropertyStr(ctx, native, "debug", JS_TRUE); // debug build: debug.js, the probes' hooks
     JS_SetPropertyStr(ctx, native, "plainShaders", JS_NewBool(ctx, g_cfg.plain_shaders)); // js/webgl.js
+    JS_SetPropertyStr(ctx, native, "shaderFix", JS_NewBool(ctx, !g_cfg.no_shader_fix));
 #else
     JS_SetPropertyStr(ctx, native, "debug", JS_FALSE);
 #endif

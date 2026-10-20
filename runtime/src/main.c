@@ -590,6 +590,7 @@ static void save_screenshot(const char *path) {
 //   plainshaders=1                  measuring only: every textured fragment shader just samples its texture
 //                                   (wrong colours, effects gone), to see how much GPU time the shaders cost
 //   gpuprofile=1                    every 10 s, GPU time per shader program for one frame ([gpu] lines)
+//   shaderfix=0                     the game's shaders as they are, without js/webgl.js's rewrites (to compare)
 // Dev builds only (devtools.c):
 //   devserver=https://host/         log server for log upload (tools/devserver), devkey=<its key>
 //   devbuilds=off|<url>             test builds: off, or another build.json than the dev-build release
@@ -672,6 +673,8 @@ static void load_config_file(void) {
             g_cfg.plain_shaders = atoi(v) != 0;
         } else if (!strcmp(k, "gpuprofile")) {
             g_cfg.gpu_profile = atoi(v) != 0;
+        } else if (!strcmp(k, "shaderfix")) {
+            g_cfg.no_shader_fix = atoi(v) == 0;
         } else if (!strcmp(k, "profile")) {
             g_cfg.no_profile = atoi(v) == 0;
 #endif
