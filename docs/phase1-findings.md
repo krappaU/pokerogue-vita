@@ -565,3 +565,13 @@ apparently fails, and the colour is multiplied by whatever texture is bound (rec
 they bind Phaser's white texture). 0.63 rounds the tint effect once (`floor(x + 0.5)`) in every
 shader that tests it; `tests/shaders` draws with 0.99/1.99 and checks they come out as 1/2, and that
 everything else stays byte for byte. **Not yet seen on the console.**
+
+### Shader rewrites on the console (log48/log49, 0.63, 2026-10-20)
+The stats graph is right with the rewrites and wrong with `shaderfix=0`: the inexact tint effect
+was the cause. GPU time (`gpuprofile=1`), rewrites on (log48) against `shaderfix=0` (log49): the
+field shader's full-screen quad 18.0 ms against 20.3 in battle, 17.2 against 18.9 on the title
+screen; Phaser's shader on the title screen 10.5 ms against 12.0 for 5 draws (biggest 4.8 against
+5.8). PokeRogue's sprite shader stayed ~11 ms per Pokémon (different Pokémon in the two runs). So
+the rewrites save ~10-15%; most of the fragment cost is elsewhere (a plain texture read drew a
+whole battle in ~3 ms). Next: a benchmark that draws each shader full-screen with one part removed
+at a time, to find which part costs.
