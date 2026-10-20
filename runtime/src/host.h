@@ -32,6 +32,7 @@ typedef struct {
     bool plain_shaders;      // config.txt plainshaders=1 (debug builds): trivial fragment shaders, to measure
     bool gpu_profile;        // config.txt gpuprofile=1 (debug builds): GPU time per shader, one frame every 10 s
     bool no_shader_fix;      // config.txt shaderfix=0 (debug builds): the game's shaders without js/webgl.js's rewrites
+    bool bench;              // config.txt bench=shaders (dev builds): the shader benchmark (bench/) instead of the game
     int profile_rate;        // JS operations between samples (config.txt profile_rate=N; 0: QuickJS's 10000)
     double sample_ms;        // at most one sample per this many ms, so samples follow time rather than
                              // operation counts (config.txt sample_ms=1; 0: every check)
@@ -102,12 +103,14 @@ void dev_early(void);                  // before graphics init: the steps that n
 void dev_start(const char *prev_log);  // after net_init: uploads the previous run's log
 bool dev_offer_update(void);           // start screen: installs a newer test build (restarts the app)
 void dev_send_log(void);               // L + R + START in game: uploads the current log
+void dev_send_bench_log(void);         // the benchmark page (bench/) is done: uploads its log
 void dev_frame(void);                  // main loop: shows upload results
 #else
 static inline void dev_early(void) {}
 static inline void dev_start(const char *prev_log) { (void)prev_log; }
 static inline bool dev_offer_update(void) { return false; }
 static inline void dev_send_log(void) {}
+static inline void dev_send_bench_log(void) {}
 static inline void dev_frame(void) {}
 #endif                 // offline_install.c: download <data>/game.zip (or an update)
 void offline_update_check_start(void);      // background check for a newer offline game release

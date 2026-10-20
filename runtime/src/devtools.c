@@ -91,7 +91,10 @@ static void *upload_thread(void *arg) {
         snprintf(query, sizeof query, "kind=%s", j->kind);
         dev_url(url, sizeof url, "log", query);
         snprintf(key, sizeof key, "X-Dev-Key: %s", g_cfg.dev_key ? g_cfg.dev_key : "");
-        snprintf(build, sizeof build, "X-Build: %s", host_version_string());
+        // A benchmark run (bench=shaders) is told apart in the server's list by its build column
+        // (and by its kind on servers that know "bench").
+        snprintf(build, sizeof build, "X-Build: %s%s", host_version_string(),
+                 !strcmp(j->kind, "bench") ? " | shader benchmark" : "");
         const char *headers[] = {"Content-Type: text/plain; charset=utf-8", key, build, NULL};
         long status = net_post_threadsafe(url, headers, body, len, err, sizeof err);
         if (status == 200) snprintf(msg, sizeof msg, "Log sent to the log server (%lu KB).", (unsigned long)((len + 1023) / 1024));
@@ -153,6 +156,18 @@ void dev_send_log(void) {
     snprintf(path, sizeof path, "%s/log.txt", g_cfg.data_dir);
     host_log("[dev] sending the log");
     upload_start(path, "now", true);
+}
+
+// The benchmark page (bench/, config.txt bench=shaders) is done: its log goes up by itself.
+void dev_send_bench_log(void) {
+    if (!g_cfg.dev_server) {
+        dialog_notice("Benchmark done. No log server is set up (devserver= in config.txt).");
+        return;
+    }
+    char path[600];
+    snprintf(path, sizeof path, "%s/log.txt", g_cfg.data_dir);
+    host_log("[dev] sending the benchmark log");
+    upload_start(path, "bench", true);
 }
 
 void dev_frame(void) {

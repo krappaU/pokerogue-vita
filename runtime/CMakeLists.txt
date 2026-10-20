@@ -133,6 +133,12 @@ if(VITA)
     set(VITA_MKSFOEX_FLAGS "")
     set(VITA_PACK_VPK_FLAGS "")
     list(APPEND VPK_FILES FILE ${CMAKE_CURRENT_BINARY_DIR}/pokerogue-updater.vpk updater.vpk)
+    # The shader benchmark page (bench/, config.txt bench=shaders) and the PokeRogue shaders it draws
+    # (scripts/fetch_pokerogue_shaders.sh).
+    list(APPEND VPK_FILES FILE bench/index.html bench/index.html FILE bench/bench.js bench/bench.js)
+    foreach(f sprite-frag-shader.frag field-sprite-frag-shader.frag sprite-shader.vert)
+      list(APPEND VPK_FILES FILE third_party/pokerogue/${f} bench/pokerogue/${f})
+    endforeach()
     target_link_libraries(pokerogue-rt ScePromoterUtil_stub)
   endif()
   # Extended memory mode: lets the app use more of the Vita's main RAM.

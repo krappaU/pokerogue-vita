@@ -17,7 +17,7 @@ services:
       - "${DEVSERVER_PORT:-8765}:8765"
 
   cloudflared:
-    image: cloudflare/cloudflared:2025.9.1
+    image: cloudflare/cloudflared:latest
     restart: unless-stopped
     command: tunnel --no-autoupdate run
     environment:

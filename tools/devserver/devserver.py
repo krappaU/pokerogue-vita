@@ -3,7 +3,7 @@
 """Log server for PokeRogue Vita dev builds: the console uploads its logs here, anyone can read them
 (the app side is runtime/src/devtools.c; see README.md). Only the Python standard library is needed.
 
-  POST /log?key=K&kind=prev|now   a log from the console; each upload is a new entry (logN)
+  POST /log?key=K&kind=prev|now|bench   a log from the console; each upload is a new entry (logN)
   GET  /logs                      the list, newest first (?format=json for JSON)
   GET  /logs/logN                 one log
   GET  /logs/latest               the newest log
@@ -30,7 +30,7 @@ MAX_LOG = 64 << 20
 LOG_ID = re.compile(r"log(\d{1,9})(?:\.txt)?")
 STORED = re.compile(r"log(\d{9})\.txt")
 OLD_NAME = re.compile(r"(\d{8})-(\d{6})-(prev|now)\.txt")  # the previous server's names
-KINDS = {"prev": "prev-run", "now": "in-game"}  # what the console sends -> what the list shows
+KINDS = {"prev": "prev-run", "now": "in-game", "bench": "benchmark"}  # what the console sends -> what the list shows
 DEV_RELEASE = "https://github.com/{repo}/releases/download/dev-build/build.json"
 
 

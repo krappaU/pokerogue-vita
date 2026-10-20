@@ -966,6 +966,14 @@ static JSValue n_random_bytes(JSContext *ctx, JSValueConst this_val, int argc, J
     return ab;
 }
 
+#ifdef PKR_DEV
+// devSendBenchLog(): the benchmark page (bench/) uploads its log (devtools.c).
+static JSValue n_dev_send_bench_log(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    dev_send_bench_log();
+    return JS_UNDEFINED;
+}
+#endif
+
 static const JSCFunctionListEntry native_funcs[] = {
     JS_CFUNC_DEF("randomBytes", 1, n_random_bytes),
     JS_CFUNC_DEF("showLink", 2, n_show_link),
@@ -1010,6 +1018,9 @@ JSContext *host_js_init(void) {
     JSValue global = JS_GetGlobalObject(ctx);
     JSValue native = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, native, native_funcs, sizeof native_funcs / sizeof *native_funcs);
+#ifdef PKR_DEV
+    JS_SetPropertyStr(ctx, native, "devSendBenchLog", JS_NewCFunction(ctx, n_dev_send_bench_log, "devSendBenchLog", 0));
+#endif
     JS_SetPropertyStr(ctx, native, "baseURL", JS_NewString(ctx, g_cfg.base_url));
     JS_SetPropertyStr(ctx, native, "jsDir", JS_NewString(ctx, g_cfg.js_dir));
     JS_SetPropertyStr(ctx, native, "dataDir", JS_NewString(ctx, g_cfg.data_dir));

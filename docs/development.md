@@ -225,6 +225,15 @@ without a copy.
   `tests/shaders` renders each rewritten shader against the original (PokeRogue's sprite and field
   shaders of a pinned commit, Phaser's multi-texture shader) with the settings the game uses and
   compares every byte. `shaderfix=0` in config.txt keeps the originals, to compare on the console.
+- `bench=shaders` in config.txt (dev builds, 0.64): instead of the game, the shader benchmark
+  (`runtime/bench/`, packed into the dev .vpk with PokeRogue's shaders) draws the full screen with
+  PokeRogue's field and sprite shaders and Phaser's multi-texture shader, as shipped, as rewritten
+  and with one part removed at a time (day/night, terrain, tint modes, texture pick, colour loops,
+  tera, shadow, tone, mediump floats), then a plain texture read and a constant colour. Each line
+  is the median GPU time of 12 full-screen draws, each waited for alone (the "empty" line is that
+  wait's own cost). The variants are for measuring only. When it's done the log goes to the log
+  server by itself, as kind `bench` ("benchmark" in the list) with "| shader benchmark" after the
+  build. Remove the line to play again.
 
 ## Memory: texture eviction
 Phaser never frees textures. When GPU texture memory exceeds 64 MB, image-backed textures not drawn

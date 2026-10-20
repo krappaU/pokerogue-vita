@@ -57,3 +57,6 @@ VITASHELL=81af70971ba18b8ce86215b04180f1e3d21cdfc9
 mkdir -p third_party/vitashell
 [ -f third_party/vitashell/head.bin ] || curl -sfL "https://raw.githubusercontent.com/TheOfficialFloW/VitaShell/$VITASHELL/resources/head.bin" -o third_party/vitashell/head.bin
 echo "cbb88299319048e19115a1fc9c76b04e33745291749de0e08963b9b425623f45  third_party/vitashell/head.bin" | sha256sum -c --quiet
+
+# PokeRogue's own shaders for the dev build's shader benchmark (bench/) and tests/shaders.
+scripts/fetch_pokerogue_shaders.sh

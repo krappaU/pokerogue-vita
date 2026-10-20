@@ -7,13 +7,14 @@ logs without FTP"). Test builds don't come from here any more: they are publishe
 
 | request | |
 |---|---|
-| `POST /log?key=K&kind=prev\|now` | an upload from the console (the key can also be the `X-Dev-Key` header); each is a new entry |
+| `POST /log?key=K&kind=prev\|now\|bench` | an upload from the console (the key can also be the `X-Dev-Key` header); each is a new entry |
 | `GET /logs` | the list, newest first (`?format=json` for JSON) |
 | `GET /logs/log57` | one log |
 | `GET /logs/latest` | the newest log (its id is in the `X-Log-Id` header) |
 
 Ids are `log1`, `log2`, ... in upload order, never reused. Time (UTC), kind (`prev-run`: the log of
-a run that ended, sent by the next start; `in-game`: L + R + START) and the build that sent it are
+a run that ended, sent by the next start; `in-game`: L + R + START; `benchmark`: a shader benchmark
+run, `bench=shaders`, sent when it's done) and the build that sent it are
 in the list. Logs are stored as `<data>/logs/log000000057.txt` with a `.json` beside it. If the
 upload key appears in a log (a URL in an error line), it is replaced by `<devkey>` before saving,
 since reading is public.
@@ -39,5 +40,9 @@ The compose file also publishes port 8765 on the host for direct access (LAN, or
 set to `http://<host>:8765/`); remove it once nothing uses it. If uploads get HTTP 403 from
 Cloudflare (not from the server, whose 403 says "wrong key"), turn off bot challenges (Bot Fight
 Mode, Browser Integrity Check) for that hostname.
+
+Updating: `git pull`, then `docker compose pull && docker compose up -d --build` (cloudflared is
+`cloudflare/cloudflared:latest`, so `pull` fetches its newest release; the server's image is
+rebuilt from `python:3.15.0-slim`).
 
 Without Docker: `DEVSERVER_KEY=<key> tools/devserver/devserver.py --dir ~/pokerogue-devserver`.
