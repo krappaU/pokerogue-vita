@@ -405,7 +405,12 @@ FN(w_deleteFramebuffer) {
     return JS_UNDEFINED;
 }
 FN(w_deleteRenderbuffer) { GLuint id = oid(A(0)); if (id) glDeleteRenderbuffers(1, &id); return JS_UNDEFINED; }
-FN(w_deleteProgram) { GLuint id = oid(A(0)); if (id) glDeleteProgram(id); return JS_UNDEFINED; }
+static void family_free(GLuint prog);
+FN(w_deleteProgram) {
+    GLuint id = oid(A(0));
+    if (id) family_free(id), glDeleteProgram(id);
+    return JS_UNDEFINED;
+}
 FN(w_deleteShader) { GLuint id = oid(A(0)); if (id) glDeleteShader(id); return JS_UNDEFINED; }
 
 FN(w_isBuffer) { return JS_NewBool(ctx, glIsBuffer(oid(A(0)))); }
@@ -810,6 +815,293 @@ FN(w_attachShader) {
     return JS_UNDEFINED;
 }
 FN(w_detachShader) { glDetachShader(oid(A(0)), oid(A(1))); return JS_UNDEFINED; }
+// ---------------------------------------------------------------- shader variants
+// The Vita's shader compiler runs all of a fragment shader's code for every pixel, the effects a
+// setting switches off included (0.64's benchmark: on PokeRogue's field shader, terrain colouring
+// that was off cost 6.6 of 19 ms per full screen; on its sprite shader, tera and the palette loops
+// 3-4 ms each). js/webgl.js wraps such effects in /*pkr+NAME*/ ... /*pkr-NAME*/ comments. For a
+// program with them (a "family"), a draw picks the effects the current uniform values switch off,
+// with the same tests as the shader's own conditions, and draws with a copy of the program built
+// without that code (once, on first use). The game only ever sees the original program: uniform
+// writes to it are recorded, and a copy gets the changed values just before it draws.
+enum { VF_TERRAIN, VF_DAYNIGHT, VF_TERA, VF_VARIANTS, VF_FUSION, VF_SHADOW, VF_COUNT };
+static const char *const vf_names[VF_COUNT] = {"terrain", "daynight", "tera", "variants", "fusion", "shadow"};
+
+typedef struct {
+    char name[64];
+    GLenum type;
+    GLint size, comps, loc;
+    bool is_int;
+    uint32_t *data; // size * comps 32-bit values, as last written
+    unsigned version;
+} vuniform;
+typedef struct {
+    GLuint prog, fs;
+    bool failed;
+    GLint *locs;       // per uniform, in this copy
+    unsigned *synced;  // per uniform: the version the copy has
+} vcopy;
+typedef struct {
+    GLuint vs, fs;
+    unsigned present; // VF_* bits marked in the source
+    vuniform *u;
+    int nu;
+    int idx[VF_COUNT][2]; // the uniforms each feature's test reads
+    vcopy copies[1 << VF_COUNT]; // by the VF_* bits left out
+} vfamily;
+static vfamily *families[MAX_GL_IDS];
+static unsigned var_version;
+static int var_built, var_draws;
+
+static void family_free(GLuint prog) {
+    vfamily *f = prog < MAX_GL_IDS ? families[prog] : NULL;
+    if (!f) return;
+    for (int m = 0; m < (1 << VF_COUNT); m++) {
+        vcopy *c = &f->copies[m];
+        if (c->prog) glDeleteProgram(c->prog);
+        if (c->fs) glDeleteShader(c->fs);
+        free(c->locs), free(c->synced);
+    }
+    for (int i = 0; i < f->nu; i++) free(f->u[i].data);
+    free(f->u);
+    free(f);
+    families[prog] = NULL;
+}
+
+static int type_comps(GLenum t, bool *is_int) {
+    *is_int = false;
+    switch (t) {
+    case GL_FLOAT: return 1;
+    case GL_FLOAT_VEC2: return 2;
+    case GL_FLOAT_VEC3: return 3;
+    case GL_FLOAT_VEC4: return 4;
+    case GL_FLOAT_MAT2: return 4;
+    case GL_FLOAT_MAT3: return 9;
+    case GL_FLOAT_MAT4: return 16;
+    }
+    *is_int = true;
+    switch (t) {
+    case GL_INT_VEC2: case GL_BOOL_VEC2: return 2;
+    case GL_INT_VEC3: case GL_BOOL_VEC3: return 3;
+    case GL_INT_VEC4: case GL_BOOL_VEC4: return 4;
+    default: return 1; // int, bool, samplers
+    }
+}
+
+static int family_uniform(vfamily *f, const char *name) {
+    for (int i = 0; i < f->nu; i++)
+        if (!strcmp(f->u[i].name, name)) return i;
+    return -1;
+}
+
+// After a successful link: a family if the fragment shader has marked effects.
+static void family_setup(GLuint prog) {
+    family_free(prog);
+    if (prog >= MAX_GL_IDS) return;
+    GLuint vs = 0, fs = 0;
+    for (int i = 0; i < 2; i++) {
+        GLuint sh = prog_shaders[prog][i];
+        GLint type = 0;
+        if (sh) glGetShaderiv(sh, GL_SHADER_TYPE, &type);
+        if (type == GL_VERTEX_SHADER) vs = sh;
+        else if (type == GL_FRAGMENT_SHADER) fs = sh;
+    }
+    const char *src = fs && fs < MAX_GL_IDS ? shader_src[fs] : NULL;
+    if (!vs || !src) return;
+    unsigned present = 0;
+    for (int b = 0; b < VF_COUNT; b++) {
+        char mark[32];
+        snprintf(mark, sizeof mark, "/*pkr+%s*/", vf_names[b]);
+        if (strstr(src, mark)) present |= 1u << b;
+    }
+    if (!present) return;
+    vfamily *f = calloc(1, sizeof *f);
+    f->vs = vs, f->fs = fs, f->present = present;
+    GLint n = 0;
+    glGetProgramiv(prog, GL_ACTIVE_UNIFORMS, &n);
+    f->u = calloc(n > 0 ? n : 1, sizeof *f->u);
+    for (GLint i = 0; i < n; i++) {
+        vuniform *u = &f->u[f->nu];
+        GLsizei len = 0;
+        glGetActiveUniform(prog, i, sizeof u->name, &len, &u->size, &u->type, u->name);
+        u->loc = glGetUniformLocation(prog, u->name);
+        char *br = strchr(u->name, '[');
+        if (br) *br = 0; // "name[0]" of an array
+        if (u->loc == -1) u->loc = glGetUniformLocation(prog, u->name);
+        if (u->loc == -1 || u->size < 1) continue;
+        u->comps = type_comps(u->type, &u->is_int);
+        u->data = calloc((size_t)u->size * u->comps, 4);
+        f->nu++;
+    }
+    static const char *const reads[VF_COUNT][2] = {
+        {"terrainColorRatio", "terrainColor"}, {"ignoreTimeTint", NULL}, {"teraColor", NULL},
+        {"baseVariantColors", NULL}, {"spriteColors", NULL}, {"hasShadow", NULL}};
+    for (int b = 0; b < VF_COUNT; b++) {
+        for (int k = 0; k < 2; k++) f->idx[b][k] = reads[b][k] ? family_uniform(f, reads[b][k]) : -2;
+        if (f->idx[b][0] == -1 || f->idx[b][1] == -1) f->present &= ~(1u << b); // can't read its setting
+    }
+    if (!f->present) {
+        families[prog] = f; // nothing to leave out: free it the usual way
+        family_free(prog);
+        return;
+    }
+    families[prog] = f;
+}
+
+// A uniform write to the bound program, as the GL got it.
+static void var_record(GLint loc, const void *data, int scalars) {
+    GLuint prog = oid(st.bound_program);
+    vfamily *f = prog < MAX_GL_IDS ? families[prog] : NULL;
+    if (!f || loc == -1 || scalars <= 0) return;
+    for (int i = 0; i < f->nu; i++) {
+        vuniform *u = &f->u[i];
+        if (u->loc != loc) continue;
+        int max = u->size * u->comps;
+        memcpy(u->data, data, (size_t)(scalars < max ? scalars : max) * 4);
+        u->version = ++var_version;
+        return;
+    }
+}
+
+static float vf_float(vfamily *f, int idx, int k) {
+    float v;
+    memcpy(&v, &f->u[idx].data[k], 4);
+    return f->u[idx].is_int ? (float)(int32_t)f->u[idx].data[k] : v;
+}
+static bool vf_bool(vfamily *f, int idx) {
+    return f->u[idx].is_int ? f->u[idx].data[0] != 0 : vf_float(f, idx, 0) != 0.0f;
+}
+
+// The effects the current values switch off, with each effect's own test in the shader.
+static unsigned family_off(vfamily *f) {
+    unsigned off = 0;
+    int (*x)[2] = f->idx;
+    if (f->present & (1u << VF_TERRAIN)) { // terrainColorRatio > 0.0 && any(lessThan(vec3(0.0), terrainColor))
+        bool on = vf_float(f, x[VF_TERRAIN][0], 0) > 0.0f &&
+                  (0.0f < vf_float(f, x[VF_TERRAIN][1], 0) || 0.0f < vf_float(f, x[VF_TERRAIN][1], 1) ||
+                   0.0f < vf_float(f, x[VF_TERRAIN][1], 2));
+        if (!on) off |= 1u << VF_TERRAIN;
+    }
+    if ((f->present & (1u << VF_DAYNIGHT)) && vf_bool(f, x[VF_DAYNIGHT][0])) off |= 1u << VF_DAYNIGHT; // !ignoreTimeTint
+    if (f->present & (1u << VF_TERA)) { // all(lessThan(vec3(0.0), teraColor))
+        int t = x[VF_TERA][0];
+        if (!(0.0f < vf_float(f, t, 0) && 0.0f < vf_float(f, t, 1) && 0.0f < vf_float(f, t, 2))) off |= 1u << VF_TERA;
+    }
+    // The palette loops stop at once when entry 0's alpha is 0.
+    if ((f->present & (1u << VF_VARIANTS)) && vf_float(f, x[VF_VARIANTS][0], 3) == 0.0f) off |= 1u << VF_VARIANTS;
+    if ((f->present & (1u << VF_FUSION)) && vf_float(f, x[VF_FUSION][0], 3) == 0.0f) off |= 1u << VF_FUSION;
+    if ((f->present & (1u << VF_SHADOW)) && !vf_bool(f, x[VF_SHADOW][0])) off |= 1u << VF_SHADOW;
+    return off;
+}
+
+static void copy_build(GLuint root, vfamily *f, unsigned off, vcopy *c) {
+    double t0 = host_now_ms();
+    char *src = strdup(shader_src[f->fs]);
+    for (int b = 0; b < VF_COUNT; b++) {
+        if (!(off & (1u << b))) continue;
+        char open[32], close[32];
+        snprintf(open, sizeof open, "/*pkr+%s*/", vf_names[b]);
+        snprintf(close, sizeof close, "/*pkr-%s*/", vf_names[b]);
+        char *a;
+        while ((a = strstr(src, open))) {
+            char *z = strstr(a, close);
+            if (!z) break;
+            z += strlen(close);
+            memmove(a, z, strlen(z) + 1);
+        }
+    }
+    c->failed = true;
+    c->fs = glCreateShader(GL_FRAGMENT_SHADER);
+    const char *s = src;
+    glShaderSource(c->fs, 1, &s, NULL);
+    glCompileShader(c->fs);
+    free(src);
+    c->prog = glCreateProgram();
+    glAttachShader(c->prog, f->vs);
+    glAttachShader(c->prog, c->fs);
+    GLint na = 0;
+    glGetProgramiv(root, GL_ACTIVE_ATTRIBUTES, &na);
+    for (GLint i = 0; i < na; i++) { // the attributes where the game set them up for the original
+        char name[64];
+        GLint size;
+        GLenum type;
+        glGetActiveAttrib(root, i, sizeof name, NULL, &size, &type, name);
+        GLint l = glGetAttribLocation(root, name);
+        if (l >= 0) glBindAttribLocation(c->prog, l, name);
+    }
+    glLinkProgram(c->prog);
+    GLint ok = 0;
+    glGetProgramiv(c->prog, GL_LINK_STATUS, &ok);
+    char names[100] = "";
+    for (int b = 0, o = 0; b < VF_COUNT; b++)
+        if (off & (1u << b)) o += snprintf(names + o, sizeof names - o, "%s%s", o ? "/" : "", vf_names[b]);
+    if (!ok) {
+        host_log("[gl] shader variant without %s didn't link; the original draws instead", names);
+        return;
+    }
+    c->failed = false;
+    c->locs = malloc(f->nu * sizeof *c->locs);
+    c->synced = calloc(f->nu, sizeof *c->synced);
+    for (int i = 0; i < f->nu; i++) c->locs[i] = glGetUniformLocation(c->prog, f->u[i].name);
+    var_built++;
+    host_log("[gl] shader variant: program %u without %s (%.0f ms to build)", root, names, host_now_ms() - t0);
+}
+
+static void copy_sync(vfamily *f, vcopy *c) {
+    for (int i = 0; i < f->nu; i++) {
+        vuniform *u = &f->u[i];
+        if (c->synced[i] == u->version) continue;
+        c->synced[i] = u->version;
+        GLint l = c->locs[i];
+        if (l == -1) continue;
+        const void *d = u->data;
+        switch (u->type) {
+        case GL_FLOAT_MAT2: glUniformMatrix2fv(l, u->size, GL_FALSE, d); continue;
+        case GL_FLOAT_MAT3: glUniformMatrix3fv(l, u->size, GL_FALSE, d); continue;
+        case GL_FLOAT_MAT4: glUniformMatrix4fv(l, u->size, GL_FALSE, d); continue;
+        }
+        if (u->is_int) {
+            if (u->comps == 1) glUniform1iv(l, u->size, d);
+            else if (u->comps == 2) glUniform2iv(l, u->size, d);
+            else if (u->comps == 3) glUniform3iv(l, u->size, d);
+            else glUniform4iv(l, u->size, d);
+        } else {
+            if (u->comps == 1) glUniform1fv(l, u->size, d);
+            else if (u->comps == 2) glUniform2fv(l, u->size, d);
+            else if (u->comps == 3) glUniform3fv(l, u->size, d);
+            else glUniform4fv(l, u->size, d);
+        }
+    }
+}
+
+// Before a draw: binds the copy the current values allow and returns the original's id to bind
+// back afterwards (var_end), or 0 when the original draws.
+static GLuint var_begin(void) {
+    GLuint prog = oid(st.bound_program);
+    vfamily *f = prog < MAX_GL_IDS ? families[prog] : NULL;
+    if (!f) return 0;
+    unsigned off = family_off(f);
+    if (!off) return 0;
+    vcopy *c = &f->copies[off];
+    if (!c->prog && !c->failed) copy_build(prog, f, off, c);
+    if (c->failed) return 0;
+    glUseProgram(c->prog);
+    copy_sync(f, c);
+    var_draws++;
+    return prog;
+}
+static inline void var_end(GLuint prog) {
+    if (prog) glUseProgram(prog);
+}
+
+// gl.pkrShaderVariants() -> {built, draws}: copies built and draws they made (tests/shaders).
+FN(w_pkrShaderVariants) {
+    JSValue o = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, o, "built", JS_NewInt32(ctx, var_built));
+    JS_SetPropertyStr(ctx, o, "draws", JS_NewInt32(ctx, var_draws));
+    return o;
+}
+
 #ifdef PKR_DEBUG
 // A program's name for the GPU profile: Phaser's shaders define SHADER_NAME; PokeRogue's own
 // (src/pipelines/glsl in the game) are known by a uniform only they have.
@@ -835,6 +1127,7 @@ FN(w_linkProgram) {
     GLint ok = 0;
     glGetProgramiv(prog, GL_LINK_STATUS, &ok);
     if (!ok) report_link_failure(prog);
+    else family_setup(prog);
 #ifdef PKR_DEBUG
     name_program(prog);
 #endif
@@ -943,20 +1236,37 @@ static inline GLint lid(JSValueConst v) {
 
 // ---------------------------------------------------------------- uniforms / attributes
 
-FN(w_uniform1f) { glUniform1f(lid(A(0)), gf(ctx, A(1))); return JS_UNDEFINED; }
-FN(w_uniform2f) { glUniform2f(lid(A(0)), gf(ctx, A(1)), gf(ctx, A(2))); return JS_UNDEFINED; }
-FN(w_uniform3f) { glUniform3f(lid(A(0)), gf(ctx, A(1)), gf(ctx, A(2)), gf(ctx, A(3))); return JS_UNDEFINED; }
-FN(w_uniform4f) {
-    glUniform4f(lid(A(0)), gf(ctx, A(1)), gf(ctx, A(2)), gf(ctx, A(3)), gf(ctx, A(4)));
+// Each uniform write also goes to var_record (shader variants), as the values the GL got.
+static JSValue uniform_f(JSContext *ctx, int argc, JSValueConst *argv, int n) {
+    GLfloat v[4];
+    for (int i = 0; i < n; i++) v[i] = gf(ctx, A(i + 1));
+    GLint l = lid(A(0));
+    if (n == 1) glUniform1f(l, v[0]);
+    else if (n == 2) glUniform2f(l, v[0], v[1]);
+    else if (n == 3) glUniform3f(l, v[0], v[1], v[2]);
+    else glUniform4f(l, v[0], v[1], v[2], v[3]);
+    var_record(l, v, n);
     return JS_UNDEFINED;
 }
-FN(w_uniform1i) { glUniform1i(lid(A(0)), gi(ctx, A(1))); return JS_UNDEFINED; }
-FN(w_uniform2i) { glUniform2i(lid(A(0)), gi(ctx, A(1)), gi(ctx, A(2))); return JS_UNDEFINED; }
-FN(w_uniform3i) { glUniform3i(lid(A(0)), gi(ctx, A(1)), gi(ctx, A(2)), gi(ctx, A(3))); return JS_UNDEFINED; }
-FN(w_uniform4i) {
-    glUniform4i(lid(A(0)), gi(ctx, A(1)), gi(ctx, A(2)), gi(ctx, A(3)), gi(ctx, A(4)));
+static JSValue uniform_i(JSContext *ctx, int argc, JSValueConst *argv, int n) {
+    GLint v[4];
+    for (int i = 0; i < n; i++) v[i] = gi(ctx, A(i + 1));
+    GLint l = lid(A(0));
+    if (n == 1) glUniform1i(l, v[0]);
+    else if (n == 2) glUniform2i(l, v[0], v[1]);
+    else if (n == 3) glUniform3i(l, v[0], v[1], v[2]);
+    else glUniform4i(l, v[0], v[1], v[2], v[3]);
+    var_record(l, v, n);
     return JS_UNDEFINED;
 }
+FN(w_uniform1f) { return uniform_f(ctx, argc, argv, 1); }
+FN(w_uniform2f) { return uniform_f(ctx, argc, argv, 2); }
+FN(w_uniform3f) { return uniform_f(ctx, argc, argv, 3); }
+FN(w_uniform4f) { return uniform_f(ctx, argc, argv, 4); }
+FN(w_uniform1i) { return uniform_i(ctx, argc, argv, 1); }
+FN(w_uniform2i) { return uniform_i(ctx, argc, argv, 2); }
+FN(w_uniform3i) { return uniform_i(ctx, argc, argv, 3); }
+FN(w_uniform4i) { return uniform_i(ctx, argc, argv, 4); }
 
 static JSValue uniform_fv(JSContext *ctx, JSValueConst *argv, int argc, int comps) {
     int n;
@@ -970,6 +1280,7 @@ static JSValue uniform_fv(JSContext *ctx, JSValueConst *argv, int argc, int comp
         case 3: glUniform3fv(l, n / 3, p); break;
         case 4: glUniform4fv(l, n / 4, p); break;
         }
+        var_record(l, p, n / comps * comps);
     }
     free(tmp);
     return JS_UNDEFINED;
@@ -991,6 +1302,7 @@ static JSValue uniform_iv(JSContext *ctx, JSValueConst *argv, int argc, int comp
         case 3: glUniform3iv(l, n / 3, p); break;
         case 4: glUniform4iv(l, n / 4, p); break;
         }
+        var_record(l, p, n / comps * comps);
     }
     free(tmp);
     return JS_UNDEFINED;
@@ -1022,6 +1334,7 @@ static JSValue uniform_matrix(JSContext *ctx, JSValueConst *argv, int argc, int 
         if (dim == 2) glUniformMatrix2fv(l, count, GL_FALSE, p);
         else if (dim == 3) glUniformMatrix3fv(l, count, GL_FALSE, p);
         else glUniformMatrix4fv(l, count, GL_FALSE, p);
+        var_record(l, p, count * dim * dim);
     }
     free(tmp);
     return JS_UNDEFINED;
@@ -1134,7 +1447,9 @@ static void prof_after_frame(void) {
 FN(w_drawArrays) {
     textures_for_draw(ctx);
     double t0 = host_now_ms();
+    GLuint root = var_begin();
     glDrawArrays(gi(ctx, A(0)), gi(ctx, A(1)), gi(ctx, A(2)));
+    var_end(root);
     draw_ms_frame += host_now_ms() - t0;
     draws_total++;
 #ifdef PKR_DEBUG
@@ -1145,7 +1460,9 @@ FN(w_drawArrays) {
 FN(w_drawElements) {
     textures_for_draw(ctx);
     double t0 = host_now_ms();
+    GLuint root = var_begin();
     glDrawElements(gi(ctx, A(0)), gi(ctx, A(1)), gi(ctx, A(2)), (const void *)(intptr_t)gi(ctx, A(3)));
+    var_end(root);
     draw_ms_frame += host_now_ms() - t0;
     draws_total++;
 #ifdef PKR_DEBUG
@@ -1423,7 +1740,7 @@ static const JSCFunctionListEntry gl_funcs[] = {
     F(getActiveUniform, 2), F(getAttribLocation, 2), F(getBufferParameter, 2), F(getError, 0),
     F(getFramebufferAttachmentParameter, 3), F(getParameter, 1), F(getProgramInfoLog, 1),
     F(getProgramParameter, 2), F(getRenderbufferParameter, 2), F(getShaderInfoLog, 1),
-    F(getShaderParameter, 2), F(getShaderPrecisionFormat, 2), F(getShaderSource, 1), F(getTexParameter, 2),
+    F(getShaderParameter, 2), F(pkrShaderVariants, 0), F(getShaderPrecisionFormat, 2), F(getShaderSource, 1), F(getTexParameter, 2),
     F(getUniformLocation, 2), F(hint, 2), F(isBuffer, 1), F(isEnabled, 1), F(isFramebuffer, 1),
     F(isProgram, 1), F(isRenderbuffer, 1), F(isShader, 1), F(isTexture, 1), F(lineWidth, 1), F(linkProgram, 1),
     F(pixelStorei, 2), F(polygonOffset, 2), F(readPixels, 7), F(renderbufferStorage, 4), F(sampleCoverage, 2),

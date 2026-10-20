@@ -575,3 +575,22 @@ screen; Phaser's shader on the title screen 10.5 ms against 12.0 for 5 draws (bi
 the rewrites save ~10-15%; most of the fragment cost is elsewhere (a plain texture read drew a
 whole battle in ~3 ms). Next: a benchmark that draws each shader full-screen with one part removed
 at a time, to find which part costs.
+
+### What each part of the shaders costs (benchmark log52, 0.64, 2026-10-20; runtime 0.65)
+`bench=shaders` on the console: GPU time per full-screen draw (960x544, alpha blending, median of
+12, each draw waited for alone; 0.8 ms of that is the wait; a plain texture read 1.5 ms). Field
+shader: 19.0 ms as shipped, 14.8 rewritten; without the texture pick 14.9, without day/night 10.8,
+without terrain 12.4 (terrain was off), without tint modes 15.1, mediump 16.6, texture x tint only
+1.9. Sprite shader: 23.8 as shipped, 22.3 rewritten; without the colour loops 20.7, tera 20.2
+(off), day/night 17.3, shadow 17.3, grey/tone 22.1, tint modes 22.8, mediump 24.0, texture x tint
+only 1.9. Phaser's: 6.6, rewritten 4.9, one texture 3.8, no tint modes 4.2, mediump 5.8. So the
+compiler runs every part for every pixel, whatever a setting says: splitting conditions so a
+setting is tested first (0.62) changed nothing (14.8 against 14.9 for the texture pick alone), and
+precision isn't the cost.
+
+0.65: shader variants (development.md, "GPU measurements"): copies of PokeRogue's two shaders
+without the effects the current settings switch off, chosen at each draw. Expected from the
+numbers above: the field quad ~15 -> ~8-9 ms (no terrain), an ordinary Pokémon ~22 -> ~15 ms (no
+tera, no palette loops). Day/night (6.5-8 ms) and the shadow (6.5 ms) stay while they are on.
+**To measure:** `bench=shaders` again (the "rewritten + variants" lines), and a battle with
+`gpuprofile=1`.

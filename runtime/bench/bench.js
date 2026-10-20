@@ -113,7 +113,7 @@ const CONSTANT = MAIN_ONLY("gl_FragColor = vec4(1.0, 0.5, 0.25, 1.0);");
 
 const FIELD = [
   ["as shipped", null, false],
-  ["rewritten (shaderfix)", null, true],
+  ["rewritten + variants (shaderfix)", null, true],
   ["one texture (no if-chain)", ONE_TEXTURE],
   ["no day/night tint", NO_DAYNIGHT],
   ["no terrain", remove(/if \(\s*terrainColorRatio > 0\.0/)],
@@ -128,7 +128,7 @@ const NO_TONE = all(replace(/float luma = dot\(color\.rgb, lumaF\);/, ""), repla
   replace(/color\.rgb \+= tone\.rgb \* \(color\.a \/ 255\.0\);/, ""));
 const SPRITE = [
   ["as shipped", null, false],
-  ["rewritten (shaderfix)", null, true],
+  ["rewritten + variants (shaderfix)", null, true],
   ["no colour loops", NO_LOOPS],
   ["no tera", NO_TERA],
   ["no day/night tint", NO_DAYNIGHT],
@@ -256,9 +256,12 @@ function timeDraws(draw) {
 }
 const fmt = (r) => r.median.toFixed(1) + " ms (min " + r.min.toFixed(1) + ", max " + r.max.toFixed(1) + ")";
 
+const show = (text) => N.showMessage && N.showMessage("Shader benchmark\n\n" + text);
+
 async function bench(group, vsrc, fsrc, variants) {
   const results = [];
-  for (const [label, change, fix] of variants) {
+  for (const [i, [label, change, fix]] of variants.entries()) {
+    show(group + ", " + (i + 1) + " of " + variants.length + ":\n" + label);
     await nextFrame();
     let p;
     try {
@@ -296,9 +299,13 @@ async function run() {
   }
   for (const s of summary) log("summary " + s);
   log("done");
+  finish("Done. The log goes to the log server (devserver= in config.txt).");
+}
+function finish(text) {
+  show(text + "\n\nRemove bench=shaders from config.txt to play again.\nSTART + SELECT quits.");
   if (N.devSendBenchLog) N.devSendBenchLog();
 }
 run().catch((e) => {
   log("failed: " + e + "\n" + (e && e.stack));
-  if (N.devSendBenchLog) N.devSendBenchLog();
+  finish("Failed: " + e);
 });

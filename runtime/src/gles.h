@@ -9,6 +9,11 @@
 #ifndef GL_BLEND_COLOR
 #define GL_BLEND_COLOR 0x8005
 #endif
+#ifndef GL_BOOL_VEC2 // uniform types (gl.c's shader variants)
+#define GL_BOOL_VEC2 0x8B57
+#define GL_BOOL_VEC3 0x8B58
+#define GL_BOOL_VEC4 0x8B59
+#endif
 #ifndef GL_ALIASED_POINT_SIZE_RANGE
 #define GL_ALIASED_POINT_SIZE_RANGE 0x846D
 #endif

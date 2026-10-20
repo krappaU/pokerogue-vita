@@ -225,6 +225,15 @@ without a copy.
   `tests/shaders` renders each rewritten shader against the original (PokeRogue's sprite and field
   shaders of a pinned commit, Phaser's multi-texture shader) with the settings the game uses and
   compares every byte. `shaderfix=0` in config.txt keeps the originals, to compare on the console.
+- Shader variants (`gl.c`, 0.65): the Vita's shader compiler runs all of a shader's code for every
+  pixel, effects a setting switches off included. `js/webgl.js` marks such effects in PokeRogue's
+  shaders (`/*pkr+terrain*/ ... /*pkr-terrain*/`: terrain, day/night, tera, the two palette loops,
+  shadow); at each draw `gl.c` checks the current uniform values with the shader's own conditions
+  and draws with a copy of the program built without the effects that are off (built on first use,
+  logged as `[gl] shader variant: ...`). The game only sees its own program: uniform writes to it
+  are recorded and copied into a copy before it draws. `tests/shaders` compares the pixels; a copy
+  may differ by at most 1/255 (it is compiled as a different shader, so rounding can move; leaving
+  out an effect that is on changes far more, which the test catches).
 - `bench=shaders` in config.txt (dev builds, 0.64): instead of the game, the shader benchmark
   (`runtime/bench/`, packed into the dev .vpk with PokeRogue's shaders) draws the full screen with
   PokeRogue's field and sprite shaders and Phaser's multi-texture shader, as shipped, as rewritten

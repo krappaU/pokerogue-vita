@@ -157,8 +157,14 @@ function render(p, uniforms, buf = vbuf) {
 }
 function diff(a, b) {
   let n = 0, max = 0;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) n++, max = Math.max(max, Math.abs(a[i] - b[i]));
-  return { n, max };
+  const quads = new Set();
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] === b[i]) continue;
+    n++, max = Math.max(max, Math.abs(a[i] - b[i]));
+    const px = i >> 2, x = px % W, y = Math.floor(px / W);
+    quads.add(Math.floor(y / CELL) * 6 + Math.floor(x / CELL));
+  }
+  return { n, max, quads: [...quads].sort((p, q) => p - q) };
 }
 
 const c = (rgb) => rgb.map((v) => v / 255);
@@ -246,14 +252,22 @@ async function run() {
     let reference = null;
     for (const [label, uniforms] of Object.entries(CASES[name])) {
       const u = { ...SPRITE_DEFAULTS, ...uniforms };
+      const drawn = gl.pkrShaderVariants().draws;
       const a = render(orig, u), b = render(fixed, u), d = diff(a, b);
+      // A copy without some effects (gl.c's shader variants) is compiled as a different shader: the
+      // compiler may round the rest one step differently. Leaving out an effect that's on changes
+      // far more than that.
+      const copy = gl.pkrShaderVariants().draws > drawn, ok = d.n === 0 || (copy && d.max <= 1);
       const lit = a.some((v, i) => i % 4 === 3 && v !== 0);
-      report(name + ", " + label + ": same pixels", d.n === 0 && lit,
-        d.n ? d.n + " bytes differ (max " + d.max + ")" : lit ? "" : "nothing drawn");
+      report(name + ", " + label + ": same pixels" + (copy ? " (variant)" : ""), ok && lit,
+        d.n ? d.n + " bytes differ (max " + d.max + ", quads " + d.quads.join(",") + ")" +
+          (ok ? ": within 1/255, the copy's rounding" : "") : lit ? "" : "nothing drawn");
       if (!reference) reference = a;
       else if (!diff(reference, a).n) report(name + ", " + label + ": the settings change the picture", false, "same as plain");
     }
   }
+  const v = gl.pkrShaderVariants();
+  report("shader variants built and drawn with (gl.c)", v.built > 0 && v.draws > 0, v.built + " built, " + v.draws + " draws");
   done();
 }
 run().catch((e) => { report("harness", false, e + "\n" + (e && e.stack)); done(); });

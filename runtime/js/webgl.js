@@ -56,16 +56,22 @@
     }
     return -1;
   }
+  // Effects a setting can switch off are wrapped in /*pkr+NAME*/ ... /*pkr-NAME*/: comments, so the
+  // shader compiles as it is, but gl.c builds copies without the wrapped code and draws with the copy
+  // whose effects the current settings switch off (the GPU runs all of a shader's code, effects
+  // switched off included: 0.64's benchmark). Names gl.c knows: terrain, daynight, tera, variants,
+  // fusion, shadow.
+  const mark = (name, code) => (name ? "/*pkr+" + name + "*/ " + code + " /*pkr-" + name + "*/" : code);
   // `if (A && B) { ... }` -> `if (A) { if (B) { ... } }` for every match of re (A, B from its groups
   // through split), unless an else follows (it would change owner).
-  function splitIf(src, re, split) {
+  function splitIf(src, re, split, name) {
     let out = "", from = 0, n = 0, m;
     re.lastIndex = 0;
     while ((m = re.exec(src))) {
       const open = m.index + m[0].length - 1, end = blockEnd(src, open);
       if (end < 0 || /^\s*else\b/.test(src.slice(end))) continue;
       const [outer, inner] = split(m);
-      out += src.slice(from, m.index) + "if (" + outer + ") { if (" + inner + ") " + src.slice(open, end) + " }";
+      out += src.slice(from, m.index) + mark(name, "if (" + outer + ") { if (" + inner + ") " + src.slice(open, end) + " }");
       from = end;
       re.lastIndex = end;
       n++;
@@ -79,7 +85,8 @@
     while ((m = re.exec(src))) {
       const end = blockEnd(src, src.indexOf("{", m.index));
       if (end < 0) continue;
-      out += src.slice(from, m.index) + "if (" + m[1] + "[0]" + m[2] + " != 0.0) { " + src.slice(m.index, end) + " }";
+      const name = { baseVariantColors: "variants", spriteColors: "fusion" }[m[1]];
+      out += src.slice(from, m.index) + mark(name, "if (" + m[1] + "[0]" + m[2] + " != 0.0) { " + src.slice(m.index, end) + " }");
       from = end;
       re.lastIndex = end;
       n++;
@@ -114,15 +121,21 @@
     if (n) applied.push("colour loops (" + n + ")");
     // Per-pixel test && setting: the setting first, on its own.
     const splits = [
-      [/if \(color\.a > 0\.0 && (all\(lessThan\(vec3\(0\.0\), teraColor\)\))\) \{/g, (m) => [m[1], "color.a > 0.0"], "tera"],
-      [/if \(color\.a > 0\.0 && (!ignoreTimeTint)\) \{/g, (m) => [m[1], "color.a > 0.0"], "day/night"],
+      [/if \(color\.a > 0\.0 && (all\(lessThan\(vec3\(0\.0\), teraColor\)\))\) \{/g, (m) => [m[1], "color.a > 0.0"], "tera", "tera"],
+      [/if \(color\.a > 0\.0 && (!ignoreTimeTint)\) \{/g, (m) => [m[1], "color.a > 0.0"], "day/night", "daynight"],
       [/if \(\s*(terrainColorRatio > 0\.0)\s*&& (\(1\.0 - terrainColorRatio\) < outTexCoord\.y)\s*&& (color\.a > 0\.0)\s*&& (\(any\(lessThan\(vec3\(0\.0\), terrainColor\)\)\))\s*\) \{/g,
-        (m) => [m[1] + " && " + m[4], m[2] + " && " + m[3]], "terrain"],
+        (m) => [m[1] + " && " + m[4], m[2] + " && " + m[3]], "terrain", "terrain"],
     ];
-    for (const [re, split, name] of splits) {
-      [src, n] = splitIf(src, re, split);
+    for (const [re, split, name, markName] of splits) {
+      [src, n] = splitIf(src, re, split, markName);
       if (n) applied.push(name);
     }
+    // PokeRogue's sprite shadow: only a setting switches it off.
+    const sh = /if \(hasShadow\) \{/.exec(src), shEnd = sh ? blockEnd(src, sh.index + sh[0].length - 1) : -1;
+    if (shEnd > 0 && !/^\s*else\b/.test(src.slice(shEnd)))
+      src = src.slice(0, sh.index) + mark("shadow", src.slice(sh.index, shEnd)) + src.slice(shEnd);
+    const marks = [...new Set([...src.matchAll(/\/\*pkr\+(\w+)\*\//g)].map((x) => x[1]))];
+    if (marks.length) applied.push("variants without " + marks.join("/"));
     return { src, applied };
   }
   rt.rewriteShader = rewriteShader; // tests/shaders
