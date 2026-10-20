@@ -52,7 +52,8 @@ Everything builds in Docker (VitaSDK for the Vita, Debian for the desktop versio
 Third-party components fetched at build time keep their own licenses: QuickJS-ng (MIT), plutovg
 (MIT), stb_image (MIT or public domain), miniz (MIT), minimp3/minimp4 (CC0), faad2
 (GPL-2.0-or-later), QR-Code-generator (MIT), libcurl (curl license), OpenSSL, vitaGL (LGPL-3.0),
-Mozilla's CA bundle (MPL-2.0) and the 8x8 bitmap font (public domain).
+Mozilla's CA bundle (MPL-2.0), the 8x8 bitmap font (public domain) and VitaShell's package header
+template for dev builds' installs (GPL-3.0).
 
 The game's LiveArea images use the rocky coast arena backdrop by Vari from PokeRogue's assets,
 CC BY-NC-SA 4.0 (see [runtime/sce_sys/README.md](runtime/sce_sys/README.md)).
