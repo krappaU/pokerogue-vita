@@ -3,6 +3,10 @@
 # Build vitaGL for the Vita with the same commit and flags as VitaSDK's package, plus:
 #   NO_SPLASHSCREEN  no vitaGL boot logo
 #   HAVE_SHARK_LOG   keep the shader compiler's messages (glGetShaderInfoLog)
+#   HAVE_SHADER_CACHE  compiled shaders kept on the memory card by a hash of their source and loaded
+#                    from there next time (compiling one takes ~1 s on the console: 0.65's shader
+#                    variants stalled the game that long on first use; the path is set in
+#                    platform_vita.c)
 #   patches/vitagl-*.patch (fail glLinkProgram instead of crashing when a shader did not compile;
 #   optional dump of translated shader sources for debugging; GLSL lessThan/lessThanEqual were
 #   swapped)
@@ -19,7 +23,7 @@ fi
 git -C third_party/src/vitaGL checkout -q -- .
 for p in patches/vitagl-*.patch; do git -C third_party/src/vitaGL apply "$PWD/$p"; done
 docker run --rm -v "$PWD":/w -w /w/third_party/src/vitaGL vitasdk/vitasdk:latest sh -c \
-  'make clean >/dev/null 2>&1; make NO_DEBUG=1 NO_SPLASHSCREEN=1 HAVE_SHARK_LOG=1 -j4 2>&1 | grep -E " error" ; true'
+  'make clean >/dev/null 2>&1; make NO_DEBUG=1 NO_SPLASHSCREEN=1 HAVE_SHARK_LOG=1 HAVE_SHADER_CACHE=1 -j4 2>&1 | grep -E " error" ; true'
 mkdir -p third_party/vita-vitagl/lib third_party/vita-vitagl/include
 cp third_party/src/vitaGL/libvitaGL.a third_party/vita-vitagl/lib/
 cp third_party/src/vitaGL/source/vitaGL.h third_party/vita-vitagl/include/

@@ -688,7 +688,6 @@ static void load_config_file(void) {
 #endif
             g_cfg.local_dir = dir;
             g_cfg.base_url = LOCAL_ORIGIN "/";
-            g_cfg.bench = true;
 #endif
         } else if (!strcmp(k, "profile")) {
             g_cfg.no_profile = atoi(v) == 0;
@@ -810,7 +809,7 @@ int main(int argc, char **argv) {
     bool have_offline = offline_installed();
     char again[16];
     relaunch_mode(again, sizeof again);
-    if (!again[0] && !g_cfg.bench) dev_offer_update(); // a newer test build in the dev-build release (restarts the app)
+    if (!again[0]) dev_offer_update(); // a newer test build in the dev-build release (restarts the app; also before bench=shaders)
     if (!strcmp(again, "offline") && have_offline && !g_cfg.local_dir) {
         g_cfg.local_dir = offline_dir;
         g_cfg.base_url = LOCAL_ORIGIN "/";
