@@ -63,6 +63,7 @@ typedef enum {
     PEV_QUIT,
     PEV_TOGGLE_HUD, // debug line on/off
     PEV_SEND_LOG,   // upload the log to the log server (devtools.c)
+    PEV_TOGGLE_VARIANTS, // shader variants off/on (gl.c; debug builds, to tell their bugs apart)
 } plat_event_type;
 
 typedef struct {
@@ -197,6 +198,7 @@ void gl_after_frame(void);
 void gl_restore_state(void); // after drawing over the game mid-frame
 int gl_precompile(double budget_ms); // shader variants built ahead of use; returns how many are left
 int gl_precompile_left(int *total);
+bool gl_toggle_variants(void); // shader variants off/on; returns true when now on
 void gl_texture_memory(size_t *bytes, size_t *peak, int *count);
 enum { GL_POOL_VIDEO, GL_POOL_RAM, GL_POOL_PHYCONT, GL_POOL_DIALOG, GL_POOL_HEAP, GL_POOLS };
 void gl_texture_pools(size_t bytes[GL_POOLS], size_t largest_out[3]); // Vita: texture bytes per memory pool

@@ -1090,9 +1090,16 @@ static void copy_sync(vfamily *f, vcopy *c) {
 
 // Before a draw: binds the copy the current values allow and returns the original's id to bind
 // back afterwards (var_end), or 0 when the original draws.
+static bool variants_off;
+bool gl_toggle_variants(void) {
+    variants_off = !variants_off;
+    host_log("[gl] shader variants %s", variants_off ? "off: the original programs draw" : "on");
+    return !variants_off;
+}
+
 static GLuint var_begin(void) {
     GLuint prog = oid(st.bound_program);
-    vfamily *f = prog < MAX_GL_IDS ? families[prog] : NULL;
+    vfamily *f = prog < MAX_GL_IDS && !variants_off ? families[prog] : NULL;
     if (!f) return 0;
     unsigned off = family_off(f);
     if (!off) return 0;

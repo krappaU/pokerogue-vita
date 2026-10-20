@@ -150,6 +150,10 @@ commit itself (cloud sessions can't push tags). CI runs on main are never cancel
 push, so a release can wait for an older commit's run. `.github/workflows/release.yml` waits for the commit's CI run to pass and publishes its
 player .vpk (the file CI ran in Vita3K) as a release with those notes.
 
+In debug builds, TRIANGLE while holding L + R switches the shader variants (gl.c) off and on at
+once, with a notice in the corner and a `[gl] shader variants` line in the log (`variants` on the
+control channel): when something is drawn wrong, this tells whether the variants are the cause.
+
 In the game, SELECT while holding L + R toggles a debug line in the top-right corner: version,
 frame rate, JS time per frame and heap use (`hud=1` in `<data>/config.txt` starts with it on; `hud`
 on the control channel toggles it). While it is on, Phaser is told to restore its GL state after

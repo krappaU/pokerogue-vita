@@ -702,3 +702,17 @@ lines and timings named them:
 - The worst stall left is the game's own end-of-wave save: `saveAll` parses and stringifies the
   system data (0.7-1.9 s), and once a garbage collection landed in it (a 3.1 s frame).
 - Battles at 12-20 fps in this session's later waves (GPU 34-38 ms per frame; JS 46-60 ms).
+
+### The Temple reflection, caught on screen (0.69-beta, 2026-10-20; runtime 0.71)
+A screenshot from the release: a trainer battle in the Temple, the enemy's Cofagrigus at wave 76.
+Under its base, left of the Darkrai info box, a fragment of sprite pixels in the coffin's colours
+shows where only the shadow (or nothing) belongs; sometimes, per the player, it is larger.
+PokeRogue's sprite pipeline stretches a Pokémon's quad below its frame for the shadow (batchQuad:
+y1 and v1 grow; vCutoff keeps the frame's real bottom) and the shader darkens or discards every
+pixel of that strip. Pixels of the sprite sheet showing there means that test didn't run or
+failed: the copy without the shadow drew (a stale hasShadow), or the comparison came out wrong on
+the GPU. The code paths checked (the native uniform setter, the fast paths, the variant choice)
+all go through the recorded GL calls, so no cause is known yet.
+0.71 (debug builds): L + R + TRIANGLE switches the variants off and on while playing. If the
+fragment goes away with them off, they are the cause; if not, the next suspect is the rewritten
+or original shader's shadow test at the Vita's precision.

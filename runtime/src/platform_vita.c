@@ -151,6 +151,17 @@ bool plat_poll_event(plat_event *ev) {
             return true;
         }
         start_was_down = start_down;
+        // TRIANGLE pressed while holding L + R: shader variants off/on (gl.c), to see whether a
+        // drawing bug is theirs.
+        static bool tri_was_down;
+        bool tri_down = pad.buttons & SCE_CTRL_TRIANGLE;
+        if (tri_down && !tri_was_down && lr) {
+            tri_was_down = true;
+            memset(ev, 0, sizeof *ev);
+            ev->type = PEV_TOGGLE_VARIANTS;
+            return true;
+        }
+        tri_was_down = tri_down;
     }
     if (phase == 1) {
         phase = 2;

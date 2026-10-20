@@ -12,6 +12,7 @@
 //   ime <text>       answer an open text-entry request (Linux stand-in for the Vita keyboard)
 //   ime-cancel       cancel it
 //   sendlog          upload the log to the log server (L + R + START on the Vita; devtools.c)
+//   variants         shader variants off/on (L + R + TRIANGLE on the Vita; gl.c)
 //   quit
 
 #include <errno.h>
@@ -226,6 +227,8 @@ static float tap_x, tap_y;
 static double ctl_wait_until; // "wait": no further commands before this time
 static bool ctl_more;        // a "key"/"wait" left more commands to read: read again without delay
 
+static void toggle_variants(void);
+
 static void control_line(JSContext *ctx, char *line, bool *quit) {
     char *arg = strchr(line, ' ');
     if (arg) *arg++ = 0;
@@ -295,6 +298,8 @@ static void control_line(JSContext *ctx, char *line, bool *quit) {
         g_cfg.sample = !g_cfg.sample;
     } else if (!strcmp(line, "hud")) {
         g_cfg.hud = !g_cfg.hud;
+    } else if (!strcmp(line, "variants")) {
+        toggle_variants();
     } else if (!strcmp(line, "sendlog")) {
         dev_send_log();
     } else if (!strcmp(line, "quit")) {
@@ -574,9 +579,19 @@ static void draw_hud(JSContext *ctx, double js_ms) {
 }
 
 // Native drawing over the game's frame: the built-in keyboard and the debug line.
+// L + R + TRIANGLE (debug builds) or "variants" on the control channel: shader variants off/on,
+// with a notice for a few seconds.
+static double variants_notice_until;
+static bool variants_on = true;
+static __attribute__((unused)) void toggle_variants(void) {
+    variants_on = gl_toggle_variants();
+    variants_notice_until = host_now_ms() + 3000;
+}
+
 static void draw_over_game(JSContext *ctx, double js_ms) {
     int pre_total, pre_left = gl_precompile_left(&pre_total);
-    if (!osk_active() && !link_active() && !g_cfg.hud && !fields_draw_pending() && !pre_left) return;
+    bool variants_notice = host_now_ms() < variants_notice_until;
+    if (!osk_active() && !link_active() && !g_cfg.hud && !fields_draw_pending() && !pre_left && !variants_notice) return;
     host_call_rt(ctx, "beforeExternalGL", 0, NULL);
     fields_draw();
     osk_draw();
@@ -586,6 +601,8 @@ static void draw_over_game(JSContext *ctx, double js_ms) {
         char text[80];
         snprintf(text, sizeof text, "Preparing shaders %d/%d: the game may stutter", pre_total - pre_left, pre_total);
         overlay_notice_draw(text);
+    } else if (variants_notice) {
+        overlay_notice_draw(variants_on ? "Shader variants on" : "Shader variants off (original shaders)");
     }
     host_call_rt(ctx, "afterExternalGL", 0, NULL);
 }
@@ -1010,6 +1027,12 @@ int main(int argc, char **argv) {
             if (ev.type == PEV_TOGGLE_HUD) {
 #ifdef PKR_DEBUG
                 g_cfg.hud = !g_cfg.hud;
+#endif
+                continue;
+            }
+            if (ev.type == PEV_TOGGLE_VARIANTS) {
+#ifdef PKR_DEBUG
+                toggle_variants();
 #endif
                 continue;
             }
