@@ -555,3 +555,13 @@ colour loops skipped when their palette is empty, setting tested first), checked
 `tests/shaders` on the desktop (23 checks; a deliberately broken rewrite fails 11). The profiler no
 longer waits for the GPU every frame on screens with nothing drawn. **To measure on the console:**
 `gpuprofile=1`, and one run with `shaderfix=0` for the old numbers.
+
+### The stats graph showed a texture (photo, 0.61; runtime 0.63)
+On the egg-hatch summary the stats hexagon (two `Phaser.GameObjects.Polygon` fills in PokeRogue's
+`stats-container.ts`) showed a blurred sprite inside, with 4 and with 16 texture units. Phaser fills
+polygons with `batchTri(null, ..., tintEffect 2)`: solid colour, no texture of their own, on the
+current unit. The shaders test `outTintEffect == 2.0` on the interpolated varying; on the Vita that
+apparently fails, and the colour is multiplied by whatever texture is bound (rectangles hide it:
+they bind Phaser's white texture). 0.63 rounds the tint effect once (`floor(x + 0.5)`) in every
+shader that tests it; `tests/shaders` draws with 0.99/1.99 and checks they come out as 1/2, and that
+everything else stays byte for byte. **Not yet seen on the console.**

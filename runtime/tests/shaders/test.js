@@ -66,6 +66,11 @@ for (let i = 0; i < 12; i++) {
 const vbuf = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, vbuf);
 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.STATIC_DRAW);
+// The same quads with tint effects 0.99 and 1.99: what the Vita's GPU made of 1 and 2 (the stats
+// graph showed a texture inside a solid-colour polygon).
+const roughBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, roughBuf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts.map((v, i) => i % STRIDE === 5 && v > 0 ? v - 0.01 : v)), gl.STATIC_DRAW);
 
 function compile(vsrc, fsrc, fix) {
   rt.shaderFix = fix;
@@ -92,7 +97,7 @@ const SPRITE_DEFAULTS = {
   nightTint: ["3f", [0.3, 0.3, 0.6]], fieldScale: ["1f", 6], texFrameUv: ["2f", [0, 0]], size: ["2f", [16, 16]],
   texSize: ["2f", [8, 8]], relPosition: ["2f", [8, 8]], vCutoff: ["1f", 1], isOutside: ["1i", 1],
 };
-function render(p, uniforms) {
+function render(p, uniforms, buf = vbuf) {
   gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
   gl.viewport(0, 0, W, H);
   gl.disable(gl.BLEND);
@@ -130,7 +135,7 @@ function render(p, uniforms) {
   set("fusionSpriteColors", "4iv", new Array(128).fill(0));
   for (const [n, [t, v]] of Object.entries(uniforms)) set(n, t, v);
 
-  gl.bindBuffer(gl.ARRAY_BUFFER, vbuf);
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
   const attrs = [["inPosition", 2, 0], ["inTexCoord", 2, 2], ["inTexId", 1, 4], ["inTintEffect", 1, 5], ["inTint", 4, 6]];
   for (const [name, size, off] of attrs) {
     const loc = gl.getAttribLocation(p, name);
@@ -203,11 +208,11 @@ async function run() {
   const parse = (src) => Phaser.Renderer.WebGL.Utils.parseFragmentShaderMaxTextures(src, UNITS);
   const spriteVert = await text("sprite-shader.vert");
   const shaders = {
-    sprite: [spriteVert, parse(await text("sprite-frag-shader.frag")), ["colour loops (2)", "tera", "day/night"]],
-    field: [spriteVert, parse(await text("field-sprite-frag-shader.frag")), ["texture pick (4)", "day/night", "terrain"]],
-    multi: [await phaserShader("PHASER_MULTI_VS"), parse(await phaserShader("PHASER_MULTI_FS")), ["texture pick (4)"]],
+    sprite: [spriteVert, parse(await text("sprite-frag-shader.frag")), ["tint effect", "colour loops (2)", "tera", "day/night"]],
+    field: [spriteVert, parse(await text("field-sprite-frag-shader.frag")), ["tint effect", "texture pick (4)", "day/night", "terrain"]],
+    multi: [await phaserShader("PHASER_MULTI_VS"), parse(await phaserShader("PHASER_MULTI_FS")), ["tint effect", "texture pick (4)"]],
   };
-  const marks = { "colour loops (2)": /\[0\]\.a != 0\.0|\[0\]\[3\] != 0\.0/, tera: /if \(all\(lessThan\(vec3\(0\.0\), teraColor\)\)\) \{ if/,
+  const marks = { "tint effect": /pkr_tintEffect = floor\(outTintEffect \+ 0\.5\)/, "colour loops (2)": /\[0\]\.a != 0\.0|\[0\]\[3\] != 0\.0/, tera: /if \(all\(lessThan\(vec3\(0\.0\), teraColor\)\)\) \{ if/,
     "day/night": /if \(!ignoreTimeTint\) \{ if/, terrain: /if \(terrainColorRatio > 0\.0 &&[^{]*\) \{ if/, "texture pick (4)": /vec4 pkr_t3 = /};
   for (const [name, [vsrc, fsrc, expected]] of Object.entries(shaders)) {
     let orig, fixed;
@@ -220,6 +225,10 @@ async function run() {
     }
     const missing = expected.filter((r) => !marks[r].test(fixed.fragSource) || marks[r].test(orig.fragSource));
     report(name + ": rewrites applied (" + expected.join(", ") + ")", !missing.length, missing.length ? "missing: " + missing.join(", ") : "");
+    const exact = render(fixed, SPRITE_DEFAULTS), rough = render(fixed, SPRITE_DEFAULTS, roughBuf);
+    const before = diff(render(orig, SPRITE_DEFAULTS), render(orig, SPRITE_DEFAULTS, roughBuf)).n;
+    report(name + ": tint effects 0.99/1.99 draw as 1/2", !diff(exact, rough).n && before > 0,
+      diff(exact, rough).n ? diff(exact, rough).n + " bytes differ" : before ? "" : "the original shader didn't mind either");
     let reference = null;
     for (const [label, uniforms] of Object.entries(CASES[name])) {
       const u = { ...SPRITE_DEFAULTS, ...uniforms };

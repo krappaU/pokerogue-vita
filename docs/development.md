@@ -218,7 +218,10 @@ without a copy.
   for the same pixels (`rewriteShader`, 0.62): Phaser's texture pick reads every unit and then
   chooses (no texture read inside an if-chain), PokeRogue's colour loops are skipped when their
   palette is empty, and a condition that mixes a per-pixel test with a setting tests the setting
-  first, on its own (tera, day/night, terrain). The log names what each shader got (`[shaderfix]`).
+  first, on its own (tera, day/night, terrain). The tint effect (0, 1 or 2) is rounded before it
+  is compared (0.63): the Vita's GPU interpolated 2.0 inexactly, so solid-colour shapes without a
+  texture of their own (the summary's stats graph) showed whatever texture was bound. The log names
+  what each shader got (`[shaderfix]`).
   `tests/shaders` renders each rewritten shader against the original (PokeRogue's sprite and field
   shaders of a pinned commit, Phaser's multi-texture shader) with the settings the game uses and
   compares every byte. `shaderfix=0` in config.txt keeps the originals, to compare on the console.

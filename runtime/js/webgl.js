@@ -98,6 +98,17 @@
       applied.push("texture pick (" + s.length + ")");
       return s.map((name, i) => "vec4 pkr_t" + i + " = texture2D(" + name + ", outTexCoord);").join(" ") + " pkr_texture = " + pick + ";";
     });
+    // Phaser's tint effect (0 multiply, 1 fill, 2 solid colour) reaches the fragment shader as an
+    // interpolated varying, which the Vita's GPU doesn't keep exactly at 2.0: the == test failed and
+    // shapes drawn without a texture of their own (Graphics/Polygon fills: the summary's stats graph)
+    // showed whatever texture was bound. Phaser only ever passes 0, 1 or 2, so rounding it is exact.
+    const main = /void main\s*\(\s*(?:void)?\s*\)\s*\{/.exec(src);
+    if (main && /outTintEffect == [12]\.0/.test(src)) {
+      src = src.replace(/outTintEffect == ([12])\.0\b/g, "pkr_tintEffect == $1.0");
+      const at = main.index + main[0].length;
+      src = src.slice(0, at) + " float pkr_tintEffect = floor(outTintEffect + 0.5);" + src.slice(at);
+      applied.push("tint effect test");
+    }
     // PokeRogue's colour loops stop at the first entry with alpha 0: skip them when that's the first.
     [src, n] = guardLoops(src);
     if (n) applied.push("colour loops (" + n + ")");
