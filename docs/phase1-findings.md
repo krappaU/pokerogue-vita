@@ -514,3 +514,24 @@ before vitaGL takes memory (installing the updater now restarts the game once fi
 installer call is bracketed by a marker file, so a crash or hang in it turns the installer off for
 that build instead of repeating at every start. To leave 0.59: install 0.60 with VitaShell (0.59's
 own update path still crashes), after deleting `ux0:app/PKRVUPD01`.
+
+### The GPU time is the shaders (log33/log35, 0.60, 2026-10-20; PokeRogue live build of that day)
+0.60's GPU timer (one frame, after the frame before was waited for) on the console. Default
+shaders (log33): battle windows 46-81 ms of GPU time per frame, swap 14-35 ms, 5.6-19.9 fps, with
+JS at 33-82 ms per frame; the first title/menu window 24 ms. Textures: 52-78 MB in CDRAM, up to
+17 MB in the RAM pool and 16 MB in phycont at times, none in the heap. The reading has a floor of
+11-15 ms on near-empty screens (probably the wait for a free display buffer).
+
+`plainshaders=1` (log35, every textured fragment shader replaced by a plain texture read; colours
+and text wrong): battle 2.2-3.3 ms of GPU time per frame, swap 0.3 ms, 12.6-28.8 fps, now bound by
+JS (34-54 ms per frame); a menu screen 8 ms of GPU at 60 fps. The textures sat in the same pools
+(17-39 MB outside CDRAM), so where a texture lives barely matters: ~95% of the battle's GPU time
+is fragment shading.
+
+The candidates are PokeRogue's own shaders (`src/pipelines/glsl` in the game): `SpritePipeline`
+(Pokémon and trainers) runs two loops of up to 32 colour comparisons per pixel over uniform arrays
+(variant and fusion palettes; they break at the first entry with alpha 0, usually the first),
+then tera, day/night and shadow branches, all in highp; `FieldSpritePipeline` (the arena and most
+other sprites) picks the texture with an `if` per unit, then day/night and terrain branches. How
+vitaGL's GLSL-to-Cg path compiles those loops and branches for the SGX is the open question. Next:
+GPU time per shader program, then shader rewrites that keep the output identical.
