@@ -48,8 +48,16 @@ jobs:
           fi
           [ -n "$run" ] || { echo "no successful CI run found"; exit 1; }
           gh run view "$run" --json headSha,headBranch,displayTitle > run.json
+          # By itself, only main's newest commit: a re-run of an older commit's CI finishing later
+          # must not replace a newer dev build (it did, and GitHub refused the older tag: 403).
+          tip=$(gh api "repos/$GH_REPO/commits/main" -q .sha)
+          if [ "$GITHUB_EVENT_NAME" = workflow_run ] && [ "$(jq -r .headSha run.json)" != "$tip" ]; then
+            echo "run $run is for an older commit than main's ($tip): not published"
+            echo "SKIP=1" >> "$GITHUB_ENV"
+          fi
           echo "RUN=$run" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v8
+        if: env.SKIP != '1'
         with:
           run-id: ${{ env.RUN }}
           github-token: ${{ github.token }}
@@ -57,6 +65,7 @@ jobs:
           path: dl
           merge-multiple: true
       - name: Publish
+        if: env.SKIP != '1'
         run: |
           vpk=$(ls dl/pokerogue-*-dev.vpk | head -1)
           [ -f "$vpk" ] || { echo "run $RUN has no dev .vpk (expired?)"; exit 1; }
