@@ -454,3 +454,19 @@ swap is timed: on this tile-based GPU the pixel work starts when the scene ends,
 about the frame's GPU time) and `N calls/frame`; the log says how many texture units Phaser uses;
 `maxtextures=N` in config.txt tells Phaser of at most N units. To decide: a battle with the default
 and one with `maxtextures=4` (more draw calls, a cheaper pixel shader).
+
+### The game installs its own updater (2026-10-20; runtime 0.58)
+The copying updater worked on the console (0.53 onwards: `updater: ok 15 files`), but it had to be
+installed by hand once and left `sce_sys/` alone, so LiveArea changes (0.57) still needed VitaShell.
+0.58 does what VitaShell does with VSUPDATER: the dev build carries the updater (`updater.vpk`),
+installs it with the system's installer (ScePromoterUtil: PAF module with a 1.5 MB heap, then
+`scePromoterUtilityPromotePkgWithRif(dir, 1)`), starts it and quits; the updater installs the game
+the same way and starts it again; the game uninstalls the updater at every start
+(`scePromoterUtilityDeletePkg`). The installer wants `sce_sys/package/head.bin`, which VitaShell
+makes from a template with the content id and three SHA-1 based checksums; `scripts/make_head_bin.py`
+does it at build time for both apps (byte for byte VitaShell's output for `PKRV00001` and
+`PKRVUPD01`, checked against its C code built on the host). Builds without one (before 0.58) get
+the installed game's, which is the same for every build. A full install replaces the app folder as a
+whole, so a crash in the middle can leave a broken bubble (VitaShell's updater has the same risk);
+dev builds only. **Not yet run on the console**: the first 0.58 is installed by 0.57's copying
+updater, the first real use is the update after that. Vita3K can't test the installer.

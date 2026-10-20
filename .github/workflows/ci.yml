@@ -78,9 +78,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: pokerogue-dev-${{ env.VERSION }}-${{ github.sha }}
-          path: |
-            runtime/build-vita-dev/pokerogue-${{ env.VERSION }}-dev.vpk
-            runtime/build-vita-dev/pokerogue-updater.vpk
+          path: runtime/build-vita-dev/pokerogue-${{ env.VERSION }}-dev.vpk
           if-no-files-found: error
 
   vita3k:

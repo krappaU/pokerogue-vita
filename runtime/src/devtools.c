@@ -3,9 +3,8 @@
 //   - Test builds: before the start screen, the app reads build.json of the "dev-build" GitHub
 //     pre-release (.github/workflows/publish-dev.yml; config.txt devbuilds=<url> for another, or
 //     devbuilds=off). If it isn't the build running, the app offers to install it: the updater app
-//     (updater/updater.c) replaces the app's files (eboot.bin, js/, cacert.pem) in ux0:app/<title
-//     id> and starts the game again. sce_sys/ (LiveArea, param.sfo) is left alone; changes there
-//     need VitaShell.
+//     it carries (updater/updater.c) installs it with the system's installer, as VitaShell would,
+//     and starts the game again.
 //   - Logs, when config.txt names a log server (devserver=<url>, devkey=<secret>;
 //     tools/devserver/devserver.py): at start, the previous run's log (log-prev.txt, kept so a
 //     crash's log survives the restart) is uploaded in the background; L + R + START in game
@@ -27,6 +26,8 @@
 #ifdef __vita__
 #include <psp2/appmgr.h>
 #include <psp2/kernel/processmgr.h>
+
+#include "../updater/promoter.h"
 #endif
 
 #define DEV_BUILDS_URL "https://github.com/krappaU/pokerogue-vita/releases/download/dev-build/build.json"
@@ -164,12 +165,14 @@ void dev_frame(void) {
 
 // ---------------------------------------------------------------- test builds
 
-// A running app can't write its own ux0:app folder, so a test build is installed by a second app,
-// the updater (updater/updater.c, title PKRVUPD01, installed once with VitaShell): the build is
-// unpacked to <data>/update/files/, <data>/update/ready.txt says it's complete, the updater is
-// started and this app quits. The updater copies the files over, writes <data>/update/result.txt and
-// starts the game again, which shows the result (dev_offer_update).
+// An app can't replace itself while it runs, so a test build is installed by a second app, the
+// updater (updater/updater.c, title PKRVUPD01), the way VitaShell updates itself: the build is
+// unpacked to <data>/update/files/, the updater (app0:updater.vpk, unpacked to <data>/update/updater/)
+// is installed with the system's installer, <data>/update/ready.txt says all is ready, the updater is
+// started and this app quits. The updater installs the build, writes <data>/update/result.txt and
+// starts the game again, which shows the result and uninstalls the updater (dev_offer_update).
 #define UPDATER_TITLE_ID "PKRVUPD01"
+#define HEAD_BIN "sce_sys/package/head.bin" // the package header the installer needs (scripts/make_head_bin.py)
 
 // <data>/dev-build.txt: "<build id> <commit>" of the build installed from the dev-build release. The
 // commit is filled in by the first start of that build ("pending" until then), so a build installed
@@ -219,6 +222,11 @@ static bool is_dir(const char *path) {
     return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
+static bool file_exists(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0;
+}
+
 static void remove_tree(const char *path) {
     DIR *d = opendir(path);
     if (!d) {
@@ -237,7 +245,18 @@ static void remove_tree(const char *path) {
     rmdir(path);
 }
 
-// Unpacks the .vpk's program files (not sce_sys/) into dir for the updater.
+static bool copy_file(const char *from, const char *to) {
+    FILE *in = fopen(from, "rb"), *out = in ? fopen(to, "wb") : NULL;
+    bool ok = in && out;
+    char buf[4096];
+    size_t n;
+    while (ok && (n = fread(buf, 1, sizeof buf, in)) > 0) ok = fwrite(buf, 1, n, out) == n;
+    if (in) fclose(in);
+    if (out && fclose(out) != 0) ok = false;
+    return ok;
+}
+
+// Unpacks a whole .vpk into dir, ready for the system's installer.
 static bool unpack_vpk(const char *vpk, const char *dir, char *err, size_t errn) {
     mz_zip_archive z;
     memset(&z, 0, sizeof z);
@@ -250,7 +269,7 @@ static bool unpack_vpk(const char *vpk, const char *dir, char *err, size_t errn)
     for (int i = 0; ok && i < n; i++) {
         mz_zip_archive_file_stat st;
         if (!mz_zip_reader_file_stat(&z, (mz_uint)i, &st) || st.m_is_directory) continue;
-        if (!strncmp(st.m_filename, "sce_sys/", 8) || strstr(st.m_filename, "..")) continue;
+        if (strstr(st.m_filename, "..")) continue;
         char path[900];
         snprintf(path, sizeof path, "%s/%s", dir, st.m_filename);
         mkdirs_for(path);
@@ -263,6 +282,16 @@ static bool unpack_vpk(const char *vpk, const char *dir, char *err, size_t errn)
     mz_zip_reader_end(&z);
     if (ok && !eboot) snprintf(err, errn, "the .vpk has no eboot.bin"), ok = false;
     return ok;
+}
+
+// Unpacks a test build. Builds before 0.58 have no head.bin: the installed game's fits every build.
+static bool unpack_build(const char *vpk, const char *dir, char *err, size_t errn) {
+    if (!unpack_vpk(vpk, dir, err, errn)) return false;
+    char head[900];
+    snprintf(head, sizeof head, "%s/" HEAD_BIN, dir);
+    if (file_exists(head) || copy_file("app0:" HEAD_BIN, head)) return true;
+    snprintf(err, errn, "the .vpk has no %s", HEAD_BIN);
+    return false;
 }
 
 // What the updater reported after the last install, shown once.
@@ -289,15 +318,37 @@ static void updater_result(void) {
     }
 }
 
-static bool updater_installed(void) {
-    struct stat st;
-    return stat("ux0:app/" UPDATER_TITLE_ID "/eboot.bin", &st) == 0;
+// The updater is only needed during an install: uninstalled at every start (as VitaShell does with
+// its updater), also one installed by hand with VitaShell before the game carried its own.
+static void remove_updater(void) {
+#ifdef __vita__
+    if (!file_exists("ux0:app/" UPDATER_TITLE_ID "/eboot.bin")) return;
+    sceAppMgrDestroyOtherApp(); // the updater, if it hasn't quit yet
+    int r = delete_app(UPDATER_TITLE_ID);
+    host_log("[dev] updater app uninstalled%s", r < 0 ? " (failed)" : "");
+    if (r < 0) host_log("[dev] uninstalling the updater: error 0x%08X", (unsigned)r);
+#endif
+}
+
+// Installs the updater app from the updater.vpk this app carries.
+static bool install_updater(const char *dir, char *err, size_t errn) {
+#ifdef __vita__
+    if (!unpack_vpk("app0:updater.vpk", dir, err, errn)) return false;
+    int r = promote_app(dir);
+    if (r < 0) snprintf(err, errn, "the system installer failed (0x%08X)", (unsigned)r);
+    return r >= 0;
+#else
+    snprintf(err, errn, "only on the Vita");
+    return false;
+#endif
 }
 
 bool dev_offer_update(void) {
     const char *builds = g_cfg.dev_builds ? g_cfg.dev_builds : DEV_BUILDS_URL;
-    if (!app_dir || !strcmp(builds, "off")) return false;
+    if (!app_dir) return false;
     updater_result();
+    remove_updater();
+    if (!strcmp(builds, "off")) return false;
     char commit[64], inst_id[128] = "", inst_commit[64] = "";
     running_commit(commit, sizeof commit);
     if (read_pair("dev-build.txt", inst_id, sizeof inst_id, inst_commit, sizeof inst_commit)) {
@@ -329,10 +380,8 @@ bool dev_offer_update(void) {
         return false;
 
     char msg[900];
-    bool have_updater = updater_installed();
-    snprintf(msg, sizeof msg, "New test build:\n%s\n(%.1f MB)\n\nRunning now: %s\n\n%s", label,
-             size > 0 ? size / 1048576.0 : 0, host_version_string(),
-             have_updater ? "Install it? The app restarts." : "Download it? (Installing needs the updater app,\nsee below, or VitaShell.)");
+    snprintf(msg, sizeof msg, "New test build:\n%s\n(%.1f MB)\n\nRunning now: %s\n\nInstall it? The app restarts.", label,
+             size > 0 ? size / 1048576.0 : 0, host_version_string());
     if (!ui_confirm(msg)) {
         write_pair("dev-declined.txt", id, "-"); // not asked again for this build
         return false;
@@ -354,22 +403,19 @@ bool dev_offer_update(void) {
         }
         return false;
     }
-    if (!have_updater) {
-        host_log("[dev] no updater app (" UPDATER_TITLE_ID "); the download is in %s", vpk);
-        snprintf(msg, sizeof msg, "Downloaded to %s.\n\nInstall it with VitaShell (press X on the file).\n\n"
-                 "To install test builds from here, install the updater\nonce: pokerogue-updater.vpk from the dev-build release.", vpk);
-        ui_message_wait(msg);
-        return false;
-    }
     overlay_present("PokeRogue\n\nUnpacking the test build...");
-    char dir[700], files[760], ready[760];
+    char dir[700], files[760], upd[760], ready[760];
     build_file(dir, sizeof dir, "update");
     remove_tree(dir);
     snprintf(files, sizeof files, "%s/files", dir);
-    if (!unpack_vpk(vpk, files, err, sizeof err)) {
-        host_log("[dev] unpacking failed: %s", err);
+    snprintf(upd, sizeof upd, "%s/updater", dir);
+    bool unpacked = unpack_build(vpk, files, err, sizeof err);
+    if (unpacked) overlay_present("PokeRogue\n\nInstalling the updater...");
+    if (!unpacked || !install_updater(upd, err, sizeof err)) {
+        host_log("[dev] %s failed: %s", unpacked ? "installing the updater" : "unpacking", err);
         remove_tree(dir);
-        snprintf(msg, sizeof msg, "Unpacking failed: %s\n\nThe download is in %s:\ninstall it with VitaShell.", err, vpk);
+        snprintf(msg, sizeof msg, "%s failed: %s\n\nThe download is in %s:\ninstall it with VitaShell.",
+                 unpacked ? "Installing the updater" : "Unpacking", err, vpk);
         ui_message_wait(msg);
         return false;
     }
@@ -389,6 +435,6 @@ bool dev_offer_update(void) {
     sceAppMgrLaunchAppByUri(0xFFFFF, "psgm:play?titleid=" UPDATER_TITLE_ID);
     sceKernelExitProcess(0);
 #endif
-    ui_message_wait("The updater didn't start.\nClose the game and start the updater (PokeRogue Updater) by hand.");
+    ui_message_wait("The updater didn't start.\nClose the game and start PokeRogue Updater by hand.");
     return true;
 }

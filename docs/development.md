@@ -41,14 +41,16 @@ show "dev" after the version. The app side is `runtime/src/devtools.c`.
 [`dev-build` pre-release](https://github.com/krappaU/pokerogue-vita/releases/tag/dev-build). If it
 names another build than the one running, the app asks and downloads the .vpk from the release. A
 running app can't write its own `ux0:app/PKRV00001` folder (0.50 on the console: "couldn't write
-ux0:app/PKRV00001/eboot.bin.new"), so a second app installs it: **PokeRogue Updater**
-(`runtime/updater/updater.c`, title `PKRVUPD01`; `pokerogue-updater.vpk` in the same release,
-**installed once with VitaShell**). The game unpacks the build to `ux0:data/pokerogue/update/files/`,
-starts the updater and quits; the updater copies the files into `ux0:app/PKRV00001` (eboot.bin
-last; js/, cacert.pem), writes `update/result.txt` and starts the game again, which shows an error
-if there was one. `sce_sys/` (LiveArea, param.sfo) is left alone, so changes there still need an
-install from VitaShell. Without the updater app the download stays in
-`ux0:data/pokerogue/dev-update.vpk` for VitaShell. A build that was declined isn't offered again.
+ux0:app/PKRV00001/eboot.bin.new"), so a second app installs it, the way VitaShell updates
+itself: **PokeRogue Updater** (`runtime/updater/updater.c`, title `PKRVUPD01`), which the dev build
+carries as `updater.vpk`. The game unpacks the build to `ux0:data/pokerogue/update/files/`, installs
+the updater with the system's installer (ScePromoterUtil, `runtime/updater/promoter.h`), starts it
+and quits; the updater installs the build the same way (a full install: LiveArea and param.sfo
+too), writes `update/result.txt` and starts the game again, which shows an error if there was one
+and uninstalls the updater (at every start, also one installed by hand). The installer needs
+`sce_sys/package/head.bin` in the folder: every .vpk carries one, made at build time by
+`runtime/scripts/make_head_bin.py` from VitaShell's template (the same bytes VitaShell would write).
+If something fails the download stays in `ux0:data/pokerogue/dev-update.vpk` for VitaShell. A build that was declined isn't offered again.
 `devbuilds=off` in `config.txt` turns the check off (`devbuilds=<url>` reads another `build.json`).
 The updater (like VitaShell's VSUPDATER) is built with every dev build.
 
@@ -105,8 +107,8 @@ Without `devserver=`, a dev build sends no logs.
 - Don't offer zstd in Accept-Encoding: each stream needs megabytes of buffer.
 - LiveArea images must be 8-bit palette PNGs (`runtime/scripts/make_livearea.py` writes them, for
   the game and the updater; the game's use a CC BY-NC-SA arena backdrop, see
-  `runtime/sce_sys/README.md`). The Vita reads a bubble's images when the app is installed, so new
-  ones show only after installing the .vpk with VitaShell (the updater leaves `sce_sys/` alone).
+  `runtime/sce_sys/README.md`). The Vita reads a bubble's images when the app is installed (by
+  VitaShell or the dev build's updater).
 - vitaGL uniform locations are negated pointers and often negative; only -1 means "not found".
 - vitaGL compiles a sampler array (`uniform sampler2D s[16]`) as one sampler, so only `s[0]` gets
   a texture. Phaser's batch shader and PokeRogue's shaders use one; `js/webgl.js` rewrites each

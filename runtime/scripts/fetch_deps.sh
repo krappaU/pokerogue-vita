@@ -50,3 +50,10 @@ mkdir -p third_party/qrcodegen
 for f in qrcodegen.c qrcodegen.h; do
   [ -f "third_party/qrcodegen/$f" ] || curl -sfL "https://raw.githubusercontent.com/nayuki/QR-Code-generator/$QRCODEGEN/c/$f" -o "third_party/qrcodegen/$f"
 done
+
+# The package header template the Vita's installer needs in sce_sys/package/head.bin (filled in for
+# each app by scripts/make_head_bin.py): VitaShell's, GPL-3.0, data only.
+VITASHELL=81af70971ba18b8ce86215b04180f1e3d21cdfc9
+mkdir -p third_party/vitashell
+[ -f third_party/vitashell/head.bin ] || curl -sfL "https://raw.githubusercontent.com/TheOfficialFloW/VitaShell/$VITASHELL/resources/head.bin" -o third_party/vitashell/head.bin
+echo "cbb88299319048e19115a1fc9c76b04e33745291749de0e08963b9b425623f45  third_party/vitashell/head.bin" | sha256sum -c --quiet
