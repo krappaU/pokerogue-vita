@@ -6,8 +6,8 @@ saves, much like the online mode of [Admiral-Billy's PokeRogue App](https://gith
 on desktop and Android. It can also play an offline build of the game from the memory card.
 
 > **Status: beta.** Online play (login, cloud saves) and offline play work on a real Vita, with
-> sound, gamepad controls, the touchscreen and save import/export. Battles run at about 20-35 fps
-> and some moments still pause briefly; performance is the main work left.
+> sound, gamepad controls, the touchscreen and save import/export. Battles run at about 15-35 fps
+> depending on the map, and some moments still pause briefly; performance is the main work left.
 > Download the latest build from [Releases](https://github.com/krappaU/pokerogue-vita/releases).
 
 ## What works
