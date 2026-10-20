@@ -433,3 +433,24 @@ at the first start, and the game is compiled once more). `js/fastpath.js` logs
 time from the compiled code it wrote, failing if a fast path was left out (checked: with the old
 flags the second run fails). On desktop with the live site: all six installed on both starts. A
 way to drop the 5.6 MB later: check Phaser's source once when compiling and remember the result.
+
+### Battles after the fast paths came back, and what the swap waits for (log19, 0.55, 2026-10-20; runtime 0.56)
+0.55 on the console, two waves (`[fastpath] native: uniforms, pipeline (48 functions), graphics,
+shapes, emit, uuid`): JS per battle frame 27-45 ms (p50 27-41) instead of 51-67 (p50 48-57) in
+0.54, 15-19 fps instead of 11-14. Profile groups in battle: PokeRogue's sprite pipelines 20-43%,
+Phaser render JS 13-25% (BitmapText renderer, GetCalcMatrix, copyFrom, willRender), tweens 16-24%,
+sprite animations 5-10%. But the swap took 17-38 ms per frame (11-17 before), and JS + swap stayed
+at ~55-65 ms whatever the JS time: the frame looks bound by the GPU. GL draw calls themselves cost
+0.2 ms per frame. GPU memory was full (textures 98-104 MB, pools 0.1-4.8 MB video and ~2 MB RAM
+free), with 14-38 textures re-uploaded per window.
+
+One suspect: vitaGL reports 16 texture units, so Phaser's multi-texture shader picks each pixel's
+texture through 16 `if`s. On the desktop (software GL, where pixel work is what costs), the Phaser
+test scene's draw calls took 15-19 ms per frame with 16 units and 4-5 ms with 4, for the same 9-10
+calls per frame; the probes are unchanged.
+
+0.56 (dev builds): the `[perf]` line has `GPU N ms/frame` (every 30th frame, glFinish before the
+swap is timed: on this tile-based GPU the pixel work starts when the scene ends, so the wait is
+about the frame's GPU time) and `N calls/frame`; the log says how many texture units Phaser uses;
+`maxtextures=N` in config.txt tells Phaser of at most N units. To decide: a battle with the default
+and one with `maxtextures=4` (more draw calls, a cheaper pixel shader).

@@ -212,7 +212,31 @@ int plat_gamepads(plat_gamepad *out, int max) {
     return 1;
 }
 
-void plat_swap(void) { vglSwapBuffers(ime_active ? GL_TRUE : GL_FALSE); }
+// Debug builds: every 30th frame, the GPU's time for the frame is measured by waiting for it before
+// the swap. glFinish ends the scene, and on this tile-based GPU most of a frame's work (the pixels)
+// only starts then, so the wait is close to the frame's GPU time. Costs that frame its CPU/GPU overlap.
+static double gpu_sum, gpu_max;
+static int gpu_n;
+
+void plat_swap(void) {
+#ifdef PKR_DEBUG
+    static unsigned frame;
+    if (++frame % 30 == 0) {
+        double t0 = host_now_ms();
+        glFinish();
+        double ms = host_now_ms() - t0;
+        gpu_sum += ms;
+        if (ms > gpu_max) gpu_max = ms;
+        gpu_n++;
+    }
+#endif
+    vglSwapBuffers(ime_active ? GL_TRUE : GL_FALSE);
+}
+
+void plat_gpu_stats(double *avg_ms, double *max_ms, int *samples) {
+    *avg_ms = gpu_n ? gpu_sum / gpu_n : 0, *max_ms = gpu_max, *samples = gpu_n;
+    gpu_sum = gpu_max = 0, gpu_n = 0;
+}
 
 // ---------------------------------------------------------------- text entry (system keyboard)
 

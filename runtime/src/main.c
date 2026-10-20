@@ -377,6 +377,10 @@ static void perf_add(double js_ms) {
     // A window closes after 300 frames or 10 s, so slow stretches (loading) still get reported.
     if (perf_n < PERF_WINDOW && secs < 10) return;
     if (!host_logging()) {
+        double d1, d2;
+        int i1, i2;
+        gl_draw_stats(&d1, &d2, &i1, &i2);
+        plat_gpu_stats(&d1, &d2, &i1);
         perf_n = perf_gc = 0;
         perf_gc_max = perf_swap_ms = perf_after_ms = perf_draw_ms = 0;
         for (int i = 0; i < N_PHASE_STATS; i++) phase_stats[i].ms = 0;
@@ -402,15 +406,19 @@ static void perf_add(double js_ms) {
             olen += snprintf(other + olen, sizeof other - olen, "%s%s %.0f", olen ? ", " : " | also (ms/frame): ", phase_stats[i].name, per);
         phase_stats[i].ms = 0;
     }
-    double gl_total, gl_max;
-    int restores;
-    gl_draw_stats(&gl_total, &gl_max, &restores);
-    char glx[96] = "";
+    double gl_total, gl_max, gpu_avg, gpu_max;
+    int restores, draws, gpu_n;
+    gl_draw_stats(&gl_total, &gl_max, &restores, &draws);
+    plat_gpu_stats(&gpu_avg, &gpu_max, &gpu_n);
+    char glx[96] = "", gpu[64] = "";
     if (restores) snprintf(glx, sizeof glx, ", %d textures re-uploaded", restores);
+    // Sampled frames (debug builds on the Vita): how long the GPU took for one frame.
+    if (gpu_n) snprintf(gpu, sizeof gpu, " | GPU %.1f ms/frame (max %.0f, %d frames)", gpu_avg, gpu_max, gpu_n);
     host_log("[perf] %.1f fps | JS per frame: avg %.2f ms, p50 %.2f, p95 %.2f, max %.2f%s | draw %.1f, swap %.1f, after %.1f ms | "
-             "in GL draw calls %.1f ms/frame (max %.0f)%s%s | net: %s | %s | t=%.1f s",
+             "in GL draw calls %.1f ms/frame (max %.0f), %d calls/frame%s%s%s | net: %s | %s | t=%.1f s",
              perf_n / secs, sum / perf_n, perf_js[perf_n / 2], perf_js[perf_n * 95 / 100], perf_js[perf_n - 1], gc,
-             perf_draw_ms / perf_n, perf_swap_ms / perf_n, perf_after_ms / perf_n, gl_total / perf_n, gl_max, glx, other, net, dec, (host_now_ms() - t_main_start) / 1000.0);
+             perf_draw_ms / perf_n, perf_swap_ms / perf_n, perf_after_ms / perf_n, gl_total / perf_n, gl_max, draws / perf_n,
+             glx, gpu, other, net, dec, (host_now_ms() - t_main_start) / 1000.0);
     perf_gc = 0;
     perf_gc_max = 0;
     perf_swap_ms = perf_after_ms = perf_draw_ms = 0;
@@ -561,6 +569,7 @@ static void save_screenshot(const char *path) {
 //   profile_rate=1000               JS operations between profile samples (QuickJS's default 10000)
 //   sample_ms=1                     at most one sample per ms: samples follow time, not JS operations
 //   nettrace=1                      log the headers of requests to the game's API
+//   maxtextures=4                   tell Phaser of at most N texture units (its shader has an if per unit)
 // Dev builds only (devtools.c):
 //   devserver=https://host/         log server for log upload (tools/devserver), devkey=<its key>
 //   devbuilds=off|<url>             test builds: off, or another build.json than the dev-build release
@@ -637,6 +646,8 @@ static void load_config_file(void) {
             g_cfg.sample_ms = atof(v);
         } else if (!strcmp(k, "nettrace")) {
             g_cfg.net_trace = atoi(v) != 0;
+        } else if (!strcmp(k, "maxtextures")) {
+            g_cfg.max_textures = atoi(v);
         } else if (!strcmp(k, "profile")) {
             g_cfg.no_profile = atoi(v) == 0;
 #endif

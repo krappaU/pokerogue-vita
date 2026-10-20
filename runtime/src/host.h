@@ -28,6 +28,7 @@ typedef struct {
     bool hud;                // debug line over the game (config.txt hud=1; SELECT while holding L+R)
     bool sample;             // profiler sampling without the debug line (control channel "profile",
                              // config.txt sample=1; on from the start in profiling builds)
+    int max_textures;        // config.txt maxtextures=N (debug builds): texture units Phaser is told of
     int profile_rate;        // JS operations between samples (config.txt profile_rate=N; 0: QuickJS's 10000)
     double sample_ms;        // at most one sample per this many ms, so samples follow time rather than
                              // operation counts (config.txt sample_ms=1; 0: every check)
@@ -110,6 +111,7 @@ void plat_shutdown(void);
 // Returns false when there are no more events.
 bool plat_poll_event(plat_event *ev);
 void plat_swap(void);
+void plat_gpu_stats(double *avg_ms, double *max_ms, int *samples); // debug builds: sampled GPU time per frame
 void plat_drawable_size(int *w, int *h);
 int plat_gamepads(plat_gamepad *pads, int max);
 // Inject a synthetic key press/release (control channel).
@@ -179,7 +181,7 @@ bool net_is_local(const char *url);
 
 void gl_register(JSContext *ctx, JSValue native);        // gl.c
 void gl_buffer_sub_data(int target, int offset, const void *p, size_t len); // gl.c
-void gl_draw_stats(double *total_ms, double *max_frame_ms, int *restores); // gl.c
+void gl_draw_stats(double *total_ms, double *max_frame_ms, int *restores, int *draws); // gl.c
 void gl_after_frame(void);
 void gl_restore_state(void); // after drawing over the game mid-frame
 void gl_texture_memory(size_t *bytes, size_t *peak, int *count);

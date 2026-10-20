@@ -563,6 +563,7 @@ static uint32_t gl_frame;
 static size_t evictable_bytes;
 static int n_evictions, n_restores;
 static double draw_ms_frame, draw_ms_total, draw_ms_max_frame; // see w_drawArrays
+static int draws_total; // draw calls since the last gl_draw_stats
 
 static void tex_forget(JSContext *ctx, GLuint id) {
     if (!id || id >= TEX_MAX) return;
@@ -1006,6 +1007,7 @@ FN(w_drawArrays) {
     double t0 = host_now_ms();
     glDrawArrays(gi(ctx, A(0)), gi(ctx, A(1)), gi(ctx, A(2)));
     draw_ms_frame += host_now_ms() - t0;
+    draws_total++;
     return JS_UNDEFINED;
 }
 FN(w_drawElements) {
@@ -1013,16 +1015,19 @@ FN(w_drawElements) {
     double t0 = host_now_ms();
     glDrawElements(gi(ctx, A(0)), gi(ctx, A(1)), gi(ctx, A(2)), (const void *)(intptr_t)gi(ctx, A(3)));
     draw_ms_frame += host_now_ms() - t0;
+    draws_total++;
     return JS_UNDEFINED;
 }
 
 // For the [perf] line: ms spent in the game's draw calls (total and the worst frame) and textures
 // re-uploaded after eviction since the last call.
-void gl_draw_stats(double *total_ms, double *max_frame_ms, int *restores) {
+void gl_draw_stats(double *total_ms, double *max_frame_ms, int *restores, int *draws) {
     static int last_restores;
     *total_ms = draw_ms_total, *max_frame_ms = draw_ms_max_frame, *restores = n_restores - last_restores;
+    *draws = draws_total;
     last_restores = n_restores;
     draw_ms_total = draw_ms_max_frame = 0;
+    draws_total = 0;
 }
 
 // ---------------------------------------------------------------- textures
@@ -1243,6 +1248,10 @@ FN(w_getParameter) {
     case GL_RENDERBUFFER_BINDING: return JS_DupValue(ctx, st.bound_renderbuffer);
     case GL_TEXTURE_BINDING_2D:
         return JS_DupValue(ctx, st.active_unit >= 0 && st.active_unit < 32 ? st.bound_texture[st.active_unit] : JS_NULL);
+    case GL_MAX_TEXTURE_IMAGE_UNITS: // Phaser builds its multi-texture shader for this many (an if per unit)
+        glGetIntegerv(p, iv);
+        if (g_cfg.max_textures > 0 && g_cfg.max_textures < iv[0]) iv[0] = g_cfg.max_textures;
+        return JS_NewInt32(ctx, iv[0]);
     case 0x9240: return JS_NewBool(ctx, st.flip_y);
     case 0x9241: return JS_NewBool(ctx, st.premultiply);
     case 0x9243: return JS_NewInt32(ctx, 0x9244);

@@ -230,6 +230,8 @@ int plat_gamepads(plat_gamepad *out, int max) {
 
 void plat_swap(void) { SDL_GL_SwapWindow(win); }
 
+void plat_gpu_stats(double *avg_ms, double *max_ms, int *samples) { *avg_ms = *max_ms = 0, *samples = 0; }
+
 void plat_drawable_size(int *w, int *h) { SDL_GL_GetDrawableSize(win, w, h); }
 
 // ---------------------------------------------------------------- text entry (test stand-in)

@@ -41,7 +41,9 @@
     const WR = P.Renderer.WebGL.WebGLRenderer.prototype, init = WR.init;
     WR.init = function () {
       rt.renderer = this;
-      return init.apply(this, arguments);
+      const r = init.apply(this, arguments);
+      N.log("[phaser] renderer: " + this.maxTextures + " texture units per batch");
+      return r;
     };
     // Game code written for 60 fps sometimes acts at most once per tween update: the shop reveals
     // one item per onUpdate of a 1250 ms counter (divided by the game speed), so at Vita frame
