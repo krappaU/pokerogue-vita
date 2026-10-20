@@ -689,16 +689,3 @@ lines and timings named them:
 - `[arena] <name>` when the game loads a battle background, so a bug report can be placed.
 - `[gl] texImage2D WxH took N ms` and `[canvas] a WxH canvas took N ms to allocate` for calls of
   30 ms or more, to find the stat-change stall.
-
-### 0.69 in play (log75, 2026-10-20; runtime 0.70)
-- The profiler report: 9-77 ms (0.3-0.7 s in 0.68) with the log written by its own thread.
-- `[arena]` lines work (default, town, temple in this session).
-- Each stat-change animation (stat up/down arrows) stalled ~330 ms: Phaser's WebGL TileSprite
-  makes a canvas of its full size (936x1896 here), never draws on it, and uploads it as a texture:
-  `[gl] texImage2D 936x1896 took 200 ms`. The rest of the stall is its pattern texture (896x576,
-  52-83 ms). 0.70: on the Vita, a canvas that was never drawn on since it was sized goes up as
-  `glTexImage2D(..., NULL)`, which vitaGL fills with zeros itself: no 7 MB to allocate, clear,
-  convert and copy. (Desktop GL leaves such a texture undefined, so the desktop still uploads.)
-- The worst stall left is the game's own end-of-wave save: `saveAll` parses and stringifies the
-  system data (0.7-1.9 s), and once a garbage collection landed in it (a 3.1 s frame).
-- Battles at 12-20 fps in this session's later waves (GPU 34-38 ms per frame; JS 46-60 ms).

@@ -1610,17 +1610,6 @@ static JSValue tex_image_2d(JSContext *ctx, int argc, JSValueConst *argv, int *o
     if (argc == 6) {
         int fmt = gi(ctx, A(3)), type = gi(ctx, A(4)), w, h;
         bool owned, fr;
-#ifdef __vita__
-        // A canvas never drawn on is all transparent, and vitaGL zero-fills a texture made without
-        // data: no pixels to allocate, clear, convert and copy (log75: Phaser's TileSprite uploads
-        // its blank 936x1896 canvas for each stat-change animation, 200 ms each).
-        if (canvas_is_blank(ctx, A(5), &w, &h)) {
-            *ow = w, *oh = h;
-            glTexImage2D(target, level, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-            if (level == 0) tex_account(bound_tex_id(), (size_t)w * h * 4), tex_forget(ctx, bound_tex_id());
-            return JS_UNDEFINED;
-        }
-#endif
         const uint8_t *px = pixels_from_js(ctx, A(5), &w, &h, &owned);
         if (!px) {
             // No pixels (usually out of memory). Throwing here would abort the game's render loop
