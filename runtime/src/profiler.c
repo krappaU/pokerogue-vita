@@ -320,7 +320,7 @@ static void write_profile(unsigned total) {
         if (stacks[i].key) w += snprintf(w, size - (size_t)(w - buf), "%s %u\n", stacks[i].key, stacks[i].count);
     pthread_attr_t attr;
     pthread_attr_init(&attr);
-    pthread_attr_setstacksize(&attr, 32 * 1024);
+    pthread_attr_setstacksize(&attr, 64 * 1024);
     pthread_t t;
     __atomic_store_n(&profile_writing, 1, __ATOMIC_RELEASE);
     if (pthread_create(&t, &attr, profile_thread, buf) == 0) pthread_detach(t);

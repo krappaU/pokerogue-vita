@@ -683,7 +683,9 @@ lines and timings named them:
 
 0.69:
 - Log lines go to a writer thread (another core) through a 256 KB ring; host_log_flush() waits for
-  it before the log is uploaded and before the app quits, restarts or starts the updater.
+  it before the log is uploaded and before the app quits, restarts or starts the updater. It is
+  also an atexit handler: the first build failed CI's Vita3K boot check (no shader compiler, so
+  main returns early) because exit() closed log.txt while the writer was still flushing it.
 - `[arena] <name>` when the game loads a battle background, so a bug report can be placed.
 - `[gl] texImage2D WxH took N ms` and `[canvas] a WxH canvas took N ms to allocate` for calls of
   30 ms or more, to find the stat-change stall.

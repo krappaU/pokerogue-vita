@@ -135,10 +135,15 @@ void host_log(const char *fmt, ...) {
     if (!log_thread_state) {
         pthread_attr_t attr;
         pthread_attr_init(&attr);
-        pthread_attr_setstacksize(&attr, 32 * 1024);
+        pthread_attr_setstacksize(&attr, 64 * 1024);
         pthread_t t;
         log_thread_state = pthread_create(&t, &attr, log_thread, NULL) == 0 ? 1 : -1;
-        if (log_thread_state == 1) pthread_detach(t);
+        if (log_thread_state == 1) {
+            pthread_detach(t);
+            // exit() closes every FILE after the atexit handlers: the writer must be done by then
+            // (0.69's first build crashed in its fflush when main returned early, without a GPU).
+            atexit(host_log_flush);
+        }
         pthread_attr_destroy(&attr);
     }
     if (log_thread_state < 0) {
