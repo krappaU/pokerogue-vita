@@ -54,6 +54,9 @@ Third-party components fetched at build time keep their own licenses: QuickJS-ng
 (GPL-2.0-or-later), QR-Code-generator (MIT), libcurl (curl license), OpenSSL, vitaGL (LGPL-3.0),
 Mozilla's CA bundle (MPL-2.0) and the 8x8 bitmap font (public domain).
 
+The game's LiveArea images use the rocky coast arena backdrop by Vari from PokeRogue's assets,
+CC BY-NC-SA 4.0 (see [runtime/sce_sys/README.md](runtime/sce_sys/README.md)).
+
 ## Disclaimer
 This is a fan project. It is not affiliated with or endorsed by Pagefault Games, Nintendo,
 The Pokémon Company, Game Freak or Sony. Pokémon and all related names are trademarks of their

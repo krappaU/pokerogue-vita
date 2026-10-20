@@ -103,7 +103,10 @@ Without `devserver=`, a dev build sends no logs.
 - Crash dumps (`ux0:data/psp2core-*.psp2dmp`) decode with vita-parse-core and the unstripped
   `build-vita/pokerogue-rt` (the tool needs small Python 3 fixes).
 - Don't offer zstd in Accept-Encoding: each stream needs megabytes of buffer.
-- LiveArea images must be 8-bit palette PNGs (`runtime/scripts/make_livearea.py` writes them).
+- LiveArea images must be 8-bit palette PNGs (`runtime/scripts/make_livearea.py` writes them, for
+  the game and the updater; the game's use a CC BY-NC-SA arena backdrop, see
+  `runtime/sce_sys/README.md`). The Vita reads a bubble's images when the app is installed, so new
+  ones show only after installing the .vpk with VitaShell (the updater leaves `sce_sys/` alone).
 - vitaGL uniform locations are negated pointers and often negative; only -1 means "not found".
 - vitaGL compiles a sampler array (`uniform sampler2D s[16]`) as one sampler, so only `s[0]` gets
   a texture. Phaser's batch shader and PokeRogue's shaders use one; `js/webgl.js` rewrites each

@@ -117,11 +117,12 @@ if(VITA)
     # would get the game's files, memory mode and TITLE_ID (and replace the game when installed).
     set(VITA_MKSFOEX_FLAGS "")
     set(VITA_PACK_VPK_FLAGS "")
+    # Its own bubble (scripts/make_livearea.py), so it isn't taken for the game.
     vita_create_vpk(pokerogue-updater.vpk PKRVUPD01 updater.bin VERSION "01.00" NAME "PokeRogue Updater"
-      FILE sce_sys/icon0.png sce_sys/icon0.png
-      FILE sce_sys/livearea/contents/bg.png sce_sys/livearea/contents/bg.png
-      FILE sce_sys/livearea/contents/startup.png sce_sys/livearea/contents/startup.png
-      FILE sce_sys/livearea/contents/template.xml sce_sys/livearea/contents/template.xml)
+      FILE updater/sce_sys/icon0.png sce_sys/icon0.png
+      FILE updater/sce_sys/livearea/contents/bg.png sce_sys/livearea/contents/bg.png
+      FILE updater/sce_sys/livearea/contents/startup.png sce_sys/livearea/contents/startup.png
+      FILE updater/sce_sys/livearea/contents/template.xml sce_sys/livearea/contents/template.xml)
   endif()
 else()
   add_executable(pokerogue-rt ${RT_SRC} src/platform_sdl.c)
