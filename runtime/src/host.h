@@ -28,7 +28,8 @@ typedef struct {
     bool hud;                // debug line over the game (config.txt hud=1; SELECT while holding L+R)
     bool sample;             // profiler sampling without the debug line (control channel "profile",
                              // config.txt sample=1; on from the start in profiling builds)
-    int max_textures;        // config.txt maxtextures=N (debug builds): texture units Phaser is told of
+    int max_textures;        // texture units Phaser is told of (default 4; debug builds: maxtextures=N)
+    bool plain_shaders;      // config.txt plainshaders=1 (debug builds): trivial fragment shaders, to measure
     int profile_rate;        // JS operations between samples (config.txt profile_rate=N; 0: QuickJS's 10000)
     double sample_ms;        // at most one sample per this many ms, so samples follow time rather than
                              // operation counts (config.txt sample_ms=1; 0: every check)
@@ -119,12 +120,14 @@ void plat_inject_key(const char *key, bool down);
 // Inject a synthetic pointer event at window coordinates (control channel).
 void plat_inject_pointer(plat_event_type type, float x, float y);
 
-// Text entry through the system keyboard (Vita IME dialog). plat_ime_open returns false if a dialog
-// can't be shown. plat_ime_poll returns 0 while the dialog is open, 1 when confirmed (text in out,
-// UTF-8), -1 when cancelled. On Linux the control channel's "ime <text>" / "ime-cancel" answer it.
+#ifndef __vita__
+// Desktop text entry answered through the control channel ("ime <text>", "ime-cancel"; osk.c): the
+// Vita uses the built-in keyboard only. plat_ime_poll returns 0 while a field waits for its text,
+// 1 when answered (text in out), -1 when cancelled.
 bool plat_ime_open(const char *title, const char *initial, int max_len, bool password);
 int plat_ime_poll(char *out, size_t n);
-void plat_ime_answer(const char *text); // Linux/control channel only (NULL = cancel)
+void plat_ime_answer(const char *text); // NULL = cancel
+#endif
 
 // ---------------------------------------------------------------- JS host (js_host.c)
 
@@ -185,6 +188,8 @@ void gl_draw_stats(double *total_ms, double *max_frame_ms, int *restores, int *d
 void gl_after_frame(void);
 void gl_restore_state(void); // after drawing over the game mid-frame
 void gl_texture_memory(size_t *bytes, size_t *peak, int *count);
+enum { GL_POOL_VIDEO, GL_POOL_RAM, GL_POOL_PHYCONT, GL_POOL_DIALOG, GL_POOL_HEAP, GL_POOLS };
+void gl_texture_pools(size_t bytes[GL_POOLS], size_t largest_out[3]); // Vita: texture bytes per memory pool
 void canvas_register(JSContext *ctx, JSValue native);    // canvas2d.c
 void fastpath_register(JSContext *ctx, JSValue native);  // fastpath.c
 void audio_init(void);                                    // audio.c: decoder thread + output
@@ -211,7 +216,7 @@ void fields_set(int n);
 bool fields_draw_pending(void);
 void field_update(int i, const uint8_t *rgba, int w, int h, float x, float y, float dw, float dh);
 
-// Text entry: the system keyboard where it works, else the built-in one (osk.c).
+// Text entry: the built-in keyboard (osk.c; on the desktop, the control channel unless osk=1).
 bool textin_open(const char *title, const char *initial, int max_len, bool password);
 int textin_poll(char *out, size_t n); // 0 open, 1 confirmed, -1 cancelled / not open
 bool osk_active(void);

@@ -3,8 +3,9 @@
 ## Goal
 A Vita homebrew app (.vpk) that runs the **live** pokerogue.net client, the same way the
 "online mode" of Admiral-Billy's Electron app does. That means automatic updates, the same
-rendering, controls and online saves, the Vita buttons as a gamepad, and the system on-screen
-keyboard for login.
+rendering, controls and online saves, the Vita buttons as a gamepad, and an on-screen keyboard
+for login (the app's own: the system keyboard never opened on the console, and its memory is used
+for the GPU).
 
 ## Why a plain browser wrapper is impossible on Vita
 Survey of the live site (Oct 2026, game v1.12.1):
@@ -41,7 +42,7 @@ pokerogue.net (index.html, JS chunks, assets)  ←→  api.pokerogue.net
 │   localStorage, document.cookie → files in ux0:data/pokerogue   │
 │   Gamepad API   → Vita buttons as a "standard" pad              │
 │   Pointer/touch → front touchscreen                             │
-│   <input> focus → sceImeDialog (system keyboard) for login      │
+│   <input> focus → built-in on-screen keyboard for login         │
 │   minimal fake DOM (document, body, createElement, style, events)│
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -111,8 +112,8 @@ Reliability:
 Features and checks:
 - Untested on the console yet: save import/export and the restart after an import (0.41),
   texture eviction under pressure (0.41), the input-repeat fix and QR links (0.40).
-- The system keyboard (IME dialog) fails on the test console (0x800204c4); the built-in keyboard
-  is used instead. Discord/Google sign-in can't work (a QR code explains it).
+- Login uses the built-in keyboard; the system keyboard is no longer used (0.59). Discord/Google
+  sign-in can't work (a QR code explains it).
 - Most game settings are untested; the rear touchpad is off (resting fingers pressed "submit").
 - Video elements show a stand-in frame (no video decoding).
 ## Requirements on the Vita

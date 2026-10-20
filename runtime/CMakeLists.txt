@@ -85,7 +85,7 @@ if(VITA)
   target_link_libraries(pokerogue-rt quickjs plutovg miniz qrcodegen
     curl ssl crypto z zstd
     vitaGL vitashark SceShaccCgExt mathneon taihen_stub SceShaccCg_stub
-    SceKernelDmacMgr_stub SceGxm_stub SceDisplay_stub SceAppMgr_stub SceCommonDialog_stub SceIme_stub
+    SceKernelDmacMgr_stub SceGxm_stub SceDisplay_stub SceAppMgr_stub SceCommonDialog_stub
     SceCtrl_stub SceTouch_stub ScePower_stub SceSysmodule_stub SceNet_stub SceNetCtl_stub SceAppUtil_stub
     SceLibKernel_stub SceIofilemgr_stub SceRtc_stub SceAudio_stub faad
     stdc++ pthread m)

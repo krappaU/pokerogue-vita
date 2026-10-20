@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Text entry for the game's login and register forms.
 //
-// The system keyboard (Vita IME dialog) is tried first. Where it can't open (on some consoles
-// sceImeDialogInit fails with 0x800204c4), a built-in keyboard takes over: a key grid drawn over
-// the game, used with the D-pad / left stick and the face buttons, or by touching keys.
+// A built-in keyboard: a key grid drawn over the game, used with the D-pad / left stick and the face
+// buttons, or by touching keys. The Vita's system keyboard is not used: it never opened on the
+// console (sceImeDialogInit 0x800204c4), and the system dialogs' memory serves as GPU memory instead
+// (platform_vita.c). On the desktop runtime a text field is answered through the control channel
+// ("ime <text>", for scripted runs) unless config.txt has osk=1.
 //   cross: type the selected key    circle: delete    triangle: space    square: capitals
 //   START: done                      SELECT: cancel
 // On the desktop runtime, arrow keys, Enter, Backspace, Escape and typed characters work too.
@@ -31,7 +33,6 @@ static const struct { const char *label; int col, span; } special[SK_COUNT] = {
     {"Shift", 0, 2}, {"Space", 2, 4}, {"Del", 6, 2}, {"OK", 8, 2}};
 
 static enum { TI_NONE, TI_SYSTEM, TI_OSK } mode;
-static bool system_broken; // the system keyboard failed once: use the built-in one from then on
 static bool open_, shift, dirty, mute_until_release;
 static int result; // 0 open, 1 done, -1 cancelled
 static int sel_row, sel_col, max_len;
@@ -44,18 +45,13 @@ static int img_x, img_y; // where the image was drawn (for touch)
 
 bool textin_open(const char *t, const char *initial, int max, bool pw) {
     if (mode != TI_NONE) return false;
-    if (!g_cfg.osk && !system_broken) {
-        if (plat_ime_open(t, initial, max, pw)) {
-            mode = TI_SYSTEM;
-            return true;
-        }
-#ifdef __vita__
-        system_broken = true;
-        host_log("[ime] the system keyboard can't open; using the built-in keyboard");
-#else
-        return false;
-#endif
+#ifndef __vita__
+    if (!g_cfg.osk) {
+        if (!plat_ime_open(t, initial, max, pw)) return false;
+        mode = TI_SYSTEM;
+        return true;
     }
+#endif
     snprintf(title, sizeof title, "%s", t);
     snprintf(text, sizeof text, "%s", initial);
     max_len = max > 0 && max < (int)sizeof text ? max : (int)sizeof text - 1;
@@ -69,11 +65,13 @@ bool textin_open(const char *t, const char *initial, int max, bool pw) {
 }
 
 int textin_poll(char *out, size_t n) {
+#ifndef __vita__
     if (mode == TI_SYSTEM) {
         int r = plat_ime_poll(out, n);
         if (r != 0) mode = TI_NONE;
         return r;
     }
+#endif
     if (mode != TI_OSK) return -1;
     if (result == 0) return 0;
     mode = TI_NONE;

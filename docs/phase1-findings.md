@@ -470,3 +470,31 @@ the installed game's, which is the same for every build. A full install replaces
 whole, so a crash in the middle can leave a broken bubble (VitaShell's updater has the same risk);
 dev builds only. **Not yet run on the console**: the first 0.58 is installed by 0.57's copying
 updater, the first real use is the update after that. Vita3K can't test the installer.
+
+### Texture units, the GPU timer and video memory (log23/log24, 0.56, 2026-10-20; runtime 0.59)
+Two runs of 0.56, the same title screen and a few battles each. Title screen, the one scene both
+runs share: default (16 texture units) 38.7-41.7 fps, swap 14.0-14.3 ms, GPU reading 50-54 ms;
+`maxtextures=4` 43.7-44.4 fps, swap 11.7-12.9 ms, GPU reading 46-50 ms; JS 9.3-10.4 ms in both.
+Battles differ too much to compare (default: 6.6-13.5 fps, swap 22-68 ms; 4 units: 7.3-14.3 fps,
+swap 14-31 ms, 15-40 draw calls instead of 9-17 at 0.3-0.5 ms per frame in all). So 4 units save
+~2.5 ms of GPU time per frame; the rest of the GPU time isn't the shader's `if` chain.
+
+The GPU reading was about twice the frame time (52 ms on a title screen at 24 ms per frame): the
+timed glFinish also waited for the frame before. Still, every scene is bound by the GPU: the title
+screen has 5 draw calls and 9 ms of JS, and waits ~14 ms per frame in the swap. Battles take
+50-60 ms of JS per frame too, so both sides need cuts.
+
+GPU memory in those runs: textures peaked at ~120 MB during loading and stayed at 80-92 MB
+(~1250 textures, all RGBA8). vitaGL's pools: 88 MB of CDRAM with 2-15 MB free, 64 MB of RAM with
+~2 MB free (0.1 MB right after loading), 16 MB phycont with 10-14 MB free. Of the 112 MB of CDRAM
+an app gets, libgxm takes 16 MB for the parameter buffer (vitaGL's default size), and 8 MB were
+left free because the system keyboard once failed without them; it failed anyway. vitaGL also
+had a 4 MB pool from the system dialogs' memory budget, the likely reason the keyboard never
+opened.
+
+0.59: the built-in keyboard is the only one on the Vita; CDRAM pool 95 MB (1 MB stays free); the
+dialogs' whole budget (8.8 MB) goes to vitaGL; Phaser gets 4 texture units by default; the GPU
+timer waits for the frame before first; debug builds log how many MB of textures are in each pool
+and the biggest ones outside CDRAM; `plainshaders=1` swaps every textured fragment shader for a
+plain texture read, to measure what the shaders cost. **To check on the console:** the title
+screen and a battle with and without `plainshaders=1`, and the new `[mem]` line.

@@ -63,6 +63,7 @@ host_config g_cfg = {
     .win_h = 544,
     .exit_after_frames = 0,
     .busy_after_ms = 2500,
+    .max_textures = 4, // Phaser's shader picks a sprite's texture with an if per unit: 16 cost GPU time
 #ifdef PKR_PROFILE_BUILD
     // profiling build (CMake PKR_PROFILE_BUILD): sample from the start, ten times as often, by time
     .sample = true,
@@ -221,10 +222,12 @@ static void control_line(JSContext *ctx, char *line, bool *quit) {
         host_log("[evalfile] %s", res ? res : "(exception)");
         free(res);
         free(src);
+#ifndef __vita__
     } else if (!strcmp(line, "ime")) {
         plat_ime_answer(arg ? arg : "");
     } else if (!strcmp(line, "ime-cancel")) {
         plat_ime_answer(NULL);
+#endif
     } else if (!strcmp(line, "profile")) {
         // sampling without the debug line: drawing it makes Phaser rebuild its GL state every frame
         g_cfg.sample = !g_cfg.sample;
@@ -337,10 +340,23 @@ void mem_breakdown(const char *stage) {
              img_enc / 1048576.0, img_dec / 1048576.0, tex / 1048576.0, n_tex, tex_peak / 1048576.0);
 #ifdef __vita__
     // vitaGL's GPU memory pools (textures, buffers); when they're full it falls back to the heap.
-    host_log("[mem] %s: GPU pools free: video %.1f of %.0f MB, RAM %.1f of %.0f MB, contiguous %.1f of %.0f MB", stage,
+    host_log("[mem] %s: GPU pools free: video %.1f of %.0f MB, RAM %.1f of %.0f MB, contiguous %.1f of %.0f MB, "
+             "dialogs' %.1f of %.1f MB", stage,
              vglMemFree(VGL_MEM_VRAM) / 1048576.0, vglMemTotal(VGL_MEM_VRAM) / 1048576.0,
              vglMemFree(VGL_MEM_RAM) / 1048576.0, vglMemTotal(VGL_MEM_RAM) / 1048576.0,
-             vglMemFree(VGL_MEM_PHYCONT) / 1048576.0, vglMemTotal(VGL_MEM_PHYCONT) / 1048576.0);
+             vglMemFree(VGL_MEM_PHYCONT) / 1048576.0, vglMemTotal(VGL_MEM_PHYCONT) / 1048576.0,
+             vglMemFree(VGL_MEM_BUDGET) / 1048576.0, vglMemTotal(VGL_MEM_BUDGET) / 1048576.0);
+#ifdef PKR_DEBUG
+    if (n_tex) {
+        size_t pool[GL_POOLS], big[3];
+        gl_texture_pools(pool, big);
+        host_log("[mem] %s: textures in video RAM %.1f MB, main RAM %.1f MB, contiguous %.1f MB, dialogs' %.1f MB, "
+                 "heap %.1f MB | largest outside video RAM: %.1f, %.1f, %.1f MB", stage,
+                 pool[GL_POOL_VIDEO] / 1048576.0, pool[GL_POOL_RAM] / 1048576.0, pool[GL_POOL_PHYCONT] / 1048576.0,
+                 pool[GL_POOL_DIALOG] / 1048576.0, pool[GL_POOL_HEAP] / 1048576.0,
+                 big[0] / 1048576.0, big[1] / 1048576.0, big[2] / 1048576.0);
+    }
+#endif
 #endif
 }
 
@@ -552,7 +568,7 @@ static void save_screenshot(const char *path) {
 // ---------------------------------------------------------------- config file
 
 // Optional <data dir>/config.txt with key=value lines (overrides defaults; command line wins):
-//   osk=1                           built-in keyboard instead of the system one
+//   osk=1                           desktop: the built-in keyboard instead of control-channel answers
 //   audio=0                         no sound
 //   busy=2500                       show a "Loading" screen once one frame's JS has run this long (0: never)
 //   local=game                      play an offline build of the game from <data>/game (no login,
@@ -569,7 +585,10 @@ static void save_screenshot(const char *path) {
 //   profile_rate=1000               JS operations between profile samples (QuickJS's default 10000)
 //   sample_ms=1                     at most one sample per ms: samples follow time, not JS operations
 //   nettrace=1                      log the headers of requests to the game's API
-//   maxtextures=4                   tell Phaser of at most N texture units (its shader has an if per unit)
+//   maxtextures=16                  tell Phaser of at most N texture units (default 4: its shader has an if
+//                                   per unit; 0 = as many as the GPU has)
+//   plainshaders=1                  measuring only: every textured fragment shader just samples its texture
+//                                   (wrong colours, effects gone), to see how much GPU time the shaders cost
 // Dev builds only (devtools.c):
 //   devserver=https://host/         log server for log upload (tools/devserver), devkey=<its key>
 //   devbuilds=off|<url>             test builds: off, or another build.json than the dev-build release
@@ -648,6 +667,8 @@ static void load_config_file(void) {
             g_cfg.net_trace = atoi(v) != 0;
         } else if (!strcmp(k, "maxtextures")) {
             g_cfg.max_textures = atoi(v);
+        } else if (!strcmp(k, "plainshaders")) {
+            g_cfg.plain_shaders = atoi(v) != 0;
         } else if (!strcmp(k, "profile")) {
             g_cfg.no_profile = atoi(v) == 0;
 #endif

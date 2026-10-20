@@ -7,13 +7,9 @@
 #include <string.h>
 
 #include <psp2/appmgr.h>
-#include <psp2/apputil.h>
 #include <psp2/audioout.h>
 #include <psp2/kernel/threadmgr.h>
-#include <psp2/common_dialog.h>
 #include <psp2/ctrl.h>
-#include <psp2/ime_dialog.h>
-#include <psp2/system_param.h>
 #include <psp2/io/devctl.h>
 #include <psp2/io/stat.h>
 #include <psp2/kernel/processmgr.h>
@@ -30,8 +26,6 @@ static plat_event injected[32];
 static int n_injected;
 static SceCtrlData pad;
 static bool touch_down;
-static bool ime_active;
-static bool mute_pad; // after the keyboard closes, hide buttons until they are released
 
 void plat_inject_key(const char *name, bool down) {
     // Keys are only injected by the control channel; the Vita has no keyboard.
@@ -85,25 +79,21 @@ bool plat_init(int w, int h) {
 #endif
     // Full float precision: the game samples big texture atlases where half floats misplace pixels.
     vglSetupRuntimeShaderCompiler(SHARK_OPT_FAST, SHARK_ENABLE, SHARK_DISABLE, SHARK_ENABLE);
-    // Explicit GPU memory pools: 88 MB video RAM (CDRAM) first, then 64 MB of main RAM, 16 MB physically
-    // contiguous RAM, 4 MB for system dialogs. Explicit sizes also avoid vitaGL's free-memory query,
-    // which the Vita3K emulator does not implement. Some CDRAM stays free: with none left, the system
-    // keyboard failed to open (sceImeDialogInit 0x800204c4).
+    // Explicit GPU memory pools (explicit sizes also avoid vitaGL's free-memory query, which the
+    // Vita3K emulator does not implement):
+    //  - 95 MB of video RAM (CDRAM). An app gets 112 MB; libgxm takes 16 MB of it for the GPU's
+    //    parameter buffer (vitaGL keeps the default size), and 1 MB stays free as a margin.
+    //  - 64 MB of main RAM and 16 MB of physically contiguous RAM: slower for the GPU than CDRAM.
+    //  - the system dialogs' memory budget (8.8 MB of main RAM): no system dialog is used (text is
+    //    typed on the built-in keyboard, osk.c), so vitaGL may have all of it. It used to get 4 MB,
+    //    which is probably why the system keyboard never opened on the console (0x800204c4).
+    // vitaGL fills them in that order (video RAM first for textures); after them comes the heap.
     // Note: the return value only says whether vitaGL fell back to another resolution.
-    if (vglInitWithCustomSizes(0, SCREEN_W, SCREEN_H, 64 * 1024 * 1024, 88 * 1024 * 1024, 16 * 1024 * 1024,
-                               4 * 1024 * 1024, SCE_GXM_MULTISAMPLE_NONE))
+    if (vglInitWithCustomSizes(0, SCREEN_W, SCREEN_H, 64 * 1024 * 1024, 95 * 1024 * 1024, 16 * 1024 * 1024,
+                               0x8C6000, SCE_GXM_MULTISAMPLE_NONE))
         host_log("vitaGL: requested resolution unavailable, using a fallback");
     vglWaitVblankStart(GL_TRUE);
 
-    // System dialogs (the on-screen keyboard) follow the console's language and confirm button.
-    SceAppUtilInitParam ainit = {0};
-    SceAppUtilBootParam aboot = {0};
-    sceAppUtilInit(&ainit, &aboot);
-    SceCommonDialogConfigParam cdcfg;
-    sceCommonDialogConfigParamInit(&cdcfg);
-    sceAppUtilSystemParamGetInt(SCE_SYSTEM_PARAM_ID_LANG, (int *)&cdcfg.language);
-    sceAppUtilSystemParamGetInt(SCE_SYSTEM_PARAM_ID_ENTER_BUTTON, (int *)&cdcfg.enterButtonAssign);
-    sceCommonDialogSetConfigParam(&cdcfg);
     sceCtrlSetSamplingMode(SCE_CTRL_MODE_ANALOG_WIDE);
     sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_START);
     host_log("GL: %s | %s | shader compiler: %s", (const char *)glGetString(GL_VERSION),
@@ -190,9 +180,6 @@ int plat_gamepads(plat_gamepad *out, int max) {
     memset(p, 0, sizeof *p);
     p->connected = true;
     p->id = "PS Vita Controls (STANDARD GAMEPAD Vendor: 054c Product: 09cc)";
-    // While the keyboard is open (and until its confirm press is released) the game sees no input.
-    if (mute_pad && !ime_active && !(pad.buttons & 0xFFFF)) mute_pad = false;
-    if (ime_active || mute_pad) return 1;
     // (The Sony id above, vendor 054c, makes the game pick its DualShock layout and PS button icons.)
     unsigned b = pad.buttons;
     static const unsigned map[17] = {
@@ -214,7 +201,10 @@ int plat_gamepads(plat_gamepad *out, int max) {
 
 // Debug builds: every 30th frame, the GPU's time for the frame is measured by waiting for it before
 // the swap. glFinish ends the scene, and on this tile-based GPU most of a frame's work (the pixels)
-// only starts then, so the wait is close to the frame's GPU time. Costs that frame its CPU/GPU overlap.
+// only starts then, so the wait is close to the frame's GPU time. The frame before is waited for
+// right after its swap (untimed): otherwise the GPU may still be busy with it, and the wait counted
+// about two frames (0.56: 52 ms on a title screen that ran at 24 ms per frame). Costs those two
+// frames their CPU/GPU overlap.
 static double gpu_sum, gpu_max;
 static int gpu_n;
 
@@ -229,108 +219,17 @@ void plat_swap(void) {
         if (ms > gpu_max) gpu_max = ms;
         gpu_n++;
     }
+    vglSwapBuffers(GL_FALSE);
+    if (frame % 30 == 29) glFinish(); // the GPU is idle when the measured frame starts
+#else
+    vglSwapBuffers(GL_FALSE);
 #endif
-    vglSwapBuffers(ime_active ? GL_TRUE : GL_FALSE);
 }
 
 void plat_gpu_stats(double *avg_ms, double *max_ms, int *samples) {
     *avg_ms = gpu_n ? gpu_sum / gpu_n : 0, *max_ms = gpu_max, *samples = gpu_n;
     gpu_sum = gpu_max = 0, gpu_n = 0;
 }
-
-// ---------------------------------------------------------------- text entry (system keyboard)
-
-static uint16_t ime_title[SCE_IME_DIALOG_MAX_TITLE_LENGTH + 1] __attribute__((aligned(16)));
-static uint16_t ime_initial[SCE_IME_DIALOG_MAX_TEXT_LENGTH + 1] __attribute__((aligned(16)));
-static uint16_t ime_buf[SCE_IME_DIALOG_MAX_TEXT_LENGTH + 1] __attribute__((aligned(16)));
-
-static void utf8_to_utf16(const char *in, uint16_t *out, size_t max) {
-    size_t o = 0;
-    const unsigned char *p = (const unsigned char *)in;
-    while (*p && o + 1 < max) {
-        uint32_t c = *p++;
-        if (c >= 0xF0 && p[0] && p[1] && p[2]) { c = ((c & 7) << 18) | ((p[0] & 63) << 12) | ((p[1] & 63) << 6) | (p[2] & 63); p += 3; }
-        else if (c >= 0xE0 && p[0] && p[1]) { c = ((c & 15) << 12) | ((p[0] & 63) << 6) | (p[1] & 63); p += 2; }
-        else if (c >= 0xC0 && p[0]) { c = ((c & 31) << 6) | (p[0] & 63); p += 1; }
-        if (c >= 0x10000) {
-            if (o + 2 >= max) break;
-            c -= 0x10000;
-            out[o++] = 0xD800 | (c >> 10);
-            out[o++] = 0xDC00 | (c & 0x3FF);
-        } else {
-            out[o++] = (uint16_t)c;
-        }
-    }
-    out[o] = 0;
-}
-
-static void utf16_to_utf8(const uint16_t *in, char *out, size_t n) {
-    size_t o = 0;
-    for (; *in && o + 4 < n; in++) {
-        uint32_t c = *in;
-        if (c >= 0xD800 && c < 0xDC00 && in[1] >= 0xDC00 && in[1] < 0xE000) c = 0x10000 + ((c - 0xD800) << 10) + (*++in - 0xDC00);
-        if (c < 0x80) out[o++] = (char)c;
-        else if (c < 0x800) { out[o++] = 0xC0 | (c >> 6); out[o++] = 0x80 | (c & 63); }
-        else if (c < 0x10000) { out[o++] = 0xE0 | (c >> 12); out[o++] = 0x80 | ((c >> 6) & 63); out[o++] = 0x80 | (c & 63); }
-        else { out[o++] = 0xF0 | (c >> 18); out[o++] = 0x80 | ((c >> 12) & 63); out[o++] = 0x80 | ((c >> 6) & 63); out[o++] = 0x80 | (c & 63); }
-    }
-    out[o] = 0;
-}
-
-bool plat_ime_open(const char *title, const char *initial, int max_len, bool password) {
-    if (ime_active) return false;
-    // A dialog left over in the finished state blocks a new one.
-    if (sceImeDialogGetStatus() != SCE_COMMON_DIALOG_STATUS_NONE) sceImeDialogTerm();
-    utf8_to_utf16(title, ime_title, SCE_IME_DIALOG_MAX_TITLE_LENGTH + 1);
-    utf8_to_utf16(initial, ime_initial, SCE_IME_DIALOG_MAX_TEXT_LENGTH + 1);
-    memset(ime_buf, 0, sizeof ime_buf);
-    // Two attempts: our settings, then the plain ones most homebrew uses. Every failure is logged
-    // with the free memory, so a log tells which one the console accepts.
-    for (int attempt = 0; attempt < 2; attempt++) {
-        SceImeDialogParam param;
-        sceImeDialogParamInit(&param);
-        param.supportedLanguages = 0; // the console's own keyboard languages
-        param.languagesForced = SCE_FALSE;
-        param.option = 0;
-        param.title = ime_title;
-        param.initialText = ime_initial;
-        param.inputTextBuffer = ime_buf;
-        if (attempt == 0) {
-            param.type = password ? SCE_IME_TYPE_BASIC_LATIN : SCE_IME_TYPE_DEFAULT;
-            param.textBoxMode = password ? SCE_IME_DIALOG_TEXTBOX_MODE_PASSWORD : SCE_IME_DIALOG_TEXTBOX_MODE_DEFAULT;
-            param.maxTextLength = max_len > 0 && max_len < SCE_IME_DIALOG_MAX_TEXT_LENGTH ? max_len : SCE_IME_DIALOG_MAX_TEXT_LENGTH;
-        } else {
-            param.type = SCE_IME_TYPE_DEFAULT;
-            param.textBoxMode = SCE_IME_DIALOG_TEXTBOX_MODE_WITH_CLEAR;
-            param.maxTextLength = SCE_IME_DIALOG_MAX_TEXT_LENGTH;
-        }
-        int rc = sceImeDialogInit(&param);
-        if (rc >= 0) {
-            if (attempt) host_log("[ime] opened with the fallback settings");
-            ime_active = true;
-            mute_pad = true;
-            return true;
-        }
-        host_log("[ime] sceImeDialogInit (attempt %d): 0x%08x", attempt + 1, rc);
-    }
-    mem_report("keyboard failed to open");
-    return false;
-}
-
-int plat_ime_poll(char *out, size_t n) {
-    if (!ime_active) return -1;
-    if (sceImeDialogGetStatus() != SCE_COMMON_DIALOG_STATUS_FINISHED) return 0;
-    SceImeDialogResult res;
-    memset(&res, 0, sizeof res);
-    sceImeDialogGetResult(&res);
-    sceImeDialogTerm();
-    ime_active = false;
-    if (res.button != SCE_IME_DIALOG_BUTTON_ENTER) return -1;
-    utf16_to_utf8(ime_buf, out, n);
-    return 1;
-}
-
-void plat_ime_answer(const char *text) { (void)text; }
 
 void plat_drawable_size(int *w, int *h) {
     *w = SCREEN_W;

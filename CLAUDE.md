@@ -9,7 +9,8 @@ phases, open items), `docs/development.md` (tooling and Vita gotchas) and the re
 `docs/phase1-findings.md` (the findings log) before starting work.
 
 Goal: parity with the online mode of Admiral-Billy's PokeRogue App. That means the live client with
-auto-updates, the same rendering, gamepad controls, online saves, and the system keyboard for login.
+auto-updates, the same rendering, gamepad controls, online saves, and an on-screen keyboard for login
+(the app's own; the owner dropped the system keyboard, whose memory now goes to the GPU).
 Never fork or patch the game itself. Anything the game needs is provided by the runtime.
 
 ## Where things are

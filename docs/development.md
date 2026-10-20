@@ -143,12 +143,14 @@ on the control channel toggles it). While it is on, Phaser is told to restore it
 the line is drawn, which costs about a millisecond per frame.
 
 ## Text entry
-The login and register forms open the system keyboard (Vita IME dialog). On the test console
-`sceImeDialogInit` fails with 0x800204c4 (cause unknown; it works in Vita3K), so after one failure
-the app uses its own keyboard (`runtime/src/osk.c`), drawn over the game: D-pad/stick and cross to
-type, circle delete, triangle space, square capitals, START done, SELECT back, or touch the keys.
-`osk=1` in `<data>/config.txt` forces it (on the desktop runtime too: arrows, Enter, Backspace,
-Escape, typed characters). The rear touchpad is unused: resting fingers held "submit" down.
+The login and register forms open the app's own keyboard (`runtime/src/osk.c`), drawn over the game:
+D-pad/stick and cross to type, circle delete, triangle space, square capitals, START done, SELECT
+back, or touch the keys. The system keyboard (Vita IME dialog) is not used (0.59): it never opened
+on the test console (`sceImeDialogInit` 0x800204c4; it worked in Vita3K), most likely because
+vitaGL had taken part of the system dialogs' memory budget, which now serves as GPU memory. On the
+desktop runtime a field is answered through the control channel (`ime <text>`, `ime-cancel`)
+unless `osk=1` (then arrows, Enter, Backspace, Escape, typed characters). The rear touchpad is
+unused: resting fingers held "submit" down.
 The game's text fields are HTML `<input>` elements over the canvas; `js/input.js` draws their text
 (the field's font and colour, passwords as asterisks) and the native layer puts it over the game.
 
@@ -181,9 +183,25 @@ App downloads for its offline mode (`game.zip` from github.com/Admiral-Billy/pok
 ~530 MB, 735 MB unpacked; the `.map` files can be deleted).
 
 ## Memory budget
-Extended memory mode (`ATTRIBUTE2=12`). Heap 256 MB (`_newlib_heap_size_user`), vitaGL pools: 88 MB
-CDRAM, 64 MB RAM, 16 MB phycont, 4 MB dialogs. On the test console this leaves ~17 MB of main
-memory and 8 MB of CDRAM to the system. `getImageData` hands its pixels to JS without a copy.
+Extended memory mode (`ATTRIBUTE2=12`). Heap 256 MB (`_newlib_heap_size_user`), vitaGL pools: 95 MB
+CDRAM, 64 MB RAM, 16 MB phycont and the whole system dialogs' budget (8.8 MB; no system dialog is
+used). An app gets 112 MB of CDRAM; libgxm takes 16 MB of it for the GPU's parameter buffer
+(vitaGL's default size), so ~1 MB stays free. vitaGL puts textures in the first pool with room in
+that order (CDRAM is the fastest for the GPU), then in the heap; debug builds log where the
+textures are (`[mem] ...: textures in video RAM ... MB, main RAM ..., heap ...`). On the test
+console 0.58 left ~15 MB of main memory to the system. `getImageData` hands its pixels to JS
+without a copy.
+
+## GPU measurements (debug builds)
+- The `[perf]` line's `GPU N ms/frame`: every 30th frame is timed with glFinish before its swap,
+  after the frame before was waited for (0.59; until then the reading included the previous frame
+  and was about twice the real time).
+- Phaser is told of 4 texture units (its batch shader picks a sprite's texture with an `if` per
+  unit; 16 cost ~2.5 ms per frame of GPU time on the title screen in 0.56). `maxtextures=N` in
+  config.txt sets another number (0: as many as the GPU has).
+- `plainshaders=1` in config.txt: every textured fragment shader only samples its texture (wrong
+  colours, no effects). The GPU time it saves is what the shaders cost; what's left is pixels and
+  texture reads.
 
 ## Memory: texture eviction
 Phaser never frees textures. When GPU texture memory exceeds 64 MB, image-backed textures not drawn

@@ -714,6 +714,47 @@ void gl_texture_memory(size_t *bytes, size_t *peak, int *count) {
     *count = tex_count;
 }
 
+#ifdef __vita__
+#include <psp2/kernel/sysmem.h>
+
+// Where the textures' pixels are: vitaGL puts a texture in the first of its pools with room (video
+// RAM, then main RAM, contiguous RAM, the dialogs' budget) or else in the heap, and the GPU reads
+// main RAM more slowly than video RAM. Each texture is looked up by binding it on the active unit
+// (and binding back), so this is for the occasional [mem] line, not every frame.
+void gl_texture_pools(size_t bytes[GL_POOLS], size_t largest_out[3]) {
+    memset(bytes, 0, GL_POOLS * sizeof *bytes);
+    memset(largest_out, 0, 3 * sizeof *largest_out);
+    GLint prev = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &prev);
+    for (GLuint id = 1; id < 65536; id++) {
+        if (!tex_bytes[id]) continue;
+        glBindTexture(GL_TEXTURE_2D, id);
+        void *p = vglGetTexDataPointer(GL_TEXTURE_2D);
+        SceKernelMemBlockInfo info = {.size = sizeof info};
+        int pool = GL_POOL_HEAP;
+        if (p && sceKernelGetMemBlockInfoByAddr(p, &info) >= 0) {
+            switch (info.type) {
+            case SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW: pool = GL_POOL_VIDEO; break;
+            case SCE_KERNEL_MEMBLOCK_TYPE_USER_RW_UNCACHE: pool = GL_POOL_RAM; break; // vitaGL's uncached pool
+            case SCE_KERNEL_MEMBLOCK_TYPE_USER_MAIN_PHYCONT_NC_RW: pool = GL_POOL_PHYCONT; break;
+            case SCE_KERNEL_MEMBLOCK_TYPE_USER_MAIN_CDIALOG_NC_RW: pool = GL_POOL_DIALOG; break;
+            default: pool = GL_POOL_HEAP; break; // the heap (cached USER_RW)
+            }
+        }
+        bytes[pool] += tex_bytes[id];
+        if (pool == GL_POOL_VIDEO) continue;
+        size_t b = tex_bytes[id]; // the three biggest outside video RAM
+        for (int i = 0; i < 3; i++) {
+            if (b > largest_out[i]) {
+                size_t t = largest_out[i];
+                largest_out[i] = b, b = t;
+            }
+        }
+    }
+    glBindTexture(GL_TEXTURE_2D, (GLuint)prev);
+}
+#endif
+
 // ---------------------------------------------------------------- shaders / programs
 
 // Shader sources and program->shader attachments, kept so a failed link can be reported with the

@@ -23,8 +23,21 @@
     src = splitSamplerArrays(src, arrays);
     if (shader) shader.pkrSamplerArrays = arrays;
     if (g.__shaderHook) src = g.__shaderHook(src); // set by a debug script (see bootstrap.js)
+    if (N.plainShaders) src = plainShader(src);
     return nativeShaderSource.call(this, shader, src);
   };
+
+  // config.txt plainshaders=1 (debug builds, measuring only): a textured fragment shader becomes
+  // "sample the texture, nothing else" (its first texture2D call, unit 0's sampler for Phaser's
+  // batch), so the GPU time left over is what the shaders don't cost. Colours and effects are wrong.
+  function plainShader(src) {
+    if (!/gl_FragColor/.test(src) || /gl_Position/.test(src)) return src;
+    const use = /texture2D\s*\(\s*(\w+)\s*,\s*(\w+)\s*\)/.exec(src);
+    if (!use || !new RegExp("varying\\s+(?:\\w+\\s+)?vec2\\s+" + use[2] + "\\s*;").test(src)) return src;
+    const precision = (/^\s*precision\s+\w+\s+float\s*;/m.exec(src) || ["precision mediump float;"])[0].trim();
+    return precision + "\nuniform sampler2D " + use[1] + ";\nvarying vec2 " + use[2] + ";\n" +
+      "void main() { gl_FragColor = texture2D(" + use[1] + ", " + use[2] + "); }\n";
+  }
 
   // vitaGL compiles a sampler array (uniform sampler2D s[16]) as one sampler: only s[0] ever gets a
   // texture, and the rest sample garbage. Phaser's batching shader is built around one (a sprite's
