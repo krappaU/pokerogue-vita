@@ -561,6 +561,7 @@ typedef struct {
     uint32_t last_used;  // frame number
     uint16_t w, h;
     bool has_src, flip, premul, evicted;
+    bool blank; // from a canvas never drawn on: comes back as zeros, no source needed
     uint8_t restores; // times it came back: each doubles the idle time before it can go again
     uint32_t evicted_at; // frame number
 } tex_rec;
@@ -602,6 +603,15 @@ static const uint8_t *unpack(const uint8_t *src, int w, int h, bool owned, bool 
 static void tex_restore(JSContext *ctx, GLuint id) {
     tex_rec *t = &texrec[id];
     double t0 = host_now_ms();
+    if (t->blank) { // vitaGL zero-fills a texture made without data
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, t->w, t->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        tex_account(id, (size_t)t->w * t->h * 4);
+        t->evicted = false;
+        evictable_bytes += (size_t)t->w * t->h * 4;
+        if (t->restores < 4) t->restores++;
+        n_restores++;
+        return;
+    }
     int w, h;
     bool owned, fr;
     const uint8_t *px = pixels_from_js(ctx, t->src, &w, &h, &owned);
@@ -1624,7 +1634,20 @@ static JSValue tex_image_2d(JSContext *ctx, int argc, JSValueConst *argv, int *o
         if (canvas_is_blank(ctx, A(5), &w, &h)) {
             *ow = w, *oh = h;
             glTexImage2D(target, level, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-            if (level == 0) tex_account(bound_tex_id(), (size_t)w * h * 4), tex_forget(ctx, bound_tex_id());
+            if (level == 0) {
+                GLuint id = bound_tex_id();
+                tex_account(id, (size_t)w * h * 4);
+                tex_forget(ctx, id);
+                // Evictable like an image's texture: the game leaves those TileSprites behind for
+                // good (alpha 0, never destroyed), each with a texture of its full size.
+                if (target == GL_TEXTURE_2D && id && id < TEX_MAX) {
+                    tex_rec *t = &texrec[id];
+                    t->has_src = t->blank = true;
+                    t->w = (uint16_t)w, t->h = (uint16_t)h;
+                    t->last_used = gl_frame;
+                    evictable_bytes += (size_t)w * h * 4;
+                }
+            }
             return JS_UNDEFINED;
         }
 #endif

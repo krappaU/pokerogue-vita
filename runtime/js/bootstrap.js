@@ -79,6 +79,29 @@
         this.processing = false;
       };
     }
+    // The game's stat-change animation (playStatChangeAnimation) adds a TileSprite of its full size
+    // (936x1896 at the Vita's scale), fades it out and never destroys it: each one keeps a texture
+    // and the CanvasTexture's pixel copy (7 MB each) for the rest of the session, and a long one ran
+    // out of memory (log79: a stat change failed in getImageData and the battle stopped). Every few
+    // seconds, such a sprite that has faded to alpha 0 with no tween left on it is destroyed, as the
+    // game's own code would have done. PKR_STAT_SPRITE_CLEANUP=0 in localStorage turns this off.
+    const TS = P.GameObjects && P.GameObjects.TileSprite;
+    if (TS && g.localStorage.getItem("PKR_STAT_SPRITE_CLEANUP") !== "0") {
+      let frames = 0, removed = 0;
+      rt.frameHooks.push(() => {
+        if (++frames % 120 || !rt.renderer || !rt.renderer.game) return;
+        for (const scene of rt.renderer.game.scene.scenes) {
+          const list = scene.sys && scene.sys.displayList && scene.sys.displayList.list;
+          if (!list) continue;
+          for (const o of list.slice()) {
+            if (!(o instanceof TS) || o.alpha !== 0 || !o.displayTexture || o.displayTexture.key !== "battle_stats") continue;
+            if (scene.tweens && scene.tweens.isTweening(o)) continue;
+            o.destroy();
+            if (++removed <= 5 || removed % 20 === 0) N.log("[phaser] removed a finished stat-change sprite (" + removed + " so far)");
+          }
+        }
+      });
+    }
     for (const f of rt.onPhaserLoaded) f(P);
     N.loadScript("fastpath.js");
     N.loadScript("lazy_ui.js");

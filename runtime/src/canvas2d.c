@@ -855,13 +855,17 @@ static void *image_data_realloc(JSRuntime *rt, void *opaque, void *ptr, size_t s
 }
 
 CFN(c_get_image_data) {
-    SELF;
-    if (!c->keep) n_keep_getimage++;
-    c->keep = true;
+    SELF_NOALLOC;
     int x = (int)F(0), y = (int)F(1), w = (int)F(2), h = (int)F(3);
     if (w <= 0 || h <= 0) return JS_NewArrayBufferCopy(ctx, (const uint8_t *)"", 0);
     uint8_t *out = calloc((size_t)w * h, 4);
     if (!out) return JS_ThrowOutOfMemory(ctx);
+    // A canvas never drawn on since it was sized reads as all transparent: no pixels to allocate
+    // for it, and it stays blank (Phaser's CanvasTexture reads its whole canvas at once: for the
+    // game's 936x1896 stat-change TileSprite that was 7 MB more per animation, never freed).
+    if (c->released) return JS_NewArrayBuffer(ctx, out, (size_t)w * h * 4, 0, image_data_realloc, NULL, false);
+    if (!c->keep) n_keep_getimage++;
+    c->keep = true;
     int stride = plutovg_surface_get_stride(c->surface);
     const uint8_t *data = plutovg_surface_get_data(c->surface);
     for (int row = 0; row < h; row++) {

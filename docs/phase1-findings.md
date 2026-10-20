@@ -716,3 +716,21 @@ all go through the recorded GL calls, so no cause is known yet.
 0.71 (debug builds): L + R + TRIANGLE switches the variants off and on while playing. If the
 fragment goes away with them off, they are the cause; if not, the next suspect is the rewritten
 or original shader's shadow test at the Vita's precision.
+
+### A long session ran out of memory: the game never destroys its stat-change sprites (log79, 0.70, 2026-10-20; runtime 0.72)
+After a long session in the Temple, a stat change failed with `InternalError: out of memory` in
+getImageData and the battle stopped (the phase never ended). The game's playStatChangeAnimation
+adds a TileSprite of 156x316 times the sprite scale (936x1896 at the Vita's), fades it out and
+never destroys it. Each one kept a 7 MB texture, the CanvasTexture's 7 MB copy of its pixels
+(Phaser reads the whole canvas back at once) and, in our runtime, the canvas's own 7 MB (that
+getImageData allocated a blank canvas's pixels and pinned them). The main heap went from 107 to
+236 MB, with 6.8 MB textures spilling out of video memory into the heap.
+
+0.72:
+- getImageData of a canvas never drawn on returns zeros without allocating its pixels, and the
+  canvas stays unallocated.
+- On the Vita, the texture of such a canvas (made without data since 0.70) can be evicted like an
+  image's, and comes back as zeros if it's used again.
+- js/bootstrap.js: every 120 frames, a TileSprite showing `battle_stats` that has faded to alpha 0
+  with no tween on it is destroyed, as the game's code would have done (`[phaser] removed a
+  finished stat-change sprite`; PKR_STAT_SPRITE_CLEANUP=0 in localStorage turns it off).
