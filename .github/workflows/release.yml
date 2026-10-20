@@ -2,7 +2,8 @@
 # Publishes a release for players: the player .vpk from a passed CI run of the commit (the file CI
 # checked in Vita3K), with docs/releases/<tag>.md as the notes. Either push a version tag (v0.69-beta,
 # v1.0) on a commit of main, or run it by hand (Actions -> Release -> Run, or the API) with the tag
-# name: it then tags the newest commit of main itself. CI may still be running; it waits.
+# name and optionally a commit of main (default: the newest): it then tags that commit itself. CI
+# may still be running; it waits.
 name: Release
 
 on:
@@ -11,8 +12,11 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Version tag to create on main's newest commit (v0.69-beta)
+        description: Version tag to create (v0.69-beta)
         required: true
+      commit:
+        description: Commit of main to release (empty = main's newest)
+        required: false
 
 concurrency:
   group: release-${{ inputs.tag || github.ref_name }}
@@ -31,23 +35,27 @@ jobs:
       TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit || github.sha }}
+          fetch-depth: 0
       - name: Check the tag, version and notes
         run: |
           version=$(cat runtime/VERSION)
           [[ "$TAG" =~ ^v[0-9]+(\.[0-9]+)*(-[a-z]+)?$ ]] || { echo "not a version tag: $TAG"; exit 1; }
           [[ "$TAG" == "v$version" || "$TAG" == "v$version-"* ]] || { echo "tag $TAG doesn't match runtime/VERSION ($version)"; exit 1; }
           [ -f "docs/releases/$TAG.md" ] || { echo "no docs/releases/$TAG.md"; exit 1; }
-          git fetch -q origin main
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "$GITHUB_SHA is not on main"; exit 1; }
+          sha=$(git rev-parse HEAD)
+          git merge-base --is-ancestor "$sha" origin/main || { echo "$sha is not on main"; exit 1; }
+          echo "SHA=$sha" >> "$GITHUB_ENV"
           if gh release view "$TAG" >/dev/null 2>&1; then echo "release $TAG exists already"; exit 1; fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
       - name: Wait for a passed CI run of the commit
         run: |
           for _ in $(seq 100); do
-            run=$(gh run list --workflow ci.yml --commit "$GITHUB_SHA" --status success --limit 1 --json databaseId -q '.[0].databaseId')
+            run=$(gh run list --workflow ci.yml --commit "$SHA" --status success --limit 1 --json databaseId -q '.[0].databaseId')
             if [ -n "$run" ]; then echo "RUN=$run" >> "$GITHUB_ENV"; exit 0; fi
-            busy=$(gh run list --workflow ci.yml --commit "$GITHUB_SHA" --json status -q '[.[] | select(.status != "completed")] | length')
-            [ "$busy" -gt 0 ] || { echo "no passed or running CI run for $GITHUB_SHA"; exit 1; }
+            busy=$(gh run list --workflow ci.yml --commit "$SHA" --json status -q '[.[] | select(.status != "completed")] | length')
+            [ "$busy" -gt 0 ] || { echo "no passed or running CI run for $SHA"; exit 1; }
             sleep 30
           done
           echo "CI didn't finish in time"; exit 1
@@ -55,7 +63,7 @@ jobs:
         with:
           run-id: ${{ env.RUN }}
           github-token: ${{ github.token }}
-          name: pokerogue-${{ env.VERSION }}-${{ github.sha }}
+          name: pokerogue-${{ env.VERSION }}-${{ env.SHA }}
           path: dl
       - name: Publish
         run: |
@@ -64,4 +72,4 @@ jobs:
           title="PokeRogue Vita $VERSION"
           case "$TAG" in *-beta) title="$title (beta)" ;; *-alpha) title="$title (alpha)" ;; esac
           # By hand, the tag doesn't exist yet: --target creates it on the commit that was checked.
-          gh release create "$TAG" "$vpk" --target "$GITHUB_SHA" --title "$title" --notes-file "docs/releases/$TAG.md"
+          gh release create "$TAG" "$vpk" --target "$SHA" --title "$title" --notes-file "docs/releases/$TAG.md"

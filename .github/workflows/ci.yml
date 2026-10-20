@@ -8,9 +8,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A newer push cancels a branch's running check, except on main: every commit of main gets a full
+# run (a release or a dev build may be waiting for it; 0.69-beta's was cancelled by the next push).
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read

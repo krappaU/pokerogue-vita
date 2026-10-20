@@ -145,8 +145,9 @@ A player build writes no log and its JS `console.*` does nothing, unless `log=1`
 
 **Releases for players:** write the notes as `docs/releases/v<version>-beta.md`, commit, and push a
 tag `v<version>-beta` on that commit (`runtime/VERSION` must match), or run the "Release" workflow
-by hand with that tag name, which tags main's newest commit itself (cloud sessions can't push
-tags). `.github/workflows/release.yml` waits for the commit's CI run to pass and publishes its
+by hand with that tag name (and optionally a commit of main; default the newest), which tags the
+commit itself (cloud sessions can't push tags). CI runs on main are never cancelled by a newer
+push, so a release can wait for an older commit's run. `.github/workflows/release.yml` waits for the commit's CI run to pass and publishes its
 player .vpk (the file CI ran in Vita3K) as a release with those notes.
 
 In the game, SELECT while holding L + R toggles a debug line in the top-right corner: version,
