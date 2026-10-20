@@ -143,6 +143,11 @@ profiler, the debug line, the watchdog thread, `<data>/debug.js` and config.txt'
 A player build writes no log and its JS `console.*` does nothing, unless `log=1` is in config.txt
 (for a bug report). `-DPKR_DEBUG=OFF` builds the player variant on the desktop for testing.
 
+**Releases for players:** write the notes as `docs/releases/v<version>-beta.md`, commit, and push a
+tag `v<version>-beta` on that commit (`runtime/VERSION` must match). `.github/workflows/release.yml`
+waits for the commit's CI run to pass and publishes its player .vpk (the file CI ran in Vita3K) as
+a release with those notes.
+
 In the game, SELECT while holding L + R toggles a debug line in the top-right corner: version,
 frame rate, JS time per frame and heap use (`hud=1` in `<data>/config.txt` starts with it on; `hud`
 on the control channel toggles it). While it is on, Phaser is told to restore its GL state after
@@ -260,7 +265,8 @@ textures in the main heap) any texture idle for 90 frames goes. The `[perf]` lin
 ## Threads
 The game's JavaScript runs on one thread (CPU core 0) and can't be split. Off that thread: HTTP,
 the disk cache and the offline game's zip (network thread, core 1), image decoding (core 1), audio
-mixing (core 1) and audio decoding (core 2). Decoders run below the network thread's priority: the
+mixing (core 1), audio decoding (core 2), and writing the log and the profiler's profile.txt to the
+card (0.69; each line written from the game's thread cost several ms). Decoders run below the network thread's priority: the
 Vita doesn't time-slice threads of equal priority, and a busy decoder used to stall downloads.
 
 ## The game's API and Cloudflare
