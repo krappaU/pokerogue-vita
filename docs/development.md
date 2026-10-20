@@ -209,6 +209,11 @@ without a copy.
 - `plainshaders=1` in config.txt: every textured fragment shader only samples its texture (wrong
   colours, no effects). The GPU time it saves is what the shaders cost; what's left is pixels and
   texture reads.
+- `gpuprofile=1` in config.txt: every 10 s one frame waits for the GPU after each draw call and the
+  log gets a `[gpu] per shader` line: GPU time, draws and vertices per shader program (Phaser's by
+  their `SHADER_NAME`, PokeRogue's as "PokeRogue sprite" / "PokeRogue field"). Each wait also ends
+  the GPU's scene, which every draw pays for too (about the smallest draw's time, in the line):
+  compare programs with it, not with the `[perf]` line's GPU time.
 
 ## Memory: texture eviction
 Phaser never frees textures. When GPU texture memory exceeds 64 MB, image-backed textures not drawn

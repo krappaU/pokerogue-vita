@@ -30,6 +30,7 @@ typedef struct {
                              // config.txt sample=1; on from the start in profiling builds)
     int max_textures;        // texture units Phaser is told of (default 4; debug builds: maxtextures=N)
     bool plain_shaders;      // config.txt plainshaders=1 (debug builds): trivial fragment shaders, to measure
+    bool gpu_profile;        // config.txt gpuprofile=1 (debug builds): GPU time per shader, one frame every 10 s
     int profile_rate;        // JS operations between samples (config.txt profile_rate=N; 0: QuickJS's 10000)
     double sample_ms;        // at most one sample per this many ms, so samples follow time rather than
                              // operation counts (config.txt sample_ms=1; 0: every check)

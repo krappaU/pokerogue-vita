@@ -810,12 +810,34 @@ FN(w_attachShader) {
     return JS_UNDEFINED;
 }
 FN(w_detachShader) { glDetachShader(oid(A(0)), oid(A(1))); return JS_UNDEFINED; }
+#ifdef PKR_DEBUG
+// A program's name for the GPU profile: Phaser's shaders define SHADER_NAME; PokeRogue's own
+// (src/pipelines/glsl in the game) are known by a uniform only they have.
+static char prog_names[MAX_GL_IDS][40];
+static void name_program(GLuint prog) {
+    if (prog >= MAX_GL_IDS) return;
+    snprintf(prog_names[prog], sizeof prog_names[prog], "program %u", prog);
+    for (int i = 0; i < 2; i++) {
+        GLuint sh = prog_shaders[prog][i];
+        const char *src = sh && sh < MAX_GL_IDS ? shader_src[sh] : NULL;
+        if (!src || !strstr(src, "gl_FragColor")) continue;
+        const char *def = strstr(src, "#define SHADER_NAME ");
+        if (strstr(src, "spriteColors")) snprintf(prog_names[prog], sizeof prog_names[prog], "PokeRogue sprite");
+        else if (strstr(src, "terrainColor")) snprintf(prog_names[prog], sizeof prog_names[prog], "PokeRogue field");
+        else if (def) sscanf(def + 20, "%39[A-Za-z0-9_]", prog_names[prog]);
+    }
+}
+#endif
+
 FN(w_linkProgram) {
     GLuint prog = oid(A(0));
     glLinkProgram(prog);
     GLint ok = 0;
     glGetProgramiv(prog, GL_LINK_STATUS, &ok);
     if (!ok) report_link_failure(prog);
+#ifdef PKR_DEBUG
+    name_program(prog);
+#endif
     return JS_UNDEFINED;
 }
 FN(w_validateProgram) { glValidateProgram(oid(A(0))); return JS_UNDEFINED; }
@@ -1042,6 +1064,68 @@ FN(w_vertexAttrib4f) {
     return JS_UNDEFINED;
 }
 
+#ifdef PKR_DEBUG
+// GPU time per shader program (config.txt gpuprofile=1, debug builds): every 10 s one frame waits
+// for the GPU after each of its draw calls (glFinish), with the GPU idle when the frame starts, and
+// the log gets the time per program. Each wait also ends the GPU's scene, so every draw pays that
+// overhead too (about the smallest draw's time, logged): compare programs, not absolute totals.
+#define PROF_MAX 24
+static bool prof_on;
+static double prof_next;
+typedef struct { GLuint prog; double ms, max; int draws, verts; } prof_entry;
+static prof_entry prof[PROF_MAX];
+static int n_prof;
+static double prof_min;
+
+static void prof_draw(int verts, double t0) {
+    glFinish();
+    double ms = host_now_ms() - t0;
+    GLuint prog = oid(st.bound_program);
+    int i = 0;
+    while (i < n_prof && prof[i].prog != prog) i++;
+    if (i == n_prof) {
+        if (n_prof == PROF_MAX) return;
+        prof[n_prof++] = (prof_entry){.prog = prog};
+    }
+    prof[i].ms += ms, prof[i].draws++, prof[i].verts += verts;
+    if (ms > prof[i].max) prof[i].max = ms;
+    if (prof_min == 0 || ms < prof_min) prof_min = ms;
+}
+
+// After the frame's swap (gl_after_frame): logs a profiled frame, or starts one.
+static void prof_after_frame(void) {
+    if (prof_on && !n_prof) { // nothing drawn (loading screens): profile the next frame instead
+        prof_on = false;
+        prof_next = 0;
+    }
+    if (prof_on) {
+        prof_on = false;
+        char line[2048];
+        int o = 0;
+        double total = 0;
+        for (int i = 0; i < n_prof; i++) total += prof[i].ms;
+        o += snprintf(line + o, sizeof line - o, "[gpu] per shader, one frame (%.1f ms; each draw also pays ~%.1f ms "
+                      "of scene overhead, the smallest draw):", total, prof_min);
+        for (int k = 0; k < n_prof && o < (int)sizeof line - 120; k++) {
+            int best = k; // biggest first
+            for (int i = k + 1; i < n_prof; i++) if (prof[i].ms > prof[best].ms) best = i;
+            prof_entry t = prof[k];
+            prof[k] = prof[best], prof[best] = t;
+            const char *name = prof[k].prog < MAX_GL_IDS && prog_names[prof[k].prog][0] ? prog_names[prof[k].prog] : "?";
+            o += snprintf(line + o, sizeof line - o, " | %s: %.1f ms in %d draws (max %.1f, %d vertices)", name,
+                          prof[k].ms, prof[k].draws, prof[k].max, prof[k].verts);
+        }
+        host_log("%s", line);
+        return;
+    }
+    if (!g_cfg.gpu_profile || host_now_ms() < prof_next) return;
+    prof_next = host_now_ms() + 10000;
+    n_prof = 0, prof_min = 0;
+    glFinish(); // the GPU is idle when the profiled frame starts
+    prof_on = true;
+}
+#endif
+
 // Time spent inside draw calls (a driver that waits for the GPU there shows up as JS time).
 FN(w_drawArrays) {
     textures_for_draw(ctx);
@@ -1049,6 +1133,9 @@ FN(w_drawArrays) {
     glDrawArrays(gi(ctx, A(0)), gi(ctx, A(1)), gi(ctx, A(2)));
     draw_ms_frame += host_now_ms() - t0;
     draws_total++;
+#ifdef PKR_DEBUG
+    if (prof_on) prof_draw(gi(ctx, A(2)), t0);
+#endif
     return JS_UNDEFINED;
 }
 FN(w_drawElements) {
@@ -1057,6 +1144,9 @@ FN(w_drawElements) {
     glDrawElements(gi(ctx, A(0)), gi(ctx, A(1)), gi(ctx, A(2)), (const void *)(intptr_t)gi(ctx, A(3)));
     draw_ms_frame += host_now_ms() - t0;
     draws_total++;
+#ifdef PKR_DEBUG
+    if (prof_on) prof_draw(gi(ctx, A(1)), t0);
+#endif
     return JS_UNDEFINED;
 }
 
@@ -1389,6 +1479,9 @@ void gl_after_frame(void) {
     glViewport(st.vp[0], st.vp[1], st.vp[2], st.vp[3]);
     if (st.scissor_on) glEnable(GL_SCISSOR_TEST);
     if (st.fb) glBindFramebuffer(GL_FRAMEBUFFER, st.fb);
+#ifdef PKR_DEBUG
+    prof_after_frame();
+#endif
 }
 
 // Puts back the GL state the overlay's drawing changes (overlay.c: framebuffer, viewport, caps,
