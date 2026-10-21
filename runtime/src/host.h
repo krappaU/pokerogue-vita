@@ -262,5 +262,7 @@ void canvas_memory(size_t *canvas_bytes, int *canvas_count, size_t *font_bytes);
 // Returns RGBA8 pixels (straight alpha) of an Image/Canvas/ImageData-like object, or NULL.
 // *owned is set when the caller must free() the returned buffer.
 const uint8_t *pixels_from_js(JSContext *ctx, JSValueConst obj, int *w, int *h, bool *owned);
+const uint8_t *pixels_from_js_ex(JSContext *ctx, JSValueConst obj, int *w, int *h, bool *owned, bool want_premultiplied,
+                                 bool *premultiplied);
 bool canvas_is_blank(JSContext *ctx, JSValueConst obj, int *w, int *h); // never drawn since sized: all transparent
 JSValue bitmap_ref(JSContext *ctx, JSValueConst obj); // Bitmap behind an image source, or undefined

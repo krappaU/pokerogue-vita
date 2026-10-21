@@ -1651,7 +1651,8 @@ static JSValue tex_image_2d(JSContext *ctx, int argc, JSValueConst *argv, int *o
             return JS_UNDEFINED;
         }
 #endif
-        const uint8_t *px = pixels_from_js(ctx, A(5), &w, &h, &owned);
+        bool pm;
+        const uint8_t *px = pixels_from_js_ex(ctx, A(5), &w, &h, &owned, st.premultiply, &pm);
         if (!px) {
             // No pixels (usually out of memory). Throwing here would abort the game's render loop
             // for good, so upload a transparent pixel instead.
@@ -1663,7 +1664,10 @@ static JSValue tex_image_2d(JSContext *ctx, int argc, JSValueConst *argv, int *o
             return JS_UNDEFINED;
         }
         *ow = w, *oh = h;
+        bool sp = st.premultiply;
+        st.premultiply = sp && !pm; // a canvas's pixels may come premultiplied already
         const uint8_t *up = unpack(px, w, h, owned, &fr);
+        st.premultiply = sp;
         gl_pixel_store(GL_UNPACK_ALIGNMENT, 4);
         glTexImage2D(target, level, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, up);
         if (level == 0) {
@@ -1704,9 +1708,13 @@ FN(w_texSubImage2D) {
     if (argc == 7) {
         int w, h;
         bool owned, fr;
-        const uint8_t *px = pixels_from_js(ctx, A(6), &w, &h, &owned);
+        bool pm;
+        const uint8_t *px = pixels_from_js_ex(ctx, A(6), &w, &h, &owned, st.premultiply, &pm);
         if (!px) return JS_ThrowTypeError(ctx, "texSubImage2D: unsupported source");
+        bool sp = st.premultiply;
+        st.premultiply = sp && !pm;
         const uint8_t *up = unpack(px, w, h, owned, &fr);
+        st.premultiply = sp;
         glTexSubImage2D(target, level, x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, up);
         if (fr) free((void *)up);
         if (owned && up != px) free((void *)px);

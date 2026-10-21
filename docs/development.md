@@ -211,9 +211,10 @@ console 0.58 left ~15 MB of main memory to the system. `getImageData` hands its 
 without a copy.
 
 ## GPU measurements (debug builds)
-- The `[perf]` line's `GPU N ms/frame`: every 30th frame is timed with glFinish before its swap,
-  after the frame before was waited for (0.59; until then the reading included the previous frame
-  and was about twice the real time).
+- The `[perf]` line's `GPU N ms/frame`: one frame every 5 s is timed with glFinish before its
+  swap, after the frame before was waited for (0.59; until then the reading included the previous
+  frame and was about twice the real time). Until 0.73 it was every 30th frame; each glFinish holds
+  the main thread for a whole GPU frame.
 - Phaser is told of 4 texture units (its batch shader picks a sprite's texture with an `if` per
   unit; 16 cost ~2.5 ms per frame of GPU time on the title screen in 0.56). `maxtextures=N` in
   config.txt sets another number (0: as many as the GPU has).

@@ -229,17 +229,26 @@ static int gpu_n;
 
 void plat_swap(void) {
 #ifdef PKR_DEBUG
-    static unsigned frame;
-    if (++frame % 30 == 0) {
+    // GPU time of one frame every 5 s: glFinish after a swap (the GPU is idle when the measured frame
+    // starts), then before the next swap, timed. Each glFinish holds the main thread for the GPU's
+    // whole frame, so not often (it was every 30 frames until 0.73: ~2 ms per frame on average).
+    static double next_ms;
+    static int state; // 1: the GPU was emptied after the last swap, measure this frame
+    if (state == 1) {
         double t0 = host_now_ms();
         glFinish();
         double ms = host_now_ms() - t0;
         gpu_sum += ms;
         if (ms > gpu_max) gpu_max = ms;
         gpu_n++;
+        state = 0;
     }
     vglSwapBuffers(GL_FALSE);
-    if (frame % 30 == 29) glFinish(); // the GPU is idle when the measured frame starts
+    if (host_now_ms() >= next_ms) {
+        next_ms = host_now_ms() + 5000;
+        glFinish();
+        state = 1;
+    }
 #else
     vglSwapBuffers(GL_FALSE);
 #endif

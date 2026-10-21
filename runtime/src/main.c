@@ -225,7 +225,6 @@ static int pending_tap_up = -1;
 static float tap_x, tap_y;
 
 static double ctl_wait_until; // "wait": no further commands before this time
-static bool ctl_more;        // a "key"/"wait" left more commands to read: read again without delay
 
 static void toggle_variants(void);
 
@@ -309,6 +308,73 @@ static void control_line(JSContext *ctx, char *line, bool *quit) {
     }
 }
 
+// The control file is read by a thread of its own: opening it is a memory-card access (3 ms on the
+// Vita, 30-45 ms while the game loads, 0.50 logs), and even twice a second it cost dev builds 3-4
+// ms per frame on average in some windows (log83). The thread queues complete lines four times a
+// second; control_poll runs them on the main thread.
+typedef struct ctl_line {
+    struct ctl_line *next;
+    char text[];
+} ctl_line;
+static pthread_mutex_t ctl_lock = PTHREAD_MUTEX_INITIALIZER;
+static ctl_line *ctl_head, *ctl_tail;
+
+static ctl_line *ctl_pop(void) {
+    pthread_mutex_lock(&ctl_lock);
+    ctl_line *l = ctl_head;
+    if (l && !(ctl_head = l->next)) ctl_tail = NULL;
+    pthread_mutex_unlock(&ctl_lock);
+    return l;
+}
+
+static void *control_reader(void *arg) {
+    (void)arg;
+    for (;;) {
+        FILE *f = fopen(g_cfg.control, "r");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long size = ftell(f);
+            if (size < ctl_offset) ctl_offset = 0; // truncated
+            if (size > ctl_offset) {
+                fseek(f, ctl_offset, SEEK_SET);
+                char line[8192];
+                while (fgets(line, sizeof line, f)) {
+                    size_t n = strlen(line);
+                    if (n && line[n - 1] != '\n') break; // partial line; read it next time
+                    ctl_offset += n;
+                    line[--n] = 0;
+                    ctl_line *l = malloc(sizeof *l + n + 1);
+                    if (!l) break;
+                    memcpy(l->text, line, n + 1);
+                    l->next = NULL;
+                    pthread_mutex_lock(&ctl_lock);
+                    if (ctl_tail) ctl_tail->next = l;
+                    else ctl_head = l;
+                    ctl_tail = l;
+                    pthread_mutex_unlock(&ctl_lock);
+                }
+            }
+            fclose(f);
+        }
+        struct timespec ts = {0, 250 * 1000000L};
+        nanosleep(&ts, NULL);
+    }
+    return NULL;
+}
+
+static void control_reader_start(void) {
+    static bool started;
+    if (started) return;
+    started = true;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 64 * 1024); // its line buffer is 8 KB
+    pthread_t t;
+    if (pthread_create(&t, &attr, control_reader, NULL) == 0) pthread_detach(t);
+    else host_log("[control] couldn't start the reader thread");
+    pthread_attr_destroy(&attr);
+}
+
 static void control_poll(JSContext *ctx, bool *quit) {
     if (pending_tap_up >= 0 && frame_no >= pending_tap_up) {
         plat_inject_pointer(PEV_POINTER_UP, tap_x, tap_y);
@@ -327,35 +393,13 @@ static void control_poll(JSContext *ctx, bool *quit) {
     for (int i = 0; i < 8; i++)
         if (pending_release[i].key[0]) return;
     if (host_now_ms() < ctl_wait_until) return;
-    // Opening the file is a memory-card access: 3 ms per frame on the Vita, 30-45 ms while the game
-    // loads (0.50 logs). Twice a second is enough for scripts; a command with more queued behind it
-    // ("key", "wait") comes back sooner, when it has run.
-    static double next_check;
-    if (host_now_ms() < next_check) return;
-    next_check = host_now_ms() + (ctl_more ? 0 : 500);
-    ctl_more = false;
-    FILE *f = fopen(g_cfg.control, "r");
-    if (!f) return;
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    if (size < ctl_offset) ctl_offset = 0; // truncated
-    if (size > ctl_offset) {
-        fseek(f, ctl_offset, SEEK_SET);
-        char line[8192];
-        while (fgets(line, sizeof line, f)) {
-            size_t n = strlen(line);
-            if (n && line[n - 1] != '\n') break; // partial line; read it next frame
-            ctl_offset += n;
-            line[--n] = 0;
-            bool hold = !strncmp(line, "key ", 4) || !strncmp(line, "wait ", 5);
-            control_line(ctx, line, quit);
-            if (hold) {
-                ctl_more = true; // read on as soon as the release or the pause is over
-                break;           // the rest waits for it (see above)
-            }
-        }
+    control_reader_start();
+    for (ctl_line *l; (l = ctl_pop());) {
+        bool hold = !strncmp(l->text, "key ", 4) || !strncmp(l->text, "wait ", 5);
+        control_line(ctx, l->text, quit);
+        free(l);
+        if (hold) break; // the rest waits for the release or the pause (see above)
     }
-    fclose(f);
 }
 
 // ---------------------------------------------------------------- version

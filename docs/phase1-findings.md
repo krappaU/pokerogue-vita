@@ -743,3 +743,20 @@ memory card, not JSON.stringify. 0.73: storage.js still makes the JSON on the ga
 of a file still waiting replaces it; the forced flush before a restart and the app's exit wait
 for the queue. Writes of 100 ms or more are logged (`[storage] ... written in N ms`).
 tests/smoke checks that a forced flush puts the value in the file.
+
+### What else holds the main thread (logs 75, 81, 83; runtime 0.74)
+The profiler's main-loop split in battles: the game's JS 83-94% of the time (native work done for
+it included), waiting in the buffer swap 5-9% (~4-7 ms per frame), the control channel 1-2%
+(dev builds; some windows 3-4 ms per frame), our drawing and after-frame work under 1 ms. The
+swap's wait is the GPU (vitaGL already triple-buffers; vglSwapBuffers waits only when the display
+queue is full, and the Temple's GPU time is 34-38 ms against 40-55 of JS), not something a thread
+could take. 0.74 moves what could be moved:
+- Text uploads: plutovg keeps a canvas premultiplied, and Phaser uploads its text canvases with
+  UNPACK_PREMULTIPLY_ALPHA. The upload un-premultiplied every partly transparent pixel (three
+  integer divisions, which the Vita's CPU does in software), then premultiplied the copy again.
+  A premultiplied upload of a canvas is now one swizzle pass of its store, as browsers do. The
+  log showed 30-60 ms per text-line upload in battles (828x286, 1626x179, 1674x179).
+- The control channel (dev builds): read by a thread of its own four times a second; the main
+  thread only runs the lines it queued.
+- The GPU timer (dev builds): one measured frame every 5 s instead of every 30 frames (two
+  glFinish per measurement, each holding the main thread for a whole GPU frame).

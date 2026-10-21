@@ -987,7 +987,29 @@ bool canvas_is_blank(JSContext *ctx, JSValueConst obj, int *w, int *h) {
     return true;
 }
 
+// plutovg's premultiplied ARGB words to premultiplied RGBA bytes: a swizzle, nothing else.
+static void argb_to_rgba_premultiplied(uint8_t *dst, const uint8_t *src, int w, int h, int stride) {
+    for (int y = 0; y < h; y++) {
+        const uint32_t *s = (const uint32_t *)(src + (size_t)stride * y);
+        uint32_t *d = (uint32_t *)(dst + (size_t)w * 4 * y);
+        for (int x = 0; x < w; x++) {
+            uint32_t p = s[x];
+            d[x] = (p & 0xFF00FF00u) | ((p >> 16) & 0xFFu) | ((p & 0xFFu) << 16);
+        }
+    }
+}
+
 const uint8_t *pixels_from_js(JSContext *ctx, JSValueConst obj, int *w, int *h, bool *owned) {
+    return pixels_from_js_ex(ctx, obj, w, h, owned, false, NULL);
+}
+
+// As pixels_from_js; with want_premultiplied, a canvas's pixels come premultiplied (*premultiplied
+// is set): its store already is, and the GL upload of the game's text canvases (Phaser asks for
+// premultiplied alpha) un-premultiplied every edge pixel with three divisions and then multiplied
+// it back, 30-60 ms per upload of a text line on the Vita (log75, log83).
+const uint8_t *pixels_from_js_ex(JSContext *ctx, JSValueConst obj, int *w, int *h, bool *owned, bool want_premultiplied,
+                                 bool *premultiplied) {
+    if (premultiplied) *premultiplied = false;
     *owned = false;
     bitmap *b = JS_GetOpaque(obj, bitmap_class);
     c2d *c = b ? NULL : JS_GetOpaque(obj, canvas_class);
@@ -1018,8 +1040,14 @@ const uint8_t *pixels_from_js(JSContext *ctx, JSValueConst obj, int *w, int *h, 
         if (c->released) {
             memset(out, 0, (size_t)c->w * c->h * 4);
         } else {
-            plutovg_convert_argb_to_rgba(out, plutovg_surface_get_data(c->surface), c->w, c->h,
-                                         plutovg_surface_get_stride(c->surface));
+            if (want_premultiplied && premultiplied) {
+                argb_to_rgba_premultiplied(out, plutovg_surface_get_data(c->surface), c->w, c->h,
+                                           plutovg_surface_get_stride(c->surface));
+                *premultiplied = true;
+            } else {
+                plutovg_convert_argb_to_rgba(out, plutovg_surface_get_data(c->surface), c->w, c->h,
+                                             plutovg_surface_get_stride(c->surface));
+            }
             // This is a GPU upload: the GPU now has the pixels. Free ours unless the game needs them.
             n_uploads++;
             if (!c->keep && release_canvases) {
