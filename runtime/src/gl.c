@@ -871,6 +871,8 @@ typedef struct {
     vcopy copies[1 << VF_COUNT]; // by the VF_* bits left out
 } vfamily;
 static vfamily *families[MAX_GL_IDS];
+static GLuint family_progs[64]; // the programs that have one
+static int n_family_progs;
 static unsigned var_version;
 static int var_built, var_draws;
 
@@ -887,6 +889,8 @@ static void family_free(GLuint prog) {
     free(f->u);
     free(f);
     families[prog] = NULL;
+    for (int k = 0; k < n_family_progs; k++)
+        if (family_progs[k] == prog) family_progs[k] = family_progs[--n_family_progs];
 }
 
 static int type_comps(GLenum t, bool *is_int) {
@@ -969,22 +973,46 @@ static void family_setup(GLuint prog) {
         return;
     }
     families[prog] = f;
+    if (n_family_progs < 64) family_progs[n_family_progs++] = prog;
     precompile_queue(prog, f->present);
 }
 
-// A uniform write to the bound program, as the GL got it.
+static int family_find_loc(vfamily *f, GLint loc) {
+    for (int i = 0; i < f->nu; i++)
+        if (f->u[i].loc == loc) return i;
+    return -1;
+}
+
+// A uniform write, recorded where the GL put it. WebGL (and the desktop's GL) applies it to the
+// bound program. vitaGL's location points at its own program's uniform, and the write lands there
+// whichever program is bound: when the game set the sprite shader's uniforms with another program
+// bound (Phaser binds through its own idea of the current program), the Vita's program got the
+// value and this record didn't, so a copy was chosen and synced from stale values (0.71-0.73:
+// Cofagrigus's shadow strip showed sprite-sheet pixels, gone with the variants off).
 static void var_record(GLint loc, const void *data, int scalars) {
+    if (loc == -1 || scalars <= 0) return;
     GLuint prog = oid(st.bound_program);
     vfamily *f = prog < MAX_GL_IDS ? families[prog] : NULL;
-    if (!f || loc == -1 || scalars <= 0) return;
-    for (int i = 0; i < f->nu; i++) {
-        vuniform *u = &f->u[i];
-        if (u->loc != loc) continue;
-        int max = u->size * u->comps;
-        memcpy(u->data, data, (size_t)(scalars < max ? scalars : max) * 4);
-        u->version = ++var_version;
-        return;
+    int i = f ? family_find_loc(f, loc) : -1;
+#ifdef __vita__
+    if (i < 0) {
+        for (int k = 0; k < n_family_progs; k++) {
+            vfamily *g = families[family_progs[k]];
+            if (!g || g == f || (i = family_find_loc(g, loc)) < 0) continue;
+            static int n_elsewhere;
+            if (++n_elsewhere <= 5 || n_elsewhere % 1000 == 0)
+                host_log("[gl] uniform %s written to program %u while program %u is bound (%d times)", g->u[i].name,
+                         family_progs[k], prog, n_elsewhere);
+            f = g;
+            break;
+        }
     }
+#endif
+    if (i < 0) return;
+    vuniform *u = &f->u[i];
+    int max = u->size * u->comps;
+    memcpy(u->data, data, (size_t)(scalars < max ? scalars : max) * 4);
+    u->version = ++var_version;
 }
 
 static float vf_float(vfamily *f, int idx, int k) {

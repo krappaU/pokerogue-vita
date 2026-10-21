@@ -760,3 +760,21 @@ could take. 0.74 moves what could be moved:
   thread only runs the lines it queued.
 - The GPU timer (dev builds): one measured frame every 5 s instead of every 30 frames (two
   glFinish per measurement, each holding the main thread for a whole GPU frame).
+
+### The Temple reflection is the shader variants (log86, 0.73, 2026-10-21; runtime 0.75)
+With L + R + TRIANGLE in a Temple battle: the strip under Cofagrigus showed sprite-sheet pixels
+with the variants on and was right with them off (`[gl] shader variants off/on` lines in log86).
+So a copy drew where the original would have darkened or discarded the strip: either the copy
+without the shadow code was chosen (a stale `hasShadow`), or a copy had stale shadow values
+(`vCutoff`, `relPosition`, ...), or the Vita's compiler builds a copy wrongly.
+One way the records can go stale only on the Vita: vitaGL's uniform location is a pointer to its
+own program's uniform (built without SAFE_UNIFORMS), so a write lands in that program whichever
+program is bound, where WebGL and the desktop's GL apply it to the bound program (or refuse it).
+The record (gl.c var_record) filed each write under the bound program, so a write to the sprite
+shader made while another program was bound reached the Vita's program but not the record. Phaser
+binds through its own idea of the current program (setProgram skips useProgram when it believes
+the program is bound), so a write like that needs only that idea to be wrong once.
+0.75: on the Vita, a write is recorded in the family that owns its location, as vitaGL applies it,
+and such writes are logged (`[gl] uniform NAME written to program N while program M is bound`).
+If the log shows them and the strip is right, this was it; if the strip still breaks without
+them, the next suspect is the compiler (a copy with the shadow code drawing it wrongly).
