@@ -11,12 +11,16 @@
   const dirty = new Set();
   let lastFlush = 0;
   const writers = {};
+  // The files are written by a thread of the host's (writeFileLater), not this one: on the Vita a
+  // write took 300 ms. A forced flush (before a restart) waits until they are on the card.
+  const write = N.writeFileLater || N.writeFile;
   function flush(force) {
     const now = N.now();
     if (!force && now - lastFlush < 1000) return;
     lastFlush = now;
-    for (const f of dirty) if (!N.writeFile(f, JSON.stringify(writers[f]()))) N.log("[storage] failed to write " + f);
+    for (const f of dirty) if (!write(f, JSON.stringify(writers[f]()))) N.log("[storage] failed to write " + f);
     dirty.clear();
+    if (force && N.waitWrites) N.waitWrites();
   }
   rt.frameHooks.push(() => { if (dirty.size) flush(false); });
   rt.flushStorage = () => flush(true);

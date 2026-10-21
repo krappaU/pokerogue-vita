@@ -573,54 +573,159 @@ static JSValue n_read_file(JSContext *ctx, JSValueConst this_val, int argc, JSVa
     return v;
 }
 
-// writeFile(relPath, string | ArrayBuffer | TypedArray) -> bool. Writes to a temp file and
-// renames, so a crash never leaves half a file. Missing folders on the way are created.
+// Writes data to `path` through a temp file and a rename, so a crash never leaves half a file.
+static bool write_atomic(const char *path, const char *data, size_t len) {
+    char tmp[1100];
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    FILE *f = fopen(tmp, "wb");
+    if (!f) return false;
+    bool ok = fwrite(data, 1, len, f) == len;
+    ok &= fclose(f) == 0;
+    return ok && rename(tmp, path) == 0;
+}
+
+// `rel` under the data folder, with its missing parent folders created; false for "..".
+static bool data_path(const char *rel, char *path, size_t size) {
+    if (!rel || strstr(rel, "..")) return false;
+    snprintf(path, size, "%s/%s", g_cfg.data_dir, rel);
+    char dir[1024];
+    snprintf(dir, sizeof dir, "%s", path);
+    for (char *p = dir + strlen(g_cfg.data_dir) + 1; (p = strchr(p, '/')); p++) {
+        *p = 0;
+        mkdir(dir, 0777);
+        *p = '/';
+    }
+    return true;
+}
+
+// The bytes of a string, ArrayBuffer or typed array (*s is set for a string, to free).
+static const char *js_bytes(JSContext *ctx, JSValueConst v, size_t *len, const char **s) {
+    *s = NULL, *len = 0;
+    if (JS_IsString(v)) return *s = JS_ToCStringLen(ctx, len, v);
+    const char *bin = (const char *)JS_GetArrayBuffer(ctx, len, v);
+    if (bin) return bin;
+    JS_FreeValue(ctx, JS_GetException(ctx));
+    size_t off, tlen, bpe, total;
+    JSValue ab = JS_GetTypedArrayBuffer(ctx, v, &off, &tlen, &bpe);
+    if (JS_IsException(ab)) {
+        JS_FreeValue(ctx, JS_GetException(ctx));
+        return NULL;
+    }
+    const char *base = (const char *)JS_GetArrayBuffer(ctx, &total, ab);
+    JS_FreeValue(ctx, ab);
+    if (base) bin = base + off, *len = tlen;
+    return bin;
+}
+
+// writeFile(relPath, string | ArrayBuffer | TypedArray) -> bool. Written at once, atomically;
+// missing folders on the way are created.
 static JSValue n_write_file(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    const char *rel = JS_ToCString(ctx, argv[0]);
-    size_t len = 0;
-    const char *s = NULL, *bin = NULL;
-    if (JS_IsString(argv[1])) {
-        s = JS_ToCStringLen(ctx, &len, argv[1]);
-    } else {
-        bin = (const char *)JS_GetArrayBuffer(ctx, &len, argv[1]);
-        if (!bin) {
-            JS_FreeValue(ctx, JS_GetException(ctx));
-            size_t off, tlen, bpe, total;
-            JSValue ab = JS_GetTypedArrayBuffer(ctx, argv[1], &off, &tlen, &bpe);
-            if (!JS_IsException(ab)) {
-                const char *base = (const char *)JS_GetArrayBuffer(ctx, &total, ab);
-                if (base) bin = base + off, len = tlen;
-            } else {
-                JS_FreeValue(ctx, JS_GetException(ctx));
-            }
-            JS_FreeValue(ctx, ab);
-        }
-    }
-    const char *data = s ? s : bin;
-    if (rel && data && !strstr(rel, "..")) { // parent folders
-        char dir[1024];
-        snprintf(dir, sizeof dir, "%s/%s", g_cfg.data_dir, rel);
-        for (char *p = dir + strlen(g_cfg.data_dir) + 1; (p = strchr(p, '/')); p++) {
-            *p = 0;
-            mkdir(dir, 0777);
-            *p = '/';
-        }
-    }
-    bool ok = false;
-    if (rel && data && !strstr(rel, "..")) {
-        char path[1024], tmp[1100];
-        snprintf(path, sizeof path, "%s/%s", g_cfg.data_dir, rel);
-        snprintf(tmp, sizeof tmp, "%s.tmp", path);
-        FILE *f = fopen(tmp, "wb");
-        if (f) {
-            ok = fwrite(data, 1, len, f) == len;
-            ok &= fclose(f) == 0;
-            if (ok) ok = rename(tmp, path) == 0;
-        }
-    }
+    const char *rel = JS_ToCString(ctx, argv[0]), *s;
+    size_t len;
+    const char *data = js_bytes(ctx, argv[1], &len, &s);
+    char path[1024];
+    bool ok = data && data_path(rel, path, sizeof path) && write_atomic(path, data, len);
     JS_FreeCString(ctx, rel);
     JS_FreeCString(ctx, s);
     return JS_NewBool(ctx, ok);
+}
+
+// Files written by a thread of their own (writeFileLater): local storage is saved after each of
+// the game's saves, and writing it to the memory card from the game's thread stalled a frame for
+// 300 ms (log83). Jobs run in order; a newer one for a file still waiting replaces it.
+// host_writes_flush (also at exit, and storage's forced flush before a restart) waits for them.
+typedef struct wjob {
+    char path[1024];
+    char *data;
+    size_t len;
+    struct wjob *next;
+} wjob;
+static pthread_mutex_t wq_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t wq_more = PTHREAD_COND_INITIALIZER, wq_done = PTHREAD_COND_INITIALIZER;
+static wjob *wq_head;
+static bool wq_busy;
+static int wq_state; // 0: no thread yet, 1: running, -1: couldn't start (written at once)
+
+static void *writer_thread(void *arg) {
+    (void)arg;
+    pthread_mutex_lock(&wq_lock);
+    for (;;) {
+        while (!wq_head) pthread_cond_wait(&wq_more, &wq_lock);
+        wjob *j = wq_head;
+        wq_head = j->next;
+        wq_busy = true;
+        pthread_mutex_unlock(&wq_lock);
+        double t0 = host_now_ms();
+        if (!write_atomic(j->path, j->data, j->len)) host_log("[storage] failed to write %s", j->path);
+        else if (host_now_ms() - t0 >= 100) host_log("[storage] %s written in %.0f ms (on its own thread)", j->path, host_now_ms() - t0);
+        free(j->data);
+        free(j);
+        pthread_mutex_lock(&wq_lock);
+        wq_busy = false;
+        pthread_cond_broadcast(&wq_done);
+    }
+    return NULL;
+}
+
+void host_writes_flush(void) {
+    pthread_mutex_lock(&wq_lock);
+    while (wq_state == 1 && (wq_head || wq_busy)) pthread_cond_wait(&wq_done, &wq_lock);
+    pthread_mutex_unlock(&wq_lock);
+}
+
+// writeFileLater(relPath, string | ArrayBuffer | TypedArray) -> bool: copies the data and writes
+// it on the writer thread (false only if it can't even be queued).
+static JSValue n_write_file_later(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    const char *rel = JS_ToCString(ctx, argv[0]), *s;
+    size_t len;
+    const char *data = js_bytes(ctx, argv[1], &len, &s);
+    wjob *j = calloc(1, sizeof *j);
+    bool ok = j && data && data_path(rel, j->path, sizeof j->path) && (j->data = malloc(len ? len : 1));
+    JS_FreeCString(ctx, rel);
+    if (ok) memcpy(j->data, data, len), j->len = len;
+    JS_FreeCString(ctx, s);
+    if (!ok) {
+        if (j) free(j->data), free(j);
+        return JS_FALSE;
+    }
+    pthread_mutex_lock(&wq_lock);
+    if (!wq_state) {
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setstacksize(&attr, 64 * 1024);
+        pthread_t t;
+        wq_state = pthread_create(&t, &attr, writer_thread, NULL) == 0 ? 1 : -1;
+        if (wq_state == 1) {
+            pthread_detach(t);
+            atexit(host_writes_flush); // before exit() closes stdio
+        }
+        pthread_attr_destroy(&attr);
+    }
+    if (wq_state < 0) {
+        pthread_mutex_unlock(&wq_lock);
+        ok = write_atomic(j->path, j->data, j->len);
+        free(j->data), free(j);
+        return JS_NewBool(ctx, ok);
+    }
+    wjob **pp = &wq_head;
+    for (; *pp; pp = &(*pp)->next) {
+        if (strcmp((*pp)->path, j->path)) continue;
+        free((*pp)->data); // still waiting: the newer data replaces it, in its place
+        (*pp)->data = j->data, (*pp)->len = j->len;
+        free(j);
+        j = NULL;
+        break;
+    }
+    if (j) *pp = j;
+    pthread_cond_signal(&wq_more);
+    pthread_mutex_unlock(&wq_lock);
+    return JS_TRUE;
+}
+
+// waitWrites(): until writeFileLater's queue is written.
+static JSValue n_wait_writes(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    host_writes_flush();
+    return JS_UNDEFINED;
 }
 
 static JSValue n_gamepads(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
@@ -997,6 +1102,8 @@ static const JSCFunctionListEntry native_funcs[] = {
     JS_CFUNC_DEF("now", 0, n_now),
     JS_CFUNC_DEF("readFile", 1, n_read_file),
     JS_CFUNC_DEF("writeFile", 2, n_write_file),
+    JS_CFUNC_DEF("writeFileLater", 2, n_write_file_later),
+    JS_CFUNC_DEF("waitWrites", 0, n_wait_writes),
     JS_CFUNC_DEF("gamepads", 0, n_gamepads),
     JS_CFUNC_DEF("resolveURL", 2, n_resolve_url),
     JS_CFUNC_DEF("importModule", 1, n_import),

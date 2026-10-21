@@ -734,3 +734,12 @@ getImageData allocated a blank canvas's pixels and pinned them). The main heap w
 - js/bootstrap.js: every 120 frames, a TileSprite showing `battle_stats` that has faded to alpha 0
   with no tween on it is destroyed, as the game's code would have done (`[phaser] removed a
   finished stat-change sprite`; PKR_STAT_SPRITE_CLEANUP=0 in localStorage turns it off).
+
+### Local storage saved off the game's thread (log83, 0.72, 2026-10-21; runtime 0.73)
+log83: a `[slow]` frame spent 321 ms in storage.js's flush, the once-a-second save of local
+storage after the game changed it (the game saves after each wave). The time was the write to the
+memory card, not JSON.stringify. 0.73: storage.js still makes the JSON on the game's thread, and
+`writeFileLater` copies it to a writer thread that writes it (atomically, as before). A newer copy
+of a file still waiting replaces it; the forced flush before a restart and the app's exit wait
+for the queue. Writes of 100 ms or more are logged (`[storage] ... written in N ms`).
+tests/smoke checks that a forced flush puts the value in the file.

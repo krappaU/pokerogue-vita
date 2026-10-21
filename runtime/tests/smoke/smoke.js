@@ -175,6 +175,14 @@ async function run() {
     document.cookie = "smoke=yes; path=/";
     if (!document.cookie.includes("smoke=yes")) return "cookie not set: " + document.cookie;
   });
+  await check("storage: saved to the data folder by the writer thread", () => {
+    const N = globalThis.__native, file = N.baseURL && String(N.baseURL).startsWith("https://offline.invalid") ? "localStorage-offline.json" : "localStorage.json";
+    localStorage.setItem("smoke-saved", "on the card");
+    globalThis.__rt.flushStorage(); // forced: waits for the writer thread
+    const saved = JSON.parse(N.readFile(file) || "{}");
+    eq(saved["smoke-saved"], "on the card", file);
+    localStorage.removeItem("smoke-saved");
+  });
 
   // ------------------------------------------------------------ images and Canvas 2D
   let img;
