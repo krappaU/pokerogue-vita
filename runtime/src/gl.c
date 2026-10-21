@@ -853,6 +853,10 @@ typedef struct {
     GLenum type;
     GLint size, comps, loc;
     bool is_int;
+    bool written_int; // last written with glUniform*i: data holds ints. Not the same as is_int: vitaGL
+                      // reports a GLSL bool as a float (Cg compiles it to one), and the game sets it
+                      // with uniform1i; read as a float, its 1 was a denormal the Vita takes as 0, so
+                      // every copy lost its shadow (0.65-0.75: no shadows, the Temple reflection).
     uint32_t *data; // size * comps 32-bit values, as last written
     unsigned version;
 } vuniform;
@@ -989,7 +993,7 @@ static int family_find_loc(vfamily *f, GLint loc) {
 // bound (Phaser binds through its own idea of the current program), the Vita's program got the
 // value and this record didn't, so a copy was chosen and synced from stale values (0.71-0.73:
 // Cofagrigus's shadow strip showed sprite-sheet pixels, gone with the variants off).
-static void var_record(GLint loc, const void *data, int scalars) {
+static void var_record(GLint loc, const void *data, int scalars, bool as_int) {
     if (loc == -1 || scalars <= 0) return;
     GLuint prog = oid(st.bound_program);
     vfamily *f = prog < MAX_GL_IDS ? families[prog] : NULL;
@@ -1012,16 +1016,17 @@ static void var_record(GLint loc, const void *data, int scalars) {
     vuniform *u = &f->u[i];
     int max = u->size * u->comps;
     memcpy(u->data, data, (size_t)(scalars < max ? scalars : max) * 4);
+    u->written_int = as_int;
     u->version = ++var_version;
 }
 
 static float vf_float(vfamily *f, int idx, int k) {
     float v;
     memcpy(&v, &f->u[idx].data[k], 4);
-    return f->u[idx].is_int ? (float)(int32_t)f->u[idx].data[k] : v;
+    return f->u[idx].written_int ? (float)(int32_t)f->u[idx].data[k] : v;
 }
 static bool vf_bool(vfamily *f, int idx) {
-    return f->u[idx].is_int ? f->u[idx].data[0] != 0 : vf_float(f, idx, 0) != 0.0f;
+    return f->u[idx].written_int ? f->u[idx].data[0] != 0 : vf_float(f, idx, 0) != 0.0f;
 }
 
 // The effects the current values switch off, with each effect's own test in the shader.
@@ -1112,7 +1117,7 @@ static void copy_sync(vfamily *f, vcopy *c) {
         case GL_FLOAT_MAT3: glUniformMatrix3fv(l, u->size, GL_FALSE, d); continue;
         case GL_FLOAT_MAT4: glUniformMatrix4fv(l, u->size, GL_FALSE, d); continue;
         }
-        if (u->is_int) {
+        if (u->written_int) { // the same kind of call as the game's
             if (u->comps == 1) glUniform1iv(l, u->size, d);
             else if (u->comps == 2) glUniform2iv(l, u->size, d);
             else if (u->comps == 3) glUniform3iv(l, u->size, d);
@@ -1361,7 +1366,7 @@ static JSValue uniform_f(JSContext *ctx, int argc, JSValueConst *argv, int n) {
     else if (n == 2) glUniform2f(l, v[0], v[1]);
     else if (n == 3) glUniform3f(l, v[0], v[1], v[2]);
     else glUniform4f(l, v[0], v[1], v[2], v[3]);
-    var_record(l, v, n);
+    var_record(l, v, n, false);
     return JS_UNDEFINED;
 }
 static JSValue uniform_i(JSContext *ctx, int argc, JSValueConst *argv, int n) {
@@ -1372,7 +1377,7 @@ static JSValue uniform_i(JSContext *ctx, int argc, JSValueConst *argv, int n) {
     else if (n == 2) glUniform2i(l, v[0], v[1]);
     else if (n == 3) glUniform3i(l, v[0], v[1], v[2]);
     else glUniform4i(l, v[0], v[1], v[2], v[3]);
-    var_record(l, v, n);
+    var_record(l, v, n, true);
     return JS_UNDEFINED;
 }
 FN(w_uniform1f) { return uniform_f(ctx, argc, argv, 1); }
@@ -1396,7 +1401,7 @@ static JSValue uniform_fv(JSContext *ctx, JSValueConst *argv, int argc, int comp
         case 3: glUniform3fv(l, n / 3, p); break;
         case 4: glUniform4fv(l, n / 4, p); break;
         }
-        var_record(l, p, n / comps * comps);
+        var_record(l, p, n / comps * comps, false);
     }
     free(tmp);
     return JS_UNDEFINED;
@@ -1418,7 +1423,7 @@ static JSValue uniform_iv(JSContext *ctx, JSValueConst *argv, int argc, int comp
         case 3: glUniform3iv(l, n / 3, p); break;
         case 4: glUniform4iv(l, n / 4, p); break;
         }
-        var_record(l, p, n / comps * comps);
+        var_record(l, p, n / comps * comps, true);
     }
     free(tmp);
     return JS_UNDEFINED;
@@ -1450,7 +1455,7 @@ static JSValue uniform_matrix(JSContext *ctx, JSValueConst *argv, int argc, int 
         if (dim == 2) glUniformMatrix2fv(l, count, GL_FALSE, p);
         else if (dim == 3) glUniformMatrix3fv(l, count, GL_FALSE, p);
         else glUniformMatrix4fv(l, count, GL_FALSE, p);
-        var_record(l, p, count * dim * dim);
+        var_record(l, p, count * dim * dim, false);
     }
     free(tmp);
     return JS_UNDEFINED;

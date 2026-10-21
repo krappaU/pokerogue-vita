@@ -778,3 +778,16 @@ the program is bound), so a write like that needs only that idea to be wrong onc
 and such writes are logged (`[gl] uniform NAME written to program N while program M is bound`).
 If the log shows them and the strip is right, this was it; if the strip still breaks without
 them, the next suspect is the compiler (a copy with the shadow code drawing it wrongly).
+
+### No shadows with the variants on: GLSL bools are floats on vitaGL (log90, 0.75, 2026-10-21; runtime 0.76)
+0.75 on the console: the Temple strip was still wrong, and with the variants on no Pokémon had a
+shadow at all; no `written to program ... while ... is bound` lines, so 0.75's theory was wrong
+(its change stays: it matches how vitaGL applies a write). The cause: vitaGL reports a uniform's
+type from the compiled program, and Cg compiles a GLSL `bool` to a float, so `hasShadow`,
+`yCenter`, `ignoreTimeTint` and `isOutside` came back as GL_FLOAT. The game sets them with
+uniform1i, so the record held the int 1; read as a float that is 1.4e-45, a denormal the Vita's FPU
+flushes to 0 (Vita3K, on an x86 host, keeps it: the emulator never showed this). So every sprite
+looked shadowless and drew with the copy without the shadow code (no shadow; the stretched strip
+under it showed the sprite sheet), and copies were synced with glUniform1fv of those bits.
+0.76: each write is recorded with how it was made (glUniform*i or *f), and reading the settings and
+syncing a copy use that, whatever type the GL reports.
