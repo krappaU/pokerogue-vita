@@ -845,6 +845,9 @@ FN(w_detachShader) { glDetachShader(oid(A(0)), oid(A(1))); return JS_UNDEFINED; 
 // with the same tests as the shader's own conditions, and draws with a copy of the program built
 // without that code (once, on first use). The game only ever sees the original program: uniform
 // writes to it are recorded, and a copy gets the changed values just before it draws.
+// /*pkr<NAME*/ CODE /*pkr|NEW*/ marks code worked out here once per draw instead of per pixel: every
+// copy has NEW in place of CODE (so a family with one always draws with a copy), and NEW reads a
+// uniform set from the recorded values (the day/night colour: day_night_tint).
 enum { VF_TERRAIN, VF_DAYNIGHT, VF_TERA, VF_VARIANTS, VF_FUSION, VF_SHADOW, VF_COUNT };
 static const char *const vf_names[VF_COUNT] = {"terrain", "daynight", "tera", "variants", "fusion", "shadow"};
 
@@ -865,6 +868,9 @@ typedef struct {
     bool failed;
     GLint *locs;       // per uniform, in this copy
     unsigned *synced;  // per uniform: the version the copy has
+    GLint tint_loc;    // pkr_dayNightTint, or -1
+    bool tint_set;
+    float tint[3];     // its value in this copy
 } vcopy;
 typedef struct {
     GLuint vs, fs;
@@ -872,6 +878,8 @@ typedef struct {
     vuniform *u;
     int nu;
     int idx[VF_COUNT][2]; // the uniforms each feature's test reads
+    bool swaps;           // copies have the /*pkr|...*/ code
+    int tint_idx[6];      // the uniforms the day/night colour reads
     vcopy copies[1 << VF_COUNT]; // by the VF_* bits left out
 } vfamily;
 static vfamily *families[MAX_GL_IDS];
@@ -923,7 +931,7 @@ static int family_uniform(vfamily *f, const char *name) {
     return -1;
 }
 
-static void precompile_queue(GLuint prog, unsigned present);
+static void precompile_queue(GLuint prog, unsigned present, bool swaps);
 
 // After a successful link: a family if the fragment shader has marked effects.
 static void family_setup(GLuint prog) {
@@ -945,7 +953,8 @@ static void family_setup(GLuint prog) {
         snprintf(mark, sizeof mark, "/*pkr+%s*/", vf_names[b]);
         if (strstr(src, mark)) present |= 1u << b;
     }
-    if (!present) return;
+    bool swap_marks = strstr(src, "/*pkr<") != NULL;
+    if (!present && !swap_marks) return;
     vfamily *f = calloc(1, sizeof *f);
     f->vs = vs, f->fs = fs, f->present = present;
     GLint n = 0;
@@ -971,14 +980,18 @@ static void family_setup(GLuint prog) {
         for (int k = 0; k < 2; k++) f->idx[b][k] = reads[b][k] ? family_uniform(f, reads[b][k]) : -2;
         if (f->idx[b][0] == -1 || f->idx[b][1] == -1) f->present &= ~(1u << b); // can't read its setting
     }
-    if (!f->present) {
+    static const char *const tint_reads[6] = {"time", "isOutside", "overrideTint", "dayTint", "duskTint", "nightTint"};
+    f->swaps = swap_marks;
+    for (int k = 0; k < 6; k++)
+        if ((f->tint_idx[k] = family_uniform(f, tint_reads[k])) < 0) f->swaps = false; // can't work it out
+    if (!f->present && !f->swaps) {
         families[prog] = f; // nothing to leave out: free it the usual way
         family_free(prog);
         return;
     }
     families[prog] = f;
     if (n_family_progs < 64) family_progs[n_family_progs++] = prog;
-    precompile_queue(prog, f->present);
+    precompile_queue(prog, f->present, f->swaps);
 }
 
 static int family_find_loc(vfamily *f, GLint loc) {
@@ -1051,9 +1064,31 @@ static unsigned family_off(vfamily *f) {
     return off;
 }
 
+// PokeRogue's day/night colour: its shaders' if-chain, the same tests in the same order.
+static void day_night_tint(vfamily *f, float out[3]) {
+    const int *x = f->tint_idx;
+    float time = vf_float(f, x[0], 0), v[4][3]; // override, day, dusk, night
+    bool outside = vf_bool(f, x[1]);
+    for (int i = 0; i < 4; i++)
+        for (int k = 0; k < 3; k++) v[i][k] = vf_float(f, x[2 + i], k);
+    const float *over = v[0], *day = v[1], *dusk = v[2], *night = v[3], *a, *b;
+    float t = 0;
+    if (0.0f < over[0] || 0.0f < over[1] || 0.0f < over[2]) a = b = over;
+    else if (time < 0.25f) a = b = day;
+    else if (!outside && time < 0.5f) a = day, b = night, t = (time - 0.25f) / 0.25f;
+    else if (time < 0.375f) a = day, b = dusk, t = (time - 0.25f) / 0.125f;
+    else if (time < 0.5f) a = dusk, b = night, t = (time - 0.375f) / 0.125f;
+    else if (time < 0.75f) a = b = night;
+    else if (!outside) a = night, b = day, t = (time - 0.75f) / 0.25f;
+    else if (time < 0.875f) a = night, b = dusk, t = (time - 0.75f) / 0.125f;
+    else a = dusk, b = day, t = (time - 0.875f) / 0.125f;
+    for (int k = 0; k < 3; k++) out[k] = a == b ? a[k] : a[k] * (1.0f - t) + b[k] * t; // GLSL's mix
+}
+
 static void copy_build(GLuint root, vfamily *f, unsigned off, vcopy *c) {
     double t0 = host_now_ms();
     char *src = strdup(shader_src[f->fs]);
+    c->tint_loc = -1;
     for (int b = 0; b < VF_COUNT; b++) {
         if (!(off & (1u << b))) continue;
         char open[32], close[32];
@@ -1066,6 +1101,13 @@ static void copy_build(GLuint root, vfamily *f, unsigned off, vcopy *c) {
             z += strlen(close);
             memmove(a, z, strlen(z) + 1);
         }
+    }
+    for (char *a; f->swaps && (a = strstr(src, "/*pkr<"));) {
+        char *bar = strstr(a, "/*pkr|"), *z = bar ? strstr(bar + 6, "*/") : NULL;
+        if (!z) break;
+        size_t n = (size_t)(z - (bar + 6));
+        memmove(a, bar + 6, n);
+        memmove(a + n, z + 2, strlen(z + 2) + 1);
     }
     c->failed = true;
     c->fs = glCreateShader(GL_FRAGMENT_SHADER);
@@ -1093,15 +1135,17 @@ static void copy_build(GLuint root, vfamily *f, unsigned off, vcopy *c) {
     for (int b = 0, o = 0; b < VF_COUNT; b++)
         if (off & (1u << b)) o += snprintf(names + o, sizeof names - o, "%s%s", o ? "/" : "", vf_names[b]);
     if (!ok) {
-        host_log("[gl] shader variant without %s didn't link; the original draws instead", names);
+        host_log("[gl] shader variant without %s didn't link; the original draws instead", off ? names : "nothing");
         return;
     }
     c->failed = false;
     c->locs = malloc(f->nu * sizeof *c->locs);
     c->synced = calloc(f->nu, sizeof *c->synced);
     for (int i = 0; i < f->nu; i++) c->locs[i] = glGetUniformLocation(c->prog, f->u[i].name);
+    if (f->swaps) c->tint_loc = glGetUniformLocation(c->prog, "pkr_dayNightTint"); // -1 without day/night
     var_built++;
-    host_log("[gl] shader variant: program %u without %s (%.0f ms to build)", root, names, host_now_ms() - t0);
+    host_log("[gl] shader variant: program %u %s%s (%.0f ms to build)", root, off ? "without " : "with every effect",
+             names, host_now_ms() - t0);
 }
 
 static void copy_sync(vfamily *f, vcopy *c) {
@@ -1145,12 +1189,21 @@ static GLuint var_begin(void) {
     vfamily *f = prog < MAX_GL_IDS && !variants_off ? families[prog] : NULL;
     if (!f) return 0;
     unsigned off = family_off(f);
-    if (!off) return 0;
+    if (!off && !f->swaps) return 0;
     vcopy *c = &f->copies[off];
     if (!c->prog && !c->failed) copy_build(prog, f, off, c);
     if (c->failed) return 0;
     glUseProgram(c->prog);
     copy_sync(f, c);
+    if (c->tint_loc != -1) {
+        float t[3];
+        day_night_tint(f, t);
+        if (!c->tint_set || memcmp(t, c->tint, sizeof t)) {
+            glUniform3fv(c->tint_loc, 1, t);
+            memcpy(c->tint, t, sizeof t);
+            c->tint_set = true;
+        }
+    }
     var_draws++;
     return prog;
 }
@@ -1163,13 +1216,14 @@ static inline void var_end(GLuint prog) {
 // linked, the copies it is likely to need are queued and built ahead of use: during the game's
 // long loading frames (main.c's busy_poll, which shows the progress on its loading screen), else
 // between frames with a notice over the game. Likely: terrain, day/night and shadow each on or off,
-// with at most one of tera, shiny variants and fusion palettes on (16 copies of the sprite shader).
+// with at most one of tera, shiny variants and fusion palettes on (16 copies of the sprite shader;
+// 4 of the field's, one with every effect, which a family with swaps draws with too).
 #define PRE_MAX 256
 static struct { GLuint prog; unsigned off; } pre_queue[PRE_MAX];
 static int pre_n, pre_done, pre_built;
 static double pre_ms;
 
-static void precompile_queue(GLuint prog, unsigned present) {
+static void precompile_queue(GLuint prog, unsigned present, bool swaps) {
     int n = pre_done; // a relinked program: drop what was queued for it
     for (int i = pre_done; i < pre_n; i++)
         if (pre_queue[i].prog != prog) pre_queue[n++] = pre_queue[i];
@@ -1182,7 +1236,7 @@ static void precompile_queue(GLuint prog, unsigned present) {
         if (rare[r] >= 0 && !(present & one)) continue;
         for (unsigned s = common;; s = (s - 1) & common) { // every subset of `common` switched on
             unsigned off = present & ~(s | one);
-            if (off && pre_n < PRE_MAX) pre_queue[pre_n].prog = prog, pre_queue[pre_n++].off = off;
+            if ((off || swaps) && pre_n < PRE_MAX) pre_queue[pre_n].prog = prog, pre_queue[pre_n++].off = off;
             if (!s) break;
         }
     }

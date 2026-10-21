@@ -791,3 +791,24 @@ looked shadowless and drew with the copy without the shadow code (no shadow; the
 under it showed the sprite sheet), and copies were synced with glUniform1fv of those bits.
 0.76: each write is recorded with how it was made (glUniform*i or *f), and reading the settings and
 syncing a copy use that, whatever type the GL reports.
+
+### Where the GPU time goes now that shadows draw (logs 95 and 97, 0.76, 2026-10-21; runtime 0.77)
+The shader benchmark (log95, ms of GPU time per full screen of one shader): sprite shader as
+shipped 23.7, as 0.76 draws it (rewritten, the copy without tera and palettes) 16.2, without
+day/night 17.1, without the shadow 17.2, texture times tint only 1.9; field shader as shipped
+18.2, as drawn 11.8, without day/night 10.8, texture times tint only 2.7. 0.65's 12.0 for the
+sprite shader as drawn was the copy without the shadow that 0.65-0.75 picked by mistake.
+A Ruins battle with gpuprofile=1 (log97, each draw waited for alone, so the sums run high): the
+field shader 25 ms a frame in 4 draws (the backdrop alone 11.6), the sprite shader 11-20 ms in 2-4
+draws (up to ~10 per Pokémon), Phaser's own 11-37 ms (more with menus open).
+So day/night and the shadow are each about 6.5 ms per full screen in the sprite shader, and
+day/night ~7 in the field shader. Most of day/night is the if-chain that picks its colour: it
+reads settings only, so it is the same for every pixel of a draw, but the GPU runs it per pixel.
+0.77: js/webgl.js marks the chain (`/*pkr<tint*/ CHAIN /*pkr|dayNightTint = pkr_dayNightTint;*/`),
+gl.c's copies have the uniform read instead, and gl.c works the colour out once per draw from the
+recorded uniforms, with the same tests (day_night_tint). A family with such a swap always draws
+with a copy (one more precompiled copy of the field shader: 20 in all). The shadow block now tests
+`spriteY >= 0.9` on its own first and works out the pixel's x on the sprite only inside it (the
+same pixels; whether the Vita's GPU then skips the rest is for the benchmark to show). The
+benchmark compares both with 0.76's code, and has rows for the field shader with one texture unit
+(the game's field draws are one sprite each, so always unit 0) and the shadow without `discard`.

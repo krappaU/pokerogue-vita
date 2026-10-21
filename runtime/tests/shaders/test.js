@@ -218,12 +218,13 @@ async function run() {
   const parse = (src) => Phaser.Renderer.WebGL.Utils.parseFragmentShaderMaxTextures(src, UNITS);
   const spriteVert = await text("sprite-shader.vert");
   const shaders = {
-    sprite: [spriteVert, parse(await text("sprite-frag-shader.frag")), ["tint effect", "colour loops (2)", "tera", "day/night"]],
-    field: [spriteVert, parse(await text("field-sprite-frag-shader.frag")), ["tint effect", "texture pick (4)", "day/night", "terrain"]],
+    sprite: [spriteVert, parse(await text("sprite-frag-shader.frag")), ["tint effect", "colour loops (2)", "tera", "day/night", "day/night colour", "shadow tests"]],
+    field: [spriteVert, parse(await text("field-sprite-frag-shader.frag")), ["tint effect", "texture pick (4)", "day/night", "day/night colour", "terrain"]],
     multi: [await phaserShader("PHASER_MULTI_VS"), parse(await phaserShader("PHASER_MULTI_FS")), ["tint effect", "texture pick (4)"]],
   };
   const marks = { "tint effect": /pkr_tintEffect = floor\(outTintEffect \+ 0\.5\)/, "colour loops (2)": /\[0\]\.a != 0\.0|\[0\]\[3\] != 0\.0/, tera: /if \(all\(lessThan\(vec3\(0\.0\), teraColor\)\)\) \{ if/,
-    "day/night": /if \(!ignoreTimeTint\) \{ if/, terrain: /if \(terrainColorRatio > 0\.0 &&[^{]*\) \{ if/, "texture pick (4)": /vec4 pkr_t3 = /};
+    "day/night": /if \(!ignoreTimeTint\) \{ if/, terrain: /if \(terrainColorRatio > 0\.0 &&[^{]*\) \{ if/, "texture pick (4)": /vec4 pkr_t3 = /,
+    "day/night colour": /\/\*pkr\|dayNightTint = pkr_dayNightTint;\*\//, "shadow tests": /if \(spriteY >= 0\.9\) \{ if \(color\.a == 0\.0 \|\| yOverflow\)/ };
   for (const [name, [vsrc, fsrc, expected]] of Object.entries(shaders)) {
     let orig, fixed;
     try {

@@ -93,8 +93,30 @@
     }
     return [out + src.slice(from), n];
   }
+  // PokeRogue's sprite shadow block works out where the pixel sits on the sprite, then draws the
+  // shadow's ellipse in the bottom rows (spriteY >= 0.9) where the sprite is transparent or cut off:
+  //   if ((spriteY >= 0.9 && (color.a == 0.0 || yOverflow))) { A } else if (yOverflow) { discard; }
+  // -> if (spriteY >= 0.9) { if (color.a == 0.0 || yOverflow) { A } } else if (yOverflow) { discard; }
+  // (the same: with spriteY >= 0.9 and the inner test false, yOverflow is false too), with width and
+  // spriteX, which only A reads, worked out inside A. Most pixels then skip it.
+  function shadowTests(block) {
+    const test = /if \(\(spriteY >= 0\.9 && \(color\.a == 0\.0 \|\| yOverflow\)\)\) \{/.exec(block);
+    const moved = [/\s*float width = [^;]*;/, /\s*float spriteX = [^;]*;/].map((re) => re.exec(block));
+    if (!test || moved.some((m) => !m || m.index > test.index)) return null;
+    const open = test.index + test[0].length - 1, end = blockEnd(block, open);
+    const tail = end > 0 && /^\s*else if \(yOverflow\) \{\s*discard;\s*\}/.exec(block.slice(end));
+    if (!tail) return null;
+    const body = block.slice(open + 1, end - 1), decl = moved.map((m) => m[0].trim()).join(" ");
+    const out = block.slice(0, test.index) + "if (spriteY >= 0.9) { if (color.a == 0.0 || yOverflow) { " + decl + body + "} }" +
+      block.slice(end);
+    // The moved lines last: the indices above are in the original block.
+    return moved[1].index > moved[0].index
+      ? cut(cut(out, moved[1]), moved[0])
+      : cut(cut(out, moved[0]), moved[1]);
+  }
+  const cut = (s, m) => s.slice(0, m.index) + s.slice(m.index + m[0].length);
   function rewriteShader(src) {
-    const applied = [];
+    const applied = [], skip = new Set(rt.shaderFixSkip || []); // skip: the shader benchmark's comparisons
     let n;
     // Phaser's texture pick (WebGL Utils.parseFragmentShaderMaxTextures, sampler arrays already split):
     // every unit read unconditionally, then the result chosen.
@@ -119,6 +141,22 @@
     // PokeRogue's colour loops stop at the first entry with alpha 0: skip them when that's the first.
     [src, n] = guardLoops(src);
     if (n) applied.push("colour loops (" + n + ")");
+    // PokeRogue's day/night colour: an if-chain on settings only, so the same for every pixel of a
+    // draw, but the GPU ran it for each (0.76's benchmark: day/night cost ~7 ms per full screen in
+    // both shaders). gl.c's copies get `dayNightTint = pkr_dayNightTint;` in its place and work the
+    // colour out once per draw. /*pkr<NAME*/ CODE /*pkr|NEW*/: the copies have NEW instead of CODE.
+    const dn = !skip.has("day/night colour") && /vec3 dayNightTint;\s*(if \(any\(lessThan\(vec3\(0\.0\), overrideTint\)\)\) \{)/.exec(src);
+    const mainAt = /void main\s*\(/.exec(src);
+    if (dn && mainAt && mainAt.index < dn.index) {
+      const at = dn.index + dn[0].length - dn[1].length;
+      let end = blockEnd(src, at + dn[1].length - 1);
+      for (let e; end > 0 && (e = /^\s*else\b/.exec(src.slice(end)));) end = blockEnd(src, src.indexOf("{", end + e[0].length));
+      if (end > 0) {
+        src = src.slice(0, mainAt.index) + "/*pkr<tint*/ /*pkr|uniform vec3 pkr_dayNightTint;*/\n" + src.slice(mainAt.index, at) +
+          "/*pkr<tint*/ " + src.slice(at, end) + " /*pkr|dayNightTint = pkr_dayNightTint;*/" + src.slice(end);
+        applied.push("day/night colour per draw");
+      }
+    }
     // Per-pixel test && setting: the setting first, on its own.
     const splits = [
       [/if \(color\.a > 0\.0 && (all\(lessThan\(vec3\(0\.0\), teraColor\)\))\) \{/g, (m) => [m[1], "color.a > 0.0"], "tera", "tera"],
@@ -132,8 +170,14 @@
     }
     // PokeRogue's sprite shadow: only a setting switches it off.
     const sh = /if \(hasShadow\) \{/.exec(src), shEnd = sh ? blockEnd(src, sh.index + sh[0].length - 1) : -1;
-    if (shEnd > 0 && !/^\s*else\b/.test(src.slice(shEnd)))
-      src = src.slice(0, sh.index) + mark("shadow", src.slice(sh.index, shEnd)) + src.slice(shEnd);
+    if (shEnd > 0 && !/^\s*else\b/.test(src.slice(shEnd))) {
+      let block = src.slice(sh.index, shEnd);
+      if (!skip.has("shadow tests")) {
+        const r = shadowTests(block);
+        if (r) block = r, applied.push("shadow tests");
+      }
+      src = src.slice(0, sh.index) + mark("shadow", block) + src.slice(shEnd);
+    }
     const marks = [...new Set([...src.matchAll(/\/\*pkr\+(\w+)\*\//g)].map((x) => x[1]))];
     if (marks.length) applied.push("variants without " + marks.join("/"));
     return { src, applied };

@@ -111,9 +111,13 @@ const MAIN_ONLY = (body) => (src) => src.replace(/void main\s*\(\s*\)\s*\{[\s\S]
 const TEXTURE_ONLY = MAIN_ONLY("gl_FragColor = texture2D(uMainSampler[0], outTexCoord);");
 const CONSTANT = MAIN_ONLY("gl_FragColor = vec4(1.0, 0.5, 0.25, 1.0);");
 
+// A row's 4th entry: js/webgl.js rewrites left out (__rt.shaderFixSkip), to compare with them.
 const FIELD = [
   ["as shipped", null, false],
   ["rewritten + variants (shaderfix)", null, true],
+  ["shaderfix + day/night colour per pixel (0.76)", null, true, ["day/night colour"]],
+  ["shaderfix + one texture unit", ONE_TEXTURE, true],
+  ["shaderfix + no day/night tint", NO_DAYNIGHT, true],
   ["one texture (no if-chain)", ONE_TEXTURE],
   ["no day/night tint", NO_DAYNIGHT],
   ["no terrain", remove(/if \(\s*terrainColorRatio > 0\.0/)],
@@ -124,11 +128,18 @@ const FIELD = [
 const NO_LOOPS = remove(/for \(int i = 0; i < 32; i\+\+\)/);
 const NO_TERA = remove(/if \(color\.a > 0\.0 && all\(lessThan\(vec3\(0\.0\), teraColor\)\)\)/);
 const NO_SHADOW = remove(/if \(hasShadow\)/);
+const NO_DISCARD = replace(/discard;/, "color = vec4(0.0);");
 const NO_TONE = all(replace(/float luma = dot\(color\.rgb, lumaF\);/, ""), replace(/color\.rgb = mix\(color\.rgb, vec3\(luma\), tone\.w\);/, ""),
   replace(/color\.rgb \+= tone\.rgb \* \(color\.a \/ 255\.0\);/, ""));
 const SPRITE = [
   ["as shipped", null, false],
   ["rewritten + variants (shaderfix)", null, true],
+  ["shaderfix + day/night colour per pixel (0.76)", null, true, ["day/night colour"]],
+  ["shaderfix + shadow tests as shipped (0.76)", null, true, ["shadow tests"]],
+  ["shaderfix as in 0.76", null, true, ["day/night colour", "shadow tests"]],
+  ["shaderfix + shadow without discard", NO_DISCARD, true],
+  ["shaderfix + no shadow", NO_SHADOW, true],
+  ["shaderfix + no day/night tint", NO_DAYNIGHT, true],
   ["no colour loops", NO_LOOPS],
   ["no tera", NO_TERA],
   ["no day/night tint", NO_DAYNIGHT],
@@ -178,8 +189,9 @@ const corner = (x, y) => [x * W, y * H, x, y, 0, 0, 1, 1, 1, 1];
 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([...corner(0, 0), ...corner(1, 0), ...corner(0, 1),
   ...corner(1, 0), ...corner(1, 1), ...corner(0, 1)]), gl.STATIC_DRAW);
 
-function compile(vsrc, fsrc, fix) {
+function compile(vsrc, fsrc, fix, skip) {
   rt.shaderFix = fix;
+  rt.shaderFixSkip = skip;
   try {
     const shader = (type, src) => {
       const s = gl.createShader(type);
@@ -195,6 +207,7 @@ function compile(vsrc, fsrc, fix) {
     return p;
   } finally {
     rt.shaderFix = N.shaderFix !== false;
+    rt.shaderFixSkip = undefined;
   }
 }
 
@@ -260,12 +273,12 @@ const show = (text) => N.showMessage && N.showMessage("Shader benchmark\n\n" + t
 
 async function bench(group, vsrc, fsrc, variants) {
   const results = [];
-  for (const [i, [label, change, fix]] of variants.entries()) {
+  for (const [i, [label, change, fix, skip]] of variants.entries()) {
     show(group + ", " + (i + 1) + " of " + variants.length + ":\n" + label);
     await nextFrame();
     let p;
     try {
-      p = compile(vsrc, change ? change(fsrc) : fsrc, !!fix);
+      p = compile(vsrc, change ? change(fsrc) : fsrc, !!fix, skip);
     } catch (e) {
       log(group + " | " + label + ": skipped (" + (e && e.message || e) + ")");
       continue;
