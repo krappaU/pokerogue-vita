@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Checks the native render fast paths (js/fastpath.js, src/fastpath.c) against Phaser's own code on
 // a still scene built from what PokeRogue draws: containers (nested, scrolled, with alpha), images
-// and sprites from an atlas (flips, tints, rotation, per-corner alpha), text, nine-slices, Graphics,
+// and sprites from an atlas (flips, tints, rotation, per-corner alpha), text, bitmap text, nine-slices, Graphics,
 // rectangles, geometry masks, and a sprite pipeline that sets uniforms per object (as PokeRogue's
 // sprite pipelines do).
 // It runs the repo's verification probes (scripts/probe_verify_*.js, copied next to this page by the
@@ -125,6 +125,19 @@ class TestScene extends Phaser.Scene {
     masked.add(this.add.container(0, 0, [this.add.image(80, 20, "atlas", "f3").setScale(3).setMask(inner.createGeometryMask())]));
     this.add.image(300, 400, "atlas", "f5").setScale(4).setMask(this.make.graphics().fillRect(290, 390, 20, 20).createGeometryMask().setInvertAlpha(true));
 
+    // Bitmap text (fast path 18; PokeRogue's item counts): a font of the atlas's 8 frames, plain, in a
+    // scaled container, tinted with letter spacing, with a drop shadow, rotated with an origin, and one
+    // long enough to flush mid-text (Phaser's batch holds 4096 quads), shadow included.
+    this.cache.bitmapFont.add("digits", Phaser.GameObjects.RetroFont.Parse(this, {
+      image: "atlas", width: 16, height: 16, chars: "01234567", charsPerRow: 8, spacing: { x: 0, y: 0 }, offset: { x: 0, y: 0 },
+    }));
+    this.add.bitmapText(300, 440, "digits", "0123 4567");
+    box.add(this.add.bitmapText(0, 60, "digits", "7654", 8).setScale(1.5));
+    this.add.bitmapText(500, 440, "digits", "1357").setTint(0xff8080, 0x80ff80, 0x8080ff, 0xffffff).setLetterSpacing(-2);
+    this.add.bitmapText(620, 440, "digits", "26 04").setDropShadow(2, 2, 0x102030, 0.6).setAlpha(0.9);
+    this.add.bitmapText(760, 470, "digits", "321").setOrigin(0.5).setAngle(-12).setScale(1.25);
+    this.add.bitmapText(0, 500, "digits", "01234 567".repeat(560), 4).setDropShadow(1, 1, 0x000000, 0.5);
+
     this.cameras.main.setScroll(4, 2);
     this.frames = 0;
     this.game.events.on("postrender", () => this.frames++);
@@ -177,9 +190,10 @@ async function run() {
   await probe(game, "probe_verify_render.js", "__vfy");
   await probe(game, "probe_verify_batching.js", "__vfb");
   await probe(game, "probe_verify_uniforms.js", "__vfu");
+  await probe(game, "probe_verify_bitmaptext.js", "__vbt");
   report("phaser: native pipeline machinery and shapes active",
-    !!(rt.pipelineSwaps && rt.graphicsSwap && rt.nineSliceSwap && rt.shapesSwap && rt.emitSwap),
-    ["pipelineSwaps", "graphicsSwap", "nineSliceSwap", "shapesSwap", "emitSwap"].filter((k) => !rt[k]).join(" "));
+    !!(rt.pipelineSwaps && rt.graphicsSwap && rt.nineSliceSwap && rt.shapesSwap && rt.emitSwap && rt.bitmapTextSwap),
+    ["pipelineSwaps", "graphicsSwap", "nineSliceSwap", "shapesSwap", "emitSwap", "bitmapTextSwap"].filter((k) => !rt[k]).join(" "));
   {
     const out = (0, eval)(await (await fetch("probe_verify_emit.js")).text());
     report("probe_verify_emit.js", /^identical: /.test(out), out.slice(0, 200));

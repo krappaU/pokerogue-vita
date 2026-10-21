@@ -18,6 +18,8 @@
 // 11. TextStyle.setStyle without Phaser's generic GetValue lookups; font metrics remembered.
 // 12. Utils.String.UUID (a texture name for every Text) made in C.
 // 13. WebGLShader.setUniform1..4 in C (PokeRogue's sprite pipelines set ~10 uniforms per sprite).
+// 14-17. Pipeline switching, Graphics, Rectangle/GeometryMask, EventEmitter.emit in C (see below).
+// 18. BitmapText.renderWebGL with its character loop in C; in containers, all of it in C.
 //
 // Anything unusual (cropped sprites, custom pivots, masks, post pipelines, pipelines that
 // override batchSprite/batchQuad such as PokeRogue's SpritePipeline) takes Phaser's own path.
@@ -861,12 +863,91 @@
     }
   }
 
+  // 18. BitmapText.renderWebGL (the battle UI's numbers, item counts...): Phaser 3.90's
+  //     BitmapTextWebGLRenderer with the character loop (BatchChar and MultiPipeline.batchQuad, ~30
+  //     JS operations and a 20-argument call per character) in C (__native.batchChars), flushing
+  //     before the same characters as Phaser does. 15-22% of a battle frame's JS on the Vita (0.76-
+  //     0.78, logs 93, 102, 108). Phaser's own renderer for per-character colours and for pipelines
+  //     with their own batchQuad, onBatch or shouldFlush. localStorage PKR_NATIVE_BITMAPTEXT=0: off.
+  {
+    const BTP = Phaser.GameObjects.BitmapText && Phaser.GameObjects.BitmapText.prototype;
+    const origBT = BTP && BTP.renderWebGL, nbc = g.__native.batchChars;
+    const src = origBT ? String(origBT) : "";
+    let on = !!(nbc && GetCalcMatrix && WGLUtils && /getTextBounds\(\s*(!1|false)\s*\)/.test(src) &&
+      /dropShadowX/.test(src) && /charColors/.test(src) && /shouldFlush\(\s*6\s*\)/.test(src));
+    try { if (g.localStorage.getItem("PKR_NATIVE_BITMAPTEXT") === "0") on = false; } catch (e) { /* keep */ }
+    const st = new Int32Array(1);
+    // The characters from chars[0..] at `unit`; after a flush, the next character gets `nextUnit()`
+    // (Phaser's loop: setGameObject) and, with `once`, the ones after it `unit` again (BatchChar's
+    // stale textureUnit in Phaser's drop shadow loop, where batchQuad flushes by itself).
+    const writeChars = (pipeline, chars, calc, src, dx, dy, round, unit, effect, tl, tr, bl, br, nextUnit, once) => {
+      st[0] = 0;
+      let u = unit;
+      for (;;) {
+        const room = Math.max(0, Math.floor((pipeline.vertexCapacity - pipeline.vertexCount) / 6));
+        const q = nbc(pipeline.vertexData, pipeline.vertexCount * 7, room, chars, st, calc.matrix, src.displayOriginX,
+          src.displayOriginY, dx, dy, round, u, effect, tl, tr, bl, br);
+        if (q) {
+          pipeline.vertexCount += 6 * q;
+          pipeline.currentBatch.count = pipeline.vertexCount - pipeline.currentBatch.start;
+        }
+        if (st[0] >= chars.length) return u;
+        pipeline.flush();
+        u = nextUnit();
+        if (once) { // that one character with the new unit, then the old one again
+          const q1 = nbc(pipeline.vertexData, pipeline.vertexCount * 7, 1, chars, st, calc.matrix, src.displayOriginX,
+            src.displayOriginY, dx, dy, round, u, effect, tl, tr, bl, br);
+          pipeline.vertexCount += 6 * q1;
+          pipeline.currentBatch.count = pipeline.vertexCount - pipeline.currentBatch.start;
+          u = unit;
+          if (st[0] >= chars.length) return u;
+        }
+      }
+    };
+    function bitmapTextRender(renderer, src, camera, parentMatrix) {
+      const text = src._text;
+      if (text.length === 0) return;
+      const sp = src.pipeline;
+      if (!enabled || !sp || sp.batchQuad !== MP.batchQuad || sp.onBatch !== WPP.onBatch || sp.shouldFlush !== WPP.shouldFlush ||
+          !sp.currentShader || sp.currentShader.vertexComponentCount !== 7 || src.charColors.length)
+        return origBT.apply(this, arguments);
+      camera.addToRenderList(src);
+      const pipeline = renderer.pipelines.set(sp, src);
+      const calc = GetCalcMatrix(src, camera, parentMatrix).calc;
+      renderer.pipelines.preBatch(src);
+      const round = camera.roundPixels, cameraAlpha = camera.alpha, getTint = WGLUtils.getTintAppendFloatAlpha;
+      const tintTL = getTint(src.tintTopLeft, cameraAlpha * src._alphaTL), tintTR = getTint(src.tintTopRight, cameraAlpha * src._alphaTR);
+      const tintBL = getTint(src.tintBottomLeft, cameraAlpha * src._alphaBL), tintBR = getTint(src.tintBottomRight, cameraAlpha * src._alphaBR);
+      const texture = src.frame.glTexture;
+      let textureUnit = pipeline.setGameObject(src);
+      const chars = src.getTextBounds(false).characters;
+      const dropShadowX = src.dropShadowX, dropShadowY = src.dropShadowY;
+      if (dropShadowX !== 0 || dropShadowY !== 0) {
+        const c = src.dropShadowColor, a = src.dropShadowAlpha;
+        writeChars(pipeline, chars, calc, src, dropShadowX, dropShadowY, round, textureUnit, 1,
+          getTint(c, cameraAlpha * a * src._alphaTL), getTint(c, cameraAlpha * a * src._alphaTR),
+          getTint(c, cameraAlpha * a * src._alphaBL), getTint(c, cameraAlpha * a * src._alphaBR),
+          () => pipeline.setTexture2D(texture), true);
+      }
+      writeChars(pipeline, chars, calc, src, 0, 0, round, textureUnit, src.tintFill, tintTL, tintTR, tintBL, tintBR,
+        () => (textureUnit = pipeline.setGameObject(src)), false);
+      renderer.pipelines.postBatch(src);
+    }
+    if (on) {
+      g.__rt.bitmapTextSwap = [[BTP, "renderWebGL", origBT, bitmapTextRender]];
+      BTP.renderWebGL = bitmapTextRender;
+      // Containers (src/fastpath.c renderContainer) draw such texts themselves, the per-text JS above included.
+      if (g.__native.bitmapTextSetup) g.__native.bitmapTextSetup(bitmapTextRender, WPP.shouldFlush, BTP.getTextBounds);
+    }
+  }
+
   // Which of the checked fast paths went in. Each one is skipped silently when Phaser's code no
   // longer looks like 3.90's, or when its source isn't there to check (0.49-0.54: compiled code
   // without source, so none were installed on the Vita); this line makes that visible.
   {
     const rt = g.__rt, parts = [["uniforms", rt.origSetUniform], ["pipeline", rt.pipelineSwaps && rt.pipelineSwaps.length],
-      ["graphics", rt.graphicsSwap], ["shapes", rt.shapesSwap], ["emit", rt.emitSwap], ["uuid", rt.uuidWrap]];
+      ["graphics", rt.graphicsSwap], ["shapes", rt.shapesSwap], ["emit", rt.emitSwap], ["uuid", rt.uuidWrap],
+      ["bitmap text", rt.bitmapTextSwap]];
     const on = parts.filter((p) => p[1]).map((p) => p[0] + (typeof p[1] === "number" ? " (" + p[1] + " functions)" : ""));
     const off = parts.filter((p) => !p[1]).map((p) => p[0]);
     g.__native.log("[fastpath] native: " + (on.join(", ") || "none") + (off.length ? " | left to Phaser's JS: " + off.join(", ") : ""));

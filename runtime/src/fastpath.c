@@ -35,6 +35,22 @@ static float *f32(JSContext *ctx, JSValueConst arr) {
     return p ? (float *)(p + off) : NULL;
 }
 
+// JS's Math.round, bit for bit (QuickJS's js_math_round): floor(x + 0.5) gives +0 where it gives -0
+// (-0.5 <= x < 0), and 1 for 0.49999999999999994.
+static double js_round(double a) {
+    union { double d; uint64_t u; } v = {a};
+    unsigned e = (v.u >> 52) & 0x7ff;
+    if (e < 1023) {
+        if (e == 1023 - 1 && v.u != 0xbfe0000000000000ull) v.u = (v.u & (1ull << 63)) | (1023ull << 52);
+        else v.u &= 1ull << 63;
+    } else if (e < 1023 + 52) {
+        uint64_t one = 1ull << (52 - (e - 1023));
+        v.u += (one >> 1) - (v.u >> 63);
+        v.u &= ~(one - 1);
+    }
+    return v.d;
+}
+
 static inline uint32_t tint(double rgb, double a) {
     uint32_t ua = ((uint32_t)(int32_t)(a * 255)) & 0xff;
     return (ua << 24) | (uint32_t)(int64_t)rgb;
@@ -166,7 +182,7 @@ static JSValue js_batch_sprite(JSContext *ctx, JSValueConst this_val, int argc, 
 // batchVerts(vertexData: ArrayBuffer, offset (float index), matrix: Float32Array(6),
 //   vertices: [{vx, vy, u, v}], roundPixels, unit, tintEffect, tint) -> vertices written
 // The vertex loop of Phaser 3.90's NineSliceWebGLRenderer: TransformMatrix.getXRound/getYRound
-// per vertex (float64 math, Math.round), one shared tint.
+// per vertex (float64 math, Math.round: js_round), one shared tint.
 // Writes n vertices {vx, vy, u, v} of `verts` at vf, transformed by m (a..f).
 static void write_verts(JSContext *ctx, float *vf, JSValueConst verts, int64_t n, const float *m, bool round,
                         float unit, float effect, uint32_t t) {
@@ -180,7 +196,7 @@ static void write_verts(JSContext *ctx, float *vf, JSValueConst verts, int64_t n
         JSValue ju = JS_GetProperty(ctx, v, a_u), jv = JS_GetProperty(ctx, v, a_v);
         double vx = num(ctx, jx), vy = num(ctx, jy);
         double x = vx * a + vy * c + e, y = vx * b + vy * d + f;
-        if (round) x = floor(x + 0.5), y = floor(y + 0.5);
+        if (round) x = js_round(x), y = js_round(y);
         vf[0] = (float)x, vf[1] = (float)y, vf[2] = (float)num(ctx, ju), vf[3] = (float)num(ctx, jv);
         vf[4] = unit, vf[5] = effect, vu[6] = t;
         vf += 7, vu += 7;
@@ -198,6 +214,100 @@ static JSValue js_batch_verts(JSContext *ctx, JSValueConst this_val, int argc, J
     write_verts(ctx, (float *)vb + off, argv[3], n, m, JS_ToBool(ctx, argv[4]), (float)num(ctx, argv[5]),
                 (float)num(ctx, argv[6]), (uint32_t)(int64_t)num(ctx, argv[7]));
     return JS_NewInt64(ctx, n);
+}
+
+// batchChars(vertexData: ArrayBuffer, offset (float index), maxQuads, chars: [{x, y, w, h, code,
+//   glyph: {width, height, u0, v0, u1, v1}}], state: Int32Array(1) (in: first char, out: the next one),
+//   matrix: Float32Array(6), originX, originY, offsetX, offsetY, roundPixels, unit, tintEffect,
+//   tintTL, tintTR, tintBL, tintBR) -> quads written
+// The character loop of Phaser 3.90's BitmapTextWebGLRenderer: BatchChar's corners (float64 math,
+// Math.round) and MultiPipeline.batchQuad's 6 vertices, skipping spaces and empty glyphs as it does.
+// Stops at the first character to draw once maxQuads are written (the caller flushes, as Phaser's
+// loop does there), leaving state[0] at it.
+// Writes chars[*idx..n) (spaces and empty glyphs skipped) at vf, at most max quads; leaves *idx at the
+// next character to draw (n when done). m: the text's calc matrix; o: displayOrigin; d: offset (the
+// drop shadow's); t: tints TL, TR, BL, BR. Returns the quads written, or -1 with an exception.
+static int64_t write_chars(JSContext *ctx, float *vf, int64_t max, JSValueConst chars, int64_t n, int64_t *idx,
+                           const float *m, double ox, double oy, double dx, double dy, bool round, float unit,
+                           float effect, const uint32_t t[4]) {
+    static JSAtom a[12];
+    enum { X, Y, W, H, CODE, GLYPH, GW, GH, U0, V0, U1, V1 };
+    if (!a[0]) {
+        static const char *const names[12] = {"x", "y", "w", "h", "code", "glyph", "width", "height", "u0", "v0", "u1", "v1"};
+        for (int i = 0; i < 12; i++) a[i] = JS_NewAtom(ctx, names[i]);
+    }
+    double ma = m[0], mb = m[1], mc = m[2], md = m[3], me = m[4], mf = m[5];
+    int64_t i = *idx, quads = 0;
+    for (; i < n; i++) {
+        JSValue ch = JS_GetPropertyInt64(ctx, chars, i);
+        JSValue glyph = JS_GetProperty(ctx, ch, a[GLYPH]);
+        if (!JS_IsObject(glyph)) {
+            JS_FreeValue(ctx, glyph), JS_FreeValue(ctx, ch);
+            JS_ThrowTypeError(ctx, "bitmap text: character %lld has no glyph", (long long)i);
+            return -1;
+        }
+        double g[6], c[5];
+        for (int k = 0; k < 6; k++) {
+            JSValue v = JS_GetProperty(ctx, glyph, a[GW + k]);
+            g[k] = num(ctx, v);
+            JS_FreeValue(ctx, v);
+        }
+        for (int k = 0; k < 5; k++) {
+            JSValue v = JS_GetProperty(ctx, ch, a[X + k]);
+            c[k] = num(ctx, v);
+            JS_FreeValue(ctx, v);
+        }
+        JS_FreeValue(ctx, glyph), JS_FreeValue(ctx, ch);
+        if (c[CODE] == 32 || g[0] == 0 || g[1] == 0) continue; // a space or an empty glyph
+        if (quads == max) break;
+        double x = (c[X] - ox) + dx, y = (c[Y] - oy) + dy, xw = x + c[W], yh = y + c[H];
+        double tx0 = x * ma + y * mc + me, ty0 = x * mb + y * md + mf;
+        double tx1 = x * ma + yh * mc + me, ty1 = x * mb + yh * md + mf;
+        double tx2 = xw * ma + yh * mc + me, ty2 = xw * mb + yh * md + mf;
+        double tx3 = xw * ma + y * mc + me, ty3 = xw * mb + y * md + mf;
+        if (round) {
+            tx0 = js_round(tx0), ty0 = js_round(ty0), tx1 = js_round(tx1), ty1 = js_round(ty1);
+            tx2 = js_round(tx2), ty2 = js_round(ty2), tx3 = js_round(tx3), ty3 = js_round(ty3);
+        }
+        float u0 = (float)g[2], v0 = (float)g[3], u1 = (float)g[4], v1 = (float)g[5];
+        const float px[6] = {(float)tx0, (float)tx1, (float)tx2, (float)tx0, (float)tx2, (float)tx3};
+        const float py[6] = {(float)ty0, (float)ty1, (float)ty2, (float)ty0, (float)ty2, (float)ty3};
+        const float pu[6] = {u0, u0, u1, u0, u1, u1}, pv[6] = {v0, v1, v1, v0, v1, v0};
+        const uint32_t pt[6] = {t[0], t[2], t[3], t[0], t[3], t[1]};
+        uint32_t *vu = (uint32_t *)vf;
+        for (int k = 0; k < 6; k++, vf += 7, vu += 7) {
+            vf[0] = px[k], vf[1] = py[k], vf[2] = pu[k], vf[3] = pv[k], vf[4] = unit, vf[5] = effect;
+            vu[6] = pt[k];
+        }
+        quads++;
+    }
+    *idx = i;
+    return quads;
+}
+
+static JSValue js_batch_chars(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    size_t size, soff, slen, sbpe;
+    uint8_t *vb = JS_GetArrayBuffer(ctx, &size, argv[0]);
+    float *m = f32(ctx, argv[5]);
+    JSValue sab = JS_GetTypedArrayBuffer(ctx, argv[4], &soff, &slen, &sbpe);
+    if (JS_IsException(sab)) return JS_EXCEPTION;
+    size_t ssize;
+    uint8_t *sp = JS_GetArrayBuffer(ctx, &ssize, sab);
+    JS_FreeValue(ctx, sab);
+    int64_t n = 0;
+    if (!vb || !m || !sp || sbpe != 4 || slen < 4 || JS_GetLength(ctx, argv[3], &n) < 0)
+        return JS_ThrowTypeError(ctx, "batchChars: bad arguments");
+    int32_t *state = (int32_t *)(sp + soff);
+    int64_t off = (int64_t)num(ctx, argv[1]), max = (int64_t)num(ctx, argv[2]), idx = state[0];
+    if (off < 0 || max < 0 || (size_t)(off + max * 42) * 4 > size) return JS_ThrowRangeError(ctx, "batchChars: vertex buffer too small");
+    const uint32_t t[4] = {(uint32_t)(int64_t)num(ctx, argv[13]), (uint32_t)(int64_t)num(ctx, argv[14]),
+                           (uint32_t)(int64_t)num(ctx, argv[15]), (uint32_t)(int64_t)num(ctx, argv[16])};
+    int64_t q = write_chars(ctx, (float *)vb + off, max, argv[3], n, &idx, m, num(ctx, argv[6]), num(ctx, argv[7]),
+                            num(ctx, argv[8]), num(ctx, argv[9]), JS_ToBool(ctx, argv[10]), (float)num(ctx, argv[11]),
+                            (float)num(ctx, argv[12]), t);
+    if (q < 0) return JS_EXCEPTION;
+    state[0] = (int32_t)idx;
+    return JS_NewInt64(ctx, q);
 }
 
 // ---------------------------------------------------------------- container renderer
@@ -229,6 +339,8 @@ static struct {
     // js/fastpath.js made Text's width, height and display origin accessors that measure on first
     // read and keep the values in _pkr_<name>: a text that is already drawn has them up to date
     bool text_lazy;
+    // js/fastpath.js part 18's BitmapText renderer, WebGLPipeline.shouldFlush, BitmapText.getTextBounds
+    JSValue bitmap_text_render, wp_should_flush, bt_get_text_bounds;
 } H;
 
 enum {
@@ -250,7 +362,9 @@ enum {
     A_setProgram, A_batch, A_activeTextures, A_texture, A_maxUnit, A_webGLTexture, A_topology, A_bytes, A_vertexSize,
     A_vertexBuffer, A_activeBuffer, A_setVertexBuffer, A_webGLBuffer, A__events, A_emit, A_onBeforeFlush, A_onAfterFlush,
     A_bufferData, A_activeTexture, A_bindTexture, A_drawArrays, A_bindBuffer, A_createBatch, A_unit, A_maxTextures,
-    A_setScrollFactorC, A__pkr_width, A__pkr_height, A__pkr__displayOriginX, A__pkr__displayOriginY, A_isStroked, A_isFilled, A_isRounded, A_fillColor, A_fillAlpha, A_maskCount, A_COUNT
+    A_setScrollFactorC, A__pkr_width, A__pkr_height, A__pkr__displayOriginX, A__pkr__displayOriginY, A_isStroked, A_isFilled, A_isRounded, A_fillColor, A_fillAlpha, A_maskCount,
+    A__text, A_charColors, A__dirty, A__bounds, A_characters, A_scaleX, A_scaleY, A_dropShadowX, A_dropShadowY,
+    A_dropShadowColor, A_dropShadowAlpha, A_getTextBounds, A_shouldFlush, A_COUNT
 };
 static const char *atom_names[A_COUNT] = {
     "list", "length", "localTransform", "matrix", "x", "y", "_rotation", "_scaleX", "_scaleY", "hasPostPipeline",
@@ -272,6 +386,8 @@ static const char *atom_names[A_COUNT] = {
     "vertexBuffer", "activeBuffer", "setVertexBuffer", "webGLBuffer", "_events", "emit", "onBeforeFlush", "onAfterFlush",
     "bufferData", "activeTexture", "bindTexture", "drawArrays", "bindBuffer", "createBatch", "unit", "maxTextures",
     "setScrollFactor", "_pkr_width", "_pkr_height", "_pkr__displayOriginX", "_pkr__displayOriginY", "isStroked", "isFilled", "isRounded", "fillColor", "fillAlpha", "maskCount",
+    "_text", "charColors", "_dirty", "_bounds", "characters", "scaleX", "scaleY", "dropShadowX", "dropShadowY",
+    "dropShadowColor", "dropShadowAlpha", "getTextBounds", "shouldFlush",
 };
 static JSAtom AT[A_COUNT];
 
@@ -470,12 +586,12 @@ static bool fast_pipeline(JSContext *ctx, JSValueConst pipeline) {
 // MultiPipeline.batchSprite for a plain Image/Sprite (see fastBatchSprite in js/fastpath.js), or
 // with `text`, TextWebGLRenderer + MultiPipeline.batchTexture for a plain Text (no flip, no crop).
 // alpha_mul, sfx, sfy: the parent container's alpha and scroll factors; par: its matrix.
-static int batch_sprite(JSContext *ctx, rctx *r, JSValueConst pipeline, JSValueConst go, JSValueConst frame,
-                        const float *par, double alpha_mul, double sfx, double sfy, bool text) {
-    int rc = -1;
-    JSValue cur = G(r->mgr, A_current), tex = JS_UNDEFINED, cb = JS_UNDEFINED, unitv = JS_UNDEFINED;
-    // pipelines.set(pipeline, go): isCurrent -> updateProjectionMatrix + onBind, else rebind.
+// renderer.pipelines.set(pipeline, go): isCurrent -> updateProjectionMatrix + onBind, else rebind.
+// 0, or -1 with an exception.
+static int pipe_set(JSContext *ctx, rctx *r, JSValueConst pipeline, JSValueConst go) {
+    JSValue cur = G(r->mgr, A_current);
     bool current = same(cur, pipeline);
+    JS_FreeValue(ctx, cur);
     if (current) {
         JSValue sh = G(pipeline, A_currentShader), prog = G(sh, A_program), rp = G(r->renderer, A_currentProgram);
         current = JS_IsStrictEqual(ctx, prog, rp);
@@ -483,14 +599,23 @@ static int batch_sprite(JSContext *ctx, rctx *r, JSValueConst pipeline, JSValueC
     }
     if (!current || !gsame(ctx, pipeline, A_onBind, H.wp_on_bind)) {
         JSValueConst args[2] = {pipeline, go};
-        if (call0(ctx, r->mgr, A_set, 2, args)) goto out;
-    } else if (gbool(ctx, pipeline, A_projectionMatrix)) {
+        return call0(ctx, r->mgr, A_set, 2, args);
+    }
+    if (gbool(ctx, pipeline, A_projectionMatrix)) {
         double pw = gnum(ctx, r->renderer, A_projectionWidth), ph = gnum(ctx, r->renderer, A_projectionHeight);
         if (gnum(ctx, pipeline, A_projectionWidth) != pw || gnum(ctx, pipeline, A_projectionHeight) != ph) {
             JSValueConst args[2] = {JS_NewFloat64(ctx, pw), JS_NewFloat64(ctx, ph)};
-            if (call0(ctx, pipeline, A_setProjectionMatrix, 2, args)) goto out;
+            return call0(ctx, pipeline, A_setProjectionMatrix, 2, args);
         }
     }
+    return 0;
+}
+
+static int batch_sprite(JSContext *ctx, rctx *r, JSValueConst pipeline, JSValueConst go, JSValueConst frame,
+                        const float *par, double alpha_mul, double sfx, double sfy, bool text) {
+    int rc = -1;
+    JSValue tex = JS_UNDEFINED, cb = JS_UNDEFINED, unitv = JS_UNDEFINED;
+    if (pipe_set(ctx, r, pipeline, go)) goto out;
 
     // a text here passed fast_text (drawn, so measured): its stored origin, without the accessor call
     bool stored = text && H.text_lazy;
@@ -584,8 +709,147 @@ static int batch_sprite(JSContext *ctx, rctx *r, JSValueConst pipeline, JSValueC
     if (!gsame(ctx, pipeline, A_onBatch, H.wp_on_batch) && call0(ctx, pipeline, A_onBatch, 1, &go)) goto out;
     rc = 0;
 out:
-    JS_FreeValue(ctx, cur), JS_FreeValue(ctx, tex), JS_FreeValue(ctx, cb), JS_FreeValue(ctx, unitv);
+    JS_FreeValue(ctx, tex), JS_FreeValue(ctx, cb), JS_FreeValue(ctx, unitv);
     return rc;
+}
+
+// pipeline.pushBatch(tex) -> unit (the native one when it's WebGLPipeline's), or -1 with an exception.
+static int push_unit(JSContext *ctx, JSValueConst pipeline, JSValueConst tex, double *unit) {
+    JSValue u = gsame(ctx, pipeline, A_pushBatch, H.wp_push_batch) ? push_batch(ctx, pipeline, tex)
+                                                                     : call(ctx, pipeline, A_pushBatch, 1, &tex);
+    if (JS_IsException(u)) return -1;
+    *unit = num(ctx, u);
+    JS_FreeValue(ctx, u);
+    return 0;
+}
+
+// Adds q quads written at the vertex count to vertexCount and the current batch's count.
+static void chars_written(JSContext *ctx, JSValueConst pipeline, int64_t q) {
+    double vc = gnum(ctx, pipeline, A_vertexCount) + 6 * (double)q;
+    sset(ctx, pipeline, A_vertexCount, JS_NewInt32(ctx, (int32_t)vc));
+    JSValue cb = G(pipeline, A_currentBatch);
+    sset(ctx, cb, A_count, JS_NewInt32(ctx, (int32_t)(vc - gnum(ctx, cb, A_start))));
+    JS_FreeValue(ctx, cb);
+}
+
+// One pass of BitmapTextWebGLRenderer's character loop: all of chars at *unit, flushing where
+// Phaser does (a character to draw and no room for its 6 vertices). After a flush the main pass
+// takes setGameObject's unit for the rest; the drop shadow pass (batchQuad flushing by itself) takes
+// setTexture2D's for that character only. 0, or -1 with an exception.
+static int chars_pass(JSContext *ctx, JSValueConst pipeline, JSValueConst tex, JSValueConst chars, int64_t n,
+                      const float *m, double ox, double oy, double dx, double dy, bool round, double *unit, float effect,
+                      const uint32_t t[4], bool shadow) {
+    int64_t i = 0;
+    for (bool first = true;; first = false) {
+        double vc = gnum(ctx, pipeline, A_vertexCount), cap = gnum(ctx, pipeline, A_vertexCapacity);
+        int64_t room = cap > vc ? (int64_t)floor((cap - vc) / 6) : 0;
+        JSValue vd = G(pipeline, A_vertexData);
+        size_t vsize;
+        uint8_t *vb = JS_GetArrayBuffer(ctx, &vsize, vd);
+        JS_FreeValue(ctx, vd);
+        if (!vb || (vc * 7 + (double)room * 42) * 4 > vsize) {
+            JS_ThrowRangeError(ctx, "bitmap text: vertex buffer overflow");
+            return -1;
+        }
+        int64_t q = write_chars(ctx, (float *)vb + (size_t)vc * 7, room, chars, n, &i, m, ox, oy, dx, dy, round,
+                                (float)*unit, effect, t);
+        if (q < 0) return -1;
+        if (q) chars_written(ctx, pipeline, q);
+        if (i >= n) return 0;
+        if (!first && !q) { // no room even in an empty batch
+            JS_ThrowRangeError(ctx, "bitmap text: no room after a flush");
+            return -1;
+        }
+        if (call0(ctx, pipeline, A_flush, 0, NULL)) return -1;
+        if (shadow) {
+            JSValue u = call(ctx, pipeline, A_setTexture2D, 1, &tex);
+            if (JS_IsException(u)) return -1;
+            double u1 = num(ctx, u);
+            JS_FreeValue(ctx, u);
+            vd = G(pipeline, A_vertexData);
+            vb = JS_GetArrayBuffer(ctx, &vsize, vd);
+            JS_FreeValue(ctx, vd);
+            vc = gnum(ctx, pipeline, A_vertexCount);
+            if (!vb || (vc * 7 + 42) * 4 > vsize) {
+                JS_ThrowRangeError(ctx, "bitmap text: vertex buffer overflow");
+                return -1;
+            }
+            q = write_chars(ctx, (float *)vb + (size_t)vc * 7, 1, chars, n, &i, m, ox, oy, dx, dy, round, (float)u1, effect, t);
+            if (q < 0) return -1;
+            if (q) chars_written(ctx, pipeline, q);
+            if (i >= n) return 0;
+        } else if (push_unit(ctx, pipeline, tex, unit)) {
+            return -1;
+        }
+    }
+}
+
+// Phaser 3.90's BitmapTextWebGLRenderer for a BitmapText child of a container (js/fastpath.js part
+// 18 does the same from JS, with only the character loop here): the container's alpha and scroll
+// factor multiplied in as batch_sprite does, GetCalcMatrix (calc_from), the tints, setGameObject,
+// getTextBounds (its stored bounds when nothing changed) and the character passes.
+static int batch_bitmap_text(JSContext *ctx, rctx *r, JSValueConst pipeline, JSValueConst go, const float *par,
+                             double alpha_mul, double sfx, double sfy) {
+    int rc = -1;
+    JSValue frame = JS_UNDEFINED, src = JS_UNDEFINED, tex = JS_UNDEFINED, bounds = JS_UNDEFINED, chars = JS_UNDEFINED;
+    if (pipe_set(ctx, r, pipeline, go)) goto out;
+    sprite_quad q = {
+        .offX = -r->scroll_x * (gnum(ctx, go, A_scrollFactorX) * sfx),
+        .offY = -r->scroll_y * (gnum(ctx, go, A_scrollFactorY) * sfy),
+        .gx = gnum(ctx, go, A_x), .gy = gnum(ctx, go, A_y), .rot = gnum(ctx, go, A__rotation),
+        .sx = gnum(ctx, go, A__scaleX), .sy = gnum(ctx, go, A__scaleY),
+    };
+    float calc[6];
+    calc_from(calc, r->cam_m, par, &q);
+    double ca = r->alpha;
+    double atl = gnum(ctx, go, A__alphaTL) * alpha_mul, atr = gnum(ctx, go, A__alphaTR) * alpha_mul;
+    double abl = gnum(ctx, go, A__alphaBL) * alpha_mul, abr = gnum(ctx, go, A__alphaBR) * alpha_mul;
+    const uint32_t t[4] = {tint(gnum(ctx, go, A_tintTopLeft), ca * atl), tint(gnum(ctx, go, A_tintTopRight), ca * atr),
+                           tint(gnum(ctx, go, A_tintBottomLeft), ca * abl), tint(gnum(ctx, go, A_tintBottomRight), ca * abr)};
+    frame = G(go, A_frame), src = G(frame, A_source), tex = G(src, A_glTexture);
+    double unit;
+    if (push_unit(ctx, pipeline, tex, &unit)) goto out;
+    // getTextBounds(false): GetBitmapTextSize only when dirty or rescaled
+    bounds = G(go, A__bounds);
+    if (!gsame(ctx, go, A_getTextBounds, H.bt_get_text_bounds) || gbool(ctx, go, A__dirty) ||
+        gnum(ctx, go, A__scaleX) != gnum(ctx, bounds, A_scaleX) || gnum(ctx, go, A__scaleY) != gnum(ctx, bounds, A_scaleY)) {
+        JS_FreeValue(ctx, bounds);
+        JSValueConst no = JS_FALSE;
+        bounds = call(ctx, go, A_getTextBounds, 1, &no);
+        if (JS_IsException(bounds)) goto out;
+    }
+    chars = G(bounds, A_characters);
+    int64_t n = 0;
+    if (JS_GetLength(ctx, chars, &n) < 0) goto out;
+    double ox = gnum(ctx, go, A__displayOriginX), oy = gnum(ctx, go, A__displayOriginY);
+    double dsx = gnum(ctx, go, A_dropShadowX), dsy = gnum(ctx, go, A_dropShadowY);
+    if (dsx != 0 || dsy != 0) {
+        double col = gnum(ctx, go, A_dropShadowColor), sa = gnum(ctx, go, A_dropShadowAlpha);
+        const uint32_t st[4] = {tint(col, ca * sa * atl), tint(col, ca * sa * atr), tint(col, ca * sa * abl), tint(col, ca * sa * abr)};
+        double su = unit;
+        if (chars_pass(ctx, pipeline, tex, chars, n, calc, ox, oy, dsx, dsy, r->round_pixels, &su, 1, st, true)) goto out;
+    }
+    if (chars_pass(ctx, pipeline, tex, chars, n, calc, ox, oy, 0, 0, r->round_pixels, &unit,
+                   gbool(ctx, go, A_tintFill) ? 1 : 0, t, false))
+        goto out;
+    rc = 0;
+out:
+    JS_FreeValue(ctx, frame), JS_FreeValue(ctx, src), JS_FreeValue(ctx, tex), JS_FreeValue(ctx, bounds), JS_FreeValue(ctx, chars);
+    return rc;
+}
+
+// A BitmapText batch_bitmap_text can draw: js/fastpath.js's renderer, text not empty, no per-character
+// colours or post pipeline, on a plain pipeline whose onBatch and shouldFlush are WebGLPipeline's.
+static bool fast_bitmap_text(JSContext *ctx, JSValueConst t, JSValueConst rw, JSValue *pipeline) {
+    if (!JS_IsObject(H.bitmap_text_render) || !same(rw, H.bitmap_text_render) || gbool(ctx, t, A_hasPostPipeline)) return false;
+    JSValue text = G(t, A__text), cc = G(t, A_charColors);
+    int64_t tl = 0, cl = 1;
+    bool ok = JS_IsString(text) && JS_GetLength(ctx, text, &tl) == 0 && tl > 0 && JS_GetLength(ctx, cc, &cl) == 0 && cl == 0;
+    JS_FreeValue(ctx, text), JS_FreeValue(ctx, cc);
+    if (!ok) return false;
+    *pipeline = G(t, A_pipeline);
+    return fast_pipeline(ctx, *pipeline) && gsame(ctx, *pipeline, A_onBatch, H.wp_on_batch) &&
+           gsame(ctx, *pipeline, A_shouldFlush, H.wp_should_flush);
 }
 
 // Loads the container's local transform into its localTransform matrix, like Phaser.
@@ -862,6 +1126,11 @@ static int render_container(JSContext *ctx, rctx *r, JSValueConst ct, JSValueCon
             e = add_to_render_list(ctx, r, child);
             if (!e) e = batch_sprite(ctx, r, pipeline, child, frame, m, alpha, sfx, sfy, true);
             sset(ctx, r->renderer, A_newType, JS_FALSE);
+        } else if (no_mask && fast_bitmap_text(ctx, child, rw, &pipeline)) {
+            set_type(ctx, r, list, child, i, n);
+            e = add_to_render_list(ctx, r, child);
+            if (!e) e = batch_bitmap_text(ctx, r, pipeline, child, m, alpha, sfx, sfy);
+            sset(ctx, r->renderer, A_newType, JS_FALSE);
         } else if (no_mask && same(rw, H.container_render)) {
             // Phaser sets the child's scroll factor and alpha to the combined values while it renders.
             set_type(ctx, r, list, child, i, n);
@@ -935,6 +1204,17 @@ static JSValue js_render_setup(JSContext *ctx, JSValueConst this_val, int argc, 
     H.ev_after_flush = JS_ValueToAtom(ctx, ea);
     JS_FreeValue(ctx, eb), JS_FreeValue(ctx, ea);
     H.ready = true;
+    return JS_UNDEFINED;
+}
+
+// bitmapTextSetup(render, wpShouldFlush, btGetTextBounds): js/fastpath.js part 18's renderer and
+// the Phaser functions batch_bitmap_text relies on, so containers draw such texts here.
+static JSValue js_bitmap_text_setup(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    if (argc < 3) return JS_ThrowTypeError(ctx, "bitmapTextSetup: 3 arguments");
+    JS_FreeValue(ctx, H.bitmap_text_render), JS_FreeValue(ctx, H.wp_should_flush), JS_FreeValue(ctx, H.bt_get_text_bounds);
+    H.bitmap_text_render = JS_DupValue(ctx, argv[0]);
+    H.wp_should_flush = JS_DupValue(ctx, argv[1]);
+    H.bt_get_text_bounds = JS_DupValue(ctx, argv[2]);
     return JS_UNDEFINED;
 }
 
@@ -2395,6 +2675,8 @@ void fastpath_register(JSContext *ctx, JSValue native) {
     JS_SetPropertyStr(ctx, native, "pipelineSetup", JS_NewCFunction(ctx, js_pipeline_setup, "pipelineSetup", 1));
     JS_SetPropertyStr(ctx, native, "batchSprite", JS_NewCFunction(ctx, js_batch_sprite, "batchSprite", 30));
     JS_SetPropertyStr(ctx, native, "batchVerts", JS_NewCFunction(ctx, js_batch_verts, "batchVerts", 8));
+    JS_SetPropertyStr(ctx, native, "batchChars", JS_NewCFunction(ctx, js_batch_chars, "batchChars", 17));
+    JS_SetPropertyStr(ctx, native, "bitmapTextSetup", JS_NewCFunction(ctx, js_bitmap_text_setup, "bitmapTextSetup", 3));
     JS_SetPropertyStr(ctx, native, "renderContainer", JS_NewCFunction(ctx, js_render_container, "renderContainer", 4));
     JS_SetPropertyStr(ctx, native, "renderSetup", JS_NewCFunction(ctx, js_render_setup, "renderSetup", 1));
     JS_SetPropertyStr(ctx, native, "replaceWrap", JS_NewCFunction(ctx, js_replace_wrap, "replaceWrap", 1));

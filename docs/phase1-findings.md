@@ -857,3 +857,19 @@ reads is a JSON object the game replaces but never changes (src/sprites/variant.
 arrays are now kept per entry (a WeakMap) and built once. Desktop, after both: JS per battle frame
 (command menu, no shiny) ~2.15 -> ~1.95 ms. The live site's battle chunk (2026-10-21) gets the
 same three rewrites as the offline build's, and both still parse.
+
+### Bitmap text: the item counts (logs 93, 102, 108; runtime 0.81)
+In late battles on the Vita, Phaser's BitmapTextWebGLRenderer was 15-22% of a frame's JS (on the
+stack), with BatchChar under 2%: PokeRogue draws every held item's stack count as a BitmapText of one
+or two characters (getIconStackText), so the cost is per text, not per character. 0.81: the
+character loop (BatchChar and MultiPipeline.batchQuad) is native everywhere (__native.batchChars), and
+a BitmapText in a container, where the item icons keep them, is drawn wholly by the C container walk
+(batch_bitmap_text: GetCalcMatrix, tints, setGameObject, the stored text bounds, flushes before the
+same characters as Phaser). Desktop, 200 item-count texts in containers: JS per frame 4.8-5.8 ->
+3.4-3.6 ms (p50), so about half of a text's cost; a 2000-character text: 705 -> 87 us. Phaser's own
+renderer still draws texts with per-character colours or a post pipeline, and pipelines with their own
+batchQuad, onBatch or shouldFlush. Checked with probe_verify_bitmaptext.js (CI, tests/phaser: plain,
+tinted, letter-spaced, drop shadow, rotated, in a container, and one long enough to flush mid-text
+in both passes; pixel rounding on). It found one difference on the way: the native rounding gave +0
+where Math.round gives -0 (-0.5 <= x < 0); fastpath.c now has QuickJS's Math.round (js_round),
+also used for NineSlice vertices.

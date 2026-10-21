@@ -24,19 +24,20 @@ draws correctly, and what differs between screens is how much of the drawing tak
 | Graphics with fill/line styles and `fillRect` (mask rectangles); Rectangle without stroke or rounded corners; GeometryMask; NineSlice wholly | "Graphics", "NineSlice", "Rectangle, GeometryMask" | 0.42 (step 3) |
 | QuickJS: spread arguments, array species creation, appending `splice`, small `apply`, `flat()` of numbers | `patches/quickjs-0002`, `-0004` | 0.42, 0.44 (steps 1, 3b) |
 | eventemitter3 `emit` (skips WebGLPipeline's empty render listeners); text size read from the drawn text | `js_ee_emit`, `fast_text` | 0.47 (step 3d) |
+| BitmapText (item stack counts): the character loop everywhere; in containers the whole renderer (no per-character colours or post pipeline) | `batchChars`, `batch_bitmap_text` | 0.81 |
 
 Each is checked frame by frame against Phaser with `probe_verify_render.js`,
 `probe_verify_uniforms.js`, `probe_verify_batching.js`, `probe_verify_pipeline.js` (every WebGL call)
-and `probe_verify_emit.js`, all run in CI on `tests/phaser`. localStorage switches turn them off
+`probe_verify_emit.js` and `probe_verify_bitmaptext.js`, all run in CI on `tests/phaser`. localStorage switches turn them off
 (`PKR_FASTPATH`, `PKR_NATIVE_RENDER`, `PKR_NATIVE_BATCH`, `PKR_NATIVE_UNIFORMS` set to `0`).
 
 ## Still on Phaser's JS path
 | Feature | `native-renderer` step | Notes |
 |---|---|---|
 | Pipeline `rebind` and `setAttribPointers(true)` (after a GL reset) | none | Rare |
-| The game's FieldSpritePipeline/SpritePipeline onBind/onBatch (~10 uniforms, colour arrays rebuilt with `splice(...spread)`, a flush per sprite) | not planned (game code) | The largest single cost (44% of time-based samples in a desktop battle, 0.47); steps 1-3b make what it calls cheaper |
+| The game's FieldSpritePipeline/SpritePipeline onBind/onBatch (~10 uniforms, a flush per sprite) | game code | The largest single cost (44% of time-based samples in a desktop battle, 0.47); steps 1-3b make what it calls cheaper; since 0.79-0.80 src/gamefix.c skips the colour array loops when they'd give zeros and keeps shiny colours |
 | Graphics paths, arcs and transforms; other shapes; Rectangle with stroke or rounded corners | 3 (not needed so far) | Not seen in the battle and menu screens measured |
-| BitmapText, TileSprite, RenderTexture | 3 (not needed so far) | Not seen in the battle and menu screens measured |
+| TileSprite, RenderTexture, DynamicBitmapText; BitmapText with per-character colours | 3 (not needed so far) | Not seen in the battle and menu screens measured |
 | Text that is flipped, cropped, or on a post or non-plain pipeline | 3 | |
 | Top-level render walk (`WebGLRenderer.render`: cameras, scene display list, pre/postRender) | 4 | Only containers are walked in C |
 | Tween and animation stepping | 5 | The update list already visits only animating sprites |
