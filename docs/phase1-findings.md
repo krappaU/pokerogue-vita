@@ -826,3 +826,8 @@ blendHardLight(c, tint) per channel is tint < 0.5 ? 2 tint c : 1 - 2 (1 - tint)(
 is c * mul + add with mul and add from the tint alone. 0.78: the copies have that multiply-add
 (pkr_tintMul, pkr_tintAdd, worked out with the colour in gl.c). The pixels are within 1/255 of the
 original's (the multiply-add rounds differently; tests/shaders allows that for copies).
+Measured (logs 106 and 108, 0.78, 2026-10-21): the benchmark has the field shader at 5.5 ms per full
+screen (0.77 7.7, 0.76 11.7; without day/night at all 4.8) and the sprite shader at 9.0 (0.77 11.9,
+0.76 16.2; without the shadow 5.9). In a Ruins battle (gpuprofile off) the GPU took 30-36 ms a
+frame against 38-48 in 0.76's (log93), but fps stayed at 17-22: JS takes 44-55 ms a frame, so the
+frames wait on JS and the GPU now finishes inside that time.
