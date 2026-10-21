@@ -61,7 +61,7 @@ target_include_directories(qrcodegen PUBLIC third_party/qrcodegen)
 target_compile_definitions(miniz PUBLIC MINIZ_NO_TIME)  # changes struct layouts: users must agree
 target_compile_options(miniz PRIVATE -w)
 
-set(RT_SRC src/main.c src/js_host.c src/precompile.c src/net.c src/gl.c src/canvas2d.c src/fastpath.c src/overlay.c src/osk.c src/profiler.c src/launcher.c src/offline_install.c src/audio.c src/audio_m4a.c src/savecrypt.c src/dialogs.c)
+set(RT_SRC src/main.c src/js_host.c src/precompile.c src/gamefix.c src/net.c src/gl.c src/canvas2d.c src/fastpath.c src/overlay.c src/osk.c src/profiler.c src/launcher.c src/offline_install.c src/audio.c src/audio_m4a.c src/savecrypt.c src/dialogs.c)
 if(PKR_DEV)
   list(APPEND RT_SRC src/devtools.c)
   set(PKR_VPK_SUFFIX -dev)

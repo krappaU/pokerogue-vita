@@ -152,6 +152,37 @@ async function run() {
     try { m.boom(); } catch (e) { stack = String(e.stack); }
     eq(/chunk-Ab_d-1xY\.js:\d+/.test(stack), true, "stack traces keep file and line: " + stack);
   });
+  await check("gamefix: the sprite pipeline's palette code gives the same colours rewritten", async () => {
+    const fixed = await import("./assets/sprite-Pk7rTst1.js"); // a chunk: src/gamefix.c rewrites it
+    const text = await (await fetch("./assets/sprite-Pk7rTst1.js")).text();
+    const plain = new Function(text.replace(/export function/g, "function") + "\nreturn { bindColors, batchColors };")();
+    class Pokemon {
+      constructor(shiny, variant, key) { this.shiny = shiny, this.variant = variant, this.key = key; }
+      getSprite() { return { texture: { key: this.key } }; }
+    }
+    const hex = (h) => ({ r: parseInt(h.slice(1, 3), 16), g: parseInt(h.slice(3, 5), 16), b: parseInt(h.slice(5, 7), 16), a: 255 });
+    const cache = { pkmn_1: { 1: { "#102030": "#405060", "#a0b0c0": "#d0e0f0" } } };
+    const calls = (fn, ...args) => {
+      const out = [], p = { set4fv: (n, v) => (out.push(n + "=" + v.join(",")), p), set4iv: (n, v) => (out.push(n + "=" + v.join(",")), p) };
+      fn.apply(p, args);
+      return out.join(" | ");
+    };
+    const binds = [[{}, false], [{ spriteColors: [[255, 0, 0, 255], [1, 2, 3, 4]] }, false], [{ fusionSpriteColors: [[5, 6, 7, 8]] }, false],
+      [{ spriteColorsBase: [[9, 9, 9, 9]], spriteColors: [] }, true], [{ spriteColorsBase: [[9, 9, 9, 9]], spriteColors: [] }, false]];
+    const batches = [{ pipelineData: {} }, { pipelineData: { shiny: true, spriteKey: "pkmn_1", variant: 1 } },
+      { pipelineData: {}, parentContainer: new Pokemon(true, 1, "pkmn_1") }, { pipelineData: {}, parentContainer: new Pokemon(false, 1, "pkmn_1") },
+      { pipelineData: { variant: 2 }, parentContainer: new Pokemon(true, 1, "pkmn_1") }];
+    let zeros = 0;
+    const flat = Array.prototype.flat;
+    Array.prototype.flat = function (...a) { if (this === globalThis.__pkrZero128) zeros++; return flat.apply(this, a); };
+    try {
+      for (const [m, w] of binds) eq(calls(fixed.bindColors, m, w), calls(plain.bindColors, m, w), "onBind " + JSON.stringify(m) + " " + w);
+      for (const b of batches) eq(calls(fixed.batchColors, b, Pokemon, cache, hex), calls(plain.batchColors, b, Pokemon, cache, hex), "onBatch " + JSON.stringify(b));
+    } finally {
+      Array.prototype.flat = flat;
+    }
+    if (!zeros) return "not rewritten (no [gamefix] line?)";
+  });
   await check("net: Blob, object URLs and FileReader", async () => {
     const blob = new Blob(["abc", new Uint8Array([100, 101])], { type: "text/plain" });
     eq(blob.size, 5, "size");

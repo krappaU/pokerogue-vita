@@ -755,6 +755,7 @@ static void save_screenshot(const char *path) {
 //                                   saves stay on the console); automatic if <data>/game exists
 //   online=1                        play the live site even if <data>/game exists
 //   log=1                           write log.txt (player builds; debug builds always do)
+//   gamefix=0                       the game's code exactly as it is, without gamefix.c's rewrites
 // Debug builds only (dev, profiling and desktop builds; PKR_DEBUG in CMakeLists.txt):
 //   url=http://192.168.1.10:8000/   load the game from another server (testing)
 //   frames=600                      quit after N frames
@@ -831,6 +832,8 @@ static void load_config_file(void) {
         const char *k = line, *v = eq + 1;
         if (!strcmp(k, "log")) {
             g_cfg.log = atoi(v) != 0;
+        } else if (!strcmp(k, "gamefix")) {
+            g_cfg.no_gamefix = atoi(v) == 0;
 #ifdef PKR_DEBUG
         } else if (!strcmp(k, "url")) {
             static char url[1024];

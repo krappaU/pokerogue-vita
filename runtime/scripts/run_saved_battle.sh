@@ -35,7 +35,7 @@ scripts/drive.sh "sleep 2" "key Enter"
 # messages on (tutorial, "Go! ...") until the command menu (mode 2).
 mode() {
     local tag=$1
-    printf '%s\n' "eval (()=>{try{return 'pkrmode$tag='+__rt.renderer.game.scene.getScene('battle').ui.getMode()}catch(e){return 'pkrmode$tag=none'}})()" >> .cache/control.txt
+    printf '%s\n' "eval (()=>{try{const u=__rt.renderer.game.scene.getScene('battle').ui; return 'pkrmode$tag='+(u.getMode ? u.getMode() : u.mode)}catch(e){return 'pkrmode$tag=none'}})()" >> .cache/control.txt
     for _ in $(seq 40); do
         sleep 0.5
         local m

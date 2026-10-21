@@ -33,6 +33,7 @@ typedef struct {
     bool gpu_profile;        // config.txt gpuprofile=1 (debug builds): GPU time per shader, one frame every 10 s
     bool no_shader_fix;      // config.txt shaderfix=0 (debug builds): the game's shaders without js/webgl.js's rewrites
     bool no_precompile;      // config.txt precompile=0 (debug builds): shader variants only built when first drawn
+    bool no_gamefix;         // config.txt gamefix=0: the game's code without gamefix.c's rewrites
     int profile_rate;        // JS operations between samples (config.txt profile_rate=N; 0: QuickJS's 10000)
     double sample_ms;        // at most one sample per this many ms, so samples follow time rather than
                              // operation counts (config.txt sample_ms=1; 0: every check)
@@ -158,6 +159,7 @@ void net_init(void);
 void net_shutdown(void);
 void host_js_set_interrupt(JSInterruptHandler *cb);
 // Compiled-code cache (js_host.c), used by precompile.c
+char *gamefix_source(const char *url, const char *src, size_t len, size_t *out_len); // gamefix.c
 bool module_chunk_url(const char *url);                           // "/assets/name-HASH.js": compiled code is keyed by URL
 void module_bytecode_path(const char *url, char *out, size_t n);  // the cache file of such a chunk
 int bytecode_write_flags(const char *src, size_t len);           // JS_WriteObject flags for a chunk

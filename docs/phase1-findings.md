@@ -831,3 +831,23 @@ screen (0.77 7.7, 0.76 11.7; without day/night at all 4.8) and the sprite shader
 0.76 16.2; without the shadow 5.9). In a Ruins battle (gpuprofile off) the GPU took 30-36 ms a
 frame against 38-48 in 0.76's (log93), but fps stayed at 17-22: JS takes 44-55 ms a frame, so the
 frames wait on JS and the GPU now finishes inside that time.
+
+### A battle frame's JS: PokeRogue's sprite pipeline (log108, 0.78, 2026-10-21; runtime 0.79)
+In the Ruins battle (log108) the profiler put 37% of a battle frame's JS (~45-55 ms) in PokeRogue's
+sprite pipelines, the per-sprite code that sets the shaders' uniforms: self time in
+SpritePipeline.onBind 9%, onBatch 7%, `map` 6%, FieldSpritePipeline.onBind 3%, `isOutside` 3%.
+On the desktop (offline game, first battle, command menu) the same split: 55% of the frame's JS,
+with SpritePipeline.onBind ~130 us and onBatch ~120 us per Pokémon sprite, FieldSprite's ~30 us.
+Most of it is two palette loops: per sprite and frame, four 128-value arrays are built with 128
+`arr.splice(arr.length, 0, ...four)` calls (~0.45 us each on the desktop even with patch 0004's fast
+paths: the call itself), then copied with `flat()` for set4fv. For a sprite that isn't shiny and has
+no fusion colours, which is nearly every sprite, all the values are 0.
+The game can't be changed and its code is compiled without its source (bytecode cache), so this is
+done on the source as a chunk is compiled (src/gamefix.c, with the owner's approval): exact pieces
+of the minified code with the names left open; the zero cases take a shared array of 128 zeros.
+If the game changes that code, nothing matches and its code runs as it is (config.txt gamefix=0
+turns it off). Desktop: Sprite.onBind 130 -> 72 us, onBatch 120 -> 46 us (34 of them the draw).
+Checked: the GL uniform calls of three frozen frames with and without it have the same colour arrays
+(the other differences are animation frames that froze differently between the runs), and
+tests/smoke runs both versions of the game's code (as a chunk and as plain text) on shiny, fusion
+and plain cases with the same results.

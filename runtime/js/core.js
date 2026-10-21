@@ -121,6 +121,10 @@
 
   function report(e) { N.log("[js] uncaught: " + (e && e.stack ? e + "\n" + e.stack : e)); }
 
+  // 128 zeros the game's code reads (only copies them, with flat()) where gamefix.c took out its
+  // loops that built them.
+  Object.defineProperty(g, "__pkrZero128", { value: new Array(128).fill(0) });
+
   rt.frameHooks = [];
   rt.onFrame = function (nowAbs) {
     const now = nowAbs;

@@ -204,6 +204,9 @@ static char *module_normalize(JSContext *ctx, const char *base, const char *name
 // and, once compiled, never fetched again; other modules are keyed by a hash of URL, source and
 // engine version. Entries older than 14 days are deleted at startup (and rewritten when used).
 #define BYTECODE_SALT "pkr-bytecode-3" // -3: Phaser's chunk with its source (see bytecode_write_flags)
+// gamefix.c's rewrites are in the compiled code: a new set of them (or gamefix=0) must not find code
+// compiled with another. Bump with every change to its FIXES.
+#define GAMEFIX_SALT "gamefix-1"
 #define BYTECODE_EXT ".qbc3"
 
 // Phaser's chunk keeps its source: js/fastpath.js installs each native fast path only after
@@ -241,6 +244,7 @@ static void bytecode_path(const char *url, const char *src, size_t len, char *ou
     uint64_t h = 14695981039346656037ull;
     const char *v = JS_GetVersion();
     h = fnv64(h, BYTECODE_SALT, strlen(BYTECODE_SALT));
+    if (!g_cfg.no_gamefix) h = fnv64(h, GAMEFIX_SALT, strlen(GAMEFIX_SALT));
     h = fnv64(h, v, strlen(v));
     h = fnv64(h, url, strlen(url) + 1);
     if (src) h = fnv64(h, src, len);
@@ -518,6 +522,9 @@ static JSModuleDef *module_load(JSContext *ctx, const char *url, void *opaque) {
                  (unsigned long)(len / 1024));
         overlay_present(msg);
         double t = host_now_ms();
+        size_t flen = 0;
+        char *fixed = gamefix_source(url, src, len, &flen);
+        if (fixed) free(src), src = fixed, len = flen;
         fn = JS_Eval(ctx, src, len, url, JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
         t_load = host_now_ms() - t;
         if (!JS_IsException(fn)) bytecode_save(ctx, fn, bc_path, bytecode_write_flags(src, len));

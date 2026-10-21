@@ -10,6 +10,7 @@ Linux (SDL2 + OpenGL ES 2), where most development and testing happens headless 
 | `src/main.c` | config, frame loop, `[perf]`/`[mem]` log lines, watchdog, test control channel, app restart (the debug features: `PKR_DEBUG`, not in player builds) |
 | `src/platform_vita.c`, `src/platform_sdl.c` | screen, input (W3C "standard" gamepad), audio output, threads |
 | `src/js_host.c` | QuickJS setup, ES module loader with bytecode cache, URL resolution, `__native` helpers |
+| `src/gamefix.c` | exact rewrites of the game's code with the same results and less work, applied as a chunk is compiled (`gamefix=0` in config.txt: off) |
 | `src/net.c` | HTTP on libcurl in a worker thread; disk cache for versioned assets; the offline game's zip |
 | `src/gl.c` | WebGL 1 as native functions; screen scaling; texture eviction when GPU memory runs short |
 | `src/canvas2d.c` | images (decoded on a worker thread), fonts with per-character fallback, Canvas 2D on plutovg |

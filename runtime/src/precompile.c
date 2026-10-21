@@ -108,6 +108,9 @@ static void compile_one(const char *url) {
     JS_SetMaxStackSize(rt, 4 * 1024 * 1024);
     JS_SetModuleLoaderFunc(rt, NULL, stub_loader, NULL);
     JSContext *ctx = JS_NewContext(rt);
+    size_t flen = 0;
+    char *fixed = gamefix_source(url, src, len, &flen);
+    if (fixed) free(src), src = fixed, len = flen;
     JSValue fn = JS_Eval(ctx, src, len, url, JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
     int flags = bytecode_write_flags(src, len);
     free(src);
