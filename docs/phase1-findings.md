@@ -851,3 +851,9 @@ Checked: the GL uniform calls of three frozen frames with and without it have th
 (the other differences are animation frames that froze differently between the runs), and
 tests/smoke runs both versions of the game's code (as a chunk and as plain text) on shiny, fusion
 and plain cases with the same results.
+0.80: log108's battle had a shiny Pokémon (`rgbHexToRgba` in the profile, which only shiny sprites
+reach): its onBatch parses 64 hex colours and makes 64 splice calls every frame. The cache entry it
+reads is a JSON object the game replaces but never changes (src/sprites/variant.ts), so the two
+arrays are now kept per entry (a WeakMap) and built once. Desktop, after both: JS per battle frame
+(command menu, no shiny) ~2.15 -> ~1.95 ms. The live site's battle chunk (2026-10-21) gets the
+same three rewrites as the offline build's, and both still parse.

@@ -124,6 +124,8 @@
   // 128 zeros the game's code reads (only copies them, with flat()) where gamefix.c took out its
   // loops that built them.
   Object.defineProperty(g, "__pkrZero128", { value: new Array(128).fill(0) });
+  // The shiny colour arrays gamefix.c keeps, per variant colour cache entry.
+  Object.defineProperty(g, "__pkrMemo", { value: new WeakMap() });
 
   rt.frameHooks = [];
   rt.onFrame = function (nowAbs) {

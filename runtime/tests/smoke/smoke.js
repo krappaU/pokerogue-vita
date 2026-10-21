@@ -177,11 +177,13 @@ async function run() {
     Array.prototype.flat = function (...a) { if (this === globalThis.__pkrZero128) zeros++; return flat.apply(this, a); };
     try {
       for (const [m, w] of binds) eq(calls(fixed.bindColors, m, w), calls(plain.bindColors, m, w), "onBind " + JSON.stringify(m) + " " + w);
-      for (const b of batches) eq(calls(fixed.batchColors, b, Pokemon, cache, hex), calls(plain.batchColors, b, Pokemon, cache, hex), "onBatch " + JSON.stringify(b));
+      for (let pass = 0; pass < 2; pass++) // the second time, shiny colours come from gamefix's memo
+        for (const b of batches) eq(calls(fixed.batchColors, b, Pokemon, cache, hex), calls(plain.batchColors, b, Pokemon, cache, hex), "onBatch " + JSON.stringify(b));
     } finally {
       Array.prototype.flat = flat;
     }
     if (!zeros) return "not rewritten (no [gamefix] line?)";
+    if (!globalThis.__pkrMemo.has(cache.pkmn_1[1])) return "shiny colours not kept";
   });
   await check("net: Blob, object URLs and FileReader", async () => {
     const blob = new Blob(["abc", new Uint8Array([100, 101])], { type: "text/plain" });

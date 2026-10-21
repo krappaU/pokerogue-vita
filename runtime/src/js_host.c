@@ -206,7 +206,7 @@ static char *module_normalize(JSContext *ctx, const char *base, const char *name
 #define BYTECODE_SALT "pkr-bytecode-3" // -3: Phaser's chunk with its source (see bytecode_write_flags)
 // gamefix.c's rewrites are in the compiled code: a new set of them (or gamefix=0) must not find code
 // compiled with another. Bump with every change to its FIXES.
-#define GAMEFIX_SALT "gamefix-1"
+#define GAMEFIX_SALT "gamefix-2"
 #define BYTECODE_EXT ".qbc3"
 
 // Phaser's chunk keeps its source: js/fastpath.js installs each native fast path only after

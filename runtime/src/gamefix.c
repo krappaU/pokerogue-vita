@@ -2,15 +2,20 @@
 // Rewrites of PokeRogue's own code that give the same results with less work, applied to a chunk's
 // source before it is compiled (js_host.c's loader and precompile.c's workers), the way js/webgl.js
 // rewrites the game's shaders. Each rewrite is an exact piece of the minified bundle with the
-// variable names left open (@1..@9 stand for an identifier; a repeated @n is the same one). If the
+// variable names left open (@1..@9 and @A..@Z stand for an identifier; a repeated one is the same
+// name; different ones may be the same name too, as a minifier reuses short names). If the
 // game changes that code, nothing matches and its own code runs. config.txt gamefix=0 turns them off.
 //
 // sprite colours: PokeRogue's sprite pipeline (src/pipelines/sprite.ts) builds four 128-value colour
 // arrays per Pokémon sprite per frame with 128 `arr.splice(arr.length, 0, ...four)` calls. For a
 // sprite that isn't shiny (onBatch) or has no fusion colours (onBind) every value is 0, and the
 // arrays only reach the GPU through `arr.flat()` (a copy). Those cases now take a shared array of
-// 128 zeros (globalThis.__pkrZero128, js/core.js) instead of the loop. On the Vita the pipeline's
-// methods were ~37% of a battle frame's JS (0.78, log108).
+// 128 zeros (globalThis.__pkrZero128, js/core.js) instead of the loop. For a shiny sprite (onBatch)
+// the arrays come from the variant colour cache's entry, a JSON object the game replaces but never
+// changes (src/sprites/variant.ts), parsing 64 hex colours on the way: they are kept per entry
+// (globalThis.__pkrMemo, a WeakMap) and built once. The arrays are only ever read (flat()), so
+// sharing them is safe. On the Vita the pipeline's methods were ~37% of a battle frame's JS (0.78,
+// log108; a shiny Pokémon was on the field).
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -38,6 +43,18 @@ static const fix FIXES[] = {
      "else for(let @4=0;@4<32;@4++)@2.splice(@2.length,0,...@4<@5.length?@5[@4].map(@6=>@6/255):@1),"
      "@3.splice(@3.length,0,...@4<@7.length?@7[@4]:@1);",
      NULL},
+    {"shiny colours kept",
+     "&&Object.hasOwn(@1,@2)){let @3=Object.keys(@1[@2]);for(let @4=0;@4<32;@4++)if(@4<@3.length){"
+     "let @5=Array.from(Object.values(@6(@3[@4]))),@7=Array.from(Object.values(@6(@1[@2][@3[@4]])));"
+     "@8.splice(@8.length,0,...@5.map(@A=>@A/255)),@9.splice(@9.length,0,...@7.map(@B=>@B/255))}"
+     "else @8.splice(@8.length,0,...@C),@9.splice(@9.length,0,...@C)}else ",
+     "&&Object.hasOwn(@1,@2)){let pkrK=@1[@2],pkrC=typeof pkrK===`object`&&pkrK?globalThis.__pkrMemo.get(pkrK):void 0;"
+     "if(pkrC)@8=pkrC[0],@9=pkrC[1];else{let @3=Object.keys(@1[@2]);for(let @4=0;@4<32;@4++)if(@4<@3.length){"
+     "let @5=Array.from(Object.values(@6(@3[@4]))),@7=Array.from(Object.values(@6(@1[@2][@3[@4]])));"
+     "@8.splice(@8.length,0,...@5.map(@A=>@A/255)),@9.splice(@9.length,0,...@7.map(@B=>@B/255))}"
+     "else @8.splice(@8.length,0,...@C),@9.splice(@9.length,0,...@C);"
+     "typeof pkrK===`object`&&pkrK&&globalThis.__pkrMemo.set(pkrK,[@8,@9])}}else ",
+     "@C=[0,0,0,0],@8=[],@9=[];"},
 };
 #define NFIX (int)(sizeof FIXES / sizeof FIXES[0])
 
@@ -46,16 +63,24 @@ static bool ident_char(char c) {
 }
 
 typedef struct {
-    const char *at[10];
-    size_t len[10];
+    const char *at[36];
+    size_t len[36];
 } caps;
+
+// "@1".."@9", "@A".."@Z": the capture's slot, else -1.
+static int slot(const char *p) {
+    if (p[0] != '@') return -1;
+    if (p[1] >= '1' && p[1] <= '9') return p[1] - '0';
+    if (p[1] >= 'A' && p[1] <= 'Z') return 10 + p[1] - 'A';
+    return -1;
+}
 
 // Matches pattern p at s (end e). Returns the length matched, or 0.
 static size_t match_at(const char *s, const char *e, const char *p, caps *c) {
     const char *s0 = s;
     while (*p) {
-        if (p[0] == '@' && p[1] >= '1' && p[1] <= '9') {
-            int k = p[1] - '0';
+        int k = slot(p);
+        if (k >= 0) {
             p += 2;
             if (c->at[k]) { // the same name again
                 if ((size_t)(e - s) < c->len[k] || memcmp(s, c->at[k], c->len[k]) || (s + c->len[k] < e && ident_char(s[c->len[k]])))
@@ -80,8 +105,9 @@ static size_t match_at(const char *s, const char *e, const char *p, caps *c) {
 // Appends template t with the captures filled in.
 static void expand(char *out, size_t *o, const char *t, const caps *c) {
     for (; *t; t++) {
-        if (t[0] == '@' && t[1] >= '1' && t[1] <= '9') {
-            int k = *++t - '0';
+        int k = slot(t);
+        if (k >= 0) {
+            t++;
             memcpy(out + *o, c->at[k], c->len[k]);
             *o += c->len[k];
         } else {
@@ -93,7 +119,8 @@ static void expand(char *out, size_t *o, const char *t, const caps *c) {
 static size_t expanded_len(const char *t, const caps *c) {
     size_t n = 0;
     for (; *t; t++) {
-        if (t[0] == '@' && t[1] >= '1' && t[1] <= '9') n += c->len[*++t - '0'];
+        int k = slot(t);
+        if (k >= 0) n += c->len[k], t++;
         else n++;
     }
     return n;
