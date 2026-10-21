@@ -847,7 +847,7 @@ FN(w_detachShader) { glDetachShader(oid(A(0)), oid(A(1))); return JS_UNDEFINED; 
 // writes to it are recorded, and a copy gets the changed values just before it draws.
 // /*pkr<NAME*/ CODE /*pkr|NEW*/ marks code worked out here once per draw instead of per pixel: every
 // copy has NEW in place of CODE (so a family with one always draws with a copy), and NEW reads a
-// uniform set from the recorded values (the day/night colour: day_night_tint).
+// uniform set from the recorded values (the day/night colour and its blend: day_night_tint).
 enum { VF_TERRAIN, VF_DAYNIGHT, VF_TERA, VF_VARIANTS, VF_FUSION, VF_SHADOW, VF_COUNT };
 static const char *const vf_names[VF_COUNT] = {"terrain", "daynight", "tera", "variants", "fusion", "shadow"};
 
@@ -868,9 +868,9 @@ typedef struct {
     bool failed;
     GLint *locs;       // per uniform, in this copy
     unsigned *synced;  // per uniform: the version the copy has
-    GLint tint_loc;    // pkr_dayNightTint, or -1
+    GLint tint_locs[3]; // pkr_dayNightTint, pkr_tintMul, pkr_tintAdd (-1: not in this copy)
     bool tint_set;
-    float tint[3];     // its value in this copy
+    float tint[9];      // their values in this copy
 } vcopy;
 typedef struct {
     GLuint vs, fs;
@@ -1064,8 +1064,9 @@ static unsigned family_off(vfamily *f) {
     return off;
 }
 
-// PokeRogue's day/night colour: its shaders' if-chain, the same tests in the same order.
-static void day_night_tint(vfamily *f, float out[3]) {
+// PokeRogue's day/night colour: its shaders' if-chain, the same tests in the same order. Then
+// out[3..8]: mul and add for its blendHardLight(c, tint) = c * mul + add (js/webgl.js).
+static void day_night_tint(vfamily *f, float out[9]) {
     const int *x = f->tint_idx;
     float time = vf_float(f, x[0], 0), v[4][3]; // override, day, dusk, night
     bool outside = vf_bool(f, x[1]);
@@ -1082,13 +1083,18 @@ static void day_night_tint(vfamily *f, float out[3]) {
     else if (!outside) a = night, b = day, t = (time - 0.75f) / 0.25f;
     else if (time < 0.875f) a = night, b = dusk, t = (time - 0.75f) / 0.125f;
     else a = dusk, b = day, t = (time - 0.875f) / 0.125f;
-    for (int k = 0; k < 3; k++) out[k] = a == b ? a[k] : a[k] * (1.0f - t) + b[k] * t; // GLSL's mix
+    for (int k = 0; k < 3; k++) {
+        float tk = out[k] = a == b ? a[k] : a[k] * (1.0f - t) + b[k] * t; // GLSL's mix
+        // blendOverlay(tk, c): tk < 0.5 ? 2 tk c : 1 - 2 (1 - tk)(1 - c)
+        out[3 + k] = tk < 0.5f ? 2.0f * tk : 2.0f * (1.0f - tk);
+        out[6 + k] = tk < 0.5f ? 0.0f : 1.0f - 2.0f * (1.0f - tk);
+    }
 }
 
 static void copy_build(GLuint root, vfamily *f, unsigned off, vcopy *c) {
     double t0 = host_now_ms();
     char *src = strdup(shader_src[f->fs]);
-    c->tint_loc = -1;
+    c->tint_locs[0] = c->tint_locs[1] = c->tint_locs[2] = -1;
     for (int b = 0; b < VF_COUNT; b++) {
         if (!(off & (1u << b))) continue;
         char open[32], close[32];
@@ -1142,7 +1148,8 @@ static void copy_build(GLuint root, vfamily *f, unsigned off, vcopy *c) {
     c->locs = malloc(f->nu * sizeof *c->locs);
     c->synced = calloc(f->nu, sizeof *c->synced);
     for (int i = 0; i < f->nu; i++) c->locs[i] = glGetUniformLocation(c->prog, f->u[i].name);
-    if (f->swaps) c->tint_loc = glGetUniformLocation(c->prog, "pkr_dayNightTint"); // -1 without day/night
+    static const char *const tint_names[3] = {"pkr_dayNightTint", "pkr_tintMul", "pkr_tintAdd"};
+    for (int k = 0; f->swaps && k < 3; k++) c->tint_locs[k] = glGetUniformLocation(c->prog, tint_names[k]); // -1 without day/night
     var_built++;
     host_log("[gl] shader variant: program %u %s%s (%.0f ms to build)", root, off ? "without " : "with every effect",
              names, host_now_ms() - t0);
@@ -1195,11 +1202,12 @@ static GLuint var_begin(void) {
     if (c->failed) return 0;
     glUseProgram(c->prog);
     copy_sync(f, c);
-    if (c->tint_loc != -1) {
-        float t[3];
+    if (c->tint_locs[0] != -1 || c->tint_locs[1] != -1) {
+        float t[9];
         day_night_tint(f, t);
         if (!c->tint_set || memcmp(t, c->tint, sizeof t)) {
-            glUniform3fv(c->tint_loc, 1, t);
+            for (int k = 0; k < 3; k++)
+                if (c->tint_locs[k] != -1) glUniform3fv(c->tint_locs[k], 1, t + 3 * k);
             memcpy(c->tint, t, sizeof t);
             c->tint_set = true;
         }

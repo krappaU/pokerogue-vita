@@ -143,18 +143,26 @@
     if (n) applied.push("colour loops (" + n + ")");
     // PokeRogue's day/night colour: an if-chain on settings only, so the same for every pixel of a
     // draw, but the GPU ran it for each (0.76's benchmark: day/night cost ~7 ms per full screen in
-    // both shaders). gl.c's copies get `dayNightTint = pkr_dayNightTint;` in its place and work the
-    // colour out once per draw. /*pkr<NAME*/ CODE /*pkr|NEW*/: the copies have NEW instead of CODE.
+    // both shaders). Its blend with the colour, blendHardLight(color, tint), is per channel
+    // tint < 0.5 ? 2 tint c : 1 - 2 (1 - tint)(1 - c), so c * mul + add with mul and add from the
+    // tint alone (0.77's benchmark: still ~3 ms per full screen as a blend). gl.c's copies have
+    // neither: they read pkr_tintMul and pkr_tintAdd, which gl.c works out once per draw.
+    // /*pkr<NAME*/ CODE /*pkr|NEW*/: the copies have NEW instead of CODE.
     const dn = !skip.has("day/night colour") && /vec3 dayNightTint;\s*(if \(any\(lessThan\(vec3\(0\.0\), overrideTint\)\)\) \{)/.exec(src);
     const mainAt = /void main\s*\(/.exec(src);
     if (dn && mainAt && mainAt.index < dn.index) {
       const at = dn.index + dn[0].length - dn[1].length;
       let end = blockEnd(src, at + dn[1].length - 1);
       for (let e; end > 0 && (e = /^\s*else\b/.exec(src.slice(end)));) end = blockEnd(src, src.indexOf("{", end + e[0].length));
+      const hl = end > 0 && !skip.has("hard light") &&
+        /color(?:\.rgb = blendHardLight\(color\.rgb, dayNightTint\)| = vec4\(blendHardLight\(color\.rgb, dayNightTint\), color\.a\));/.exec(src.slice(end));
       if (end > 0) {
-        src = src.slice(0, mainAt.index) + "/*pkr<tint*/ /*pkr|uniform vec3 pkr_dayNightTint;*/\n" + src.slice(mainAt.index, at) +
-          "/*pkr<tint*/ " + src.slice(at, end) + " /*pkr|dayNightTint = pkr_dayNightTint;*/" + src.slice(end);
-        applied.push("day/night colour per draw");
+        const swap = (code, to) => "/*pkr<tint*/ " + code + " /*pkr|" + to + "*/";
+        let tail = src.slice(end);
+        if (hl) tail = tail.slice(0, hl.index) + swap(hl[0], "color.rgb = color.rgb * pkr_tintMul + pkr_tintAdd;") + tail.slice(hl.index + hl[0].length);
+        src = src.slice(0, mainAt.index) + swap("", hl ? "uniform vec3 pkr_tintMul; uniform vec3 pkr_tintAdd;" : "uniform vec3 pkr_dayNightTint;") +
+          "\n" + src.slice(mainAt.index, at) + swap(src.slice(at, end), hl ? "" : "dayNightTint = pkr_dayNightTint;") + tail;
+        applied.push("day/night colour per draw" + (hl ? " (with its blend)" : ""));
       }
     }
     // Per-pixel test && setting: the setting first, on its own.

@@ -224,7 +224,7 @@ async function run() {
   };
   const marks = { "tint effect": /pkr_tintEffect = floor\(outTintEffect \+ 0\.5\)/, "colour loops (2)": /\[0\]\.a != 0\.0|\[0\]\[3\] != 0\.0/, tera: /if \(all\(lessThan\(vec3\(0\.0\), teraColor\)\)\) \{ if/,
     "day/night": /if \(!ignoreTimeTint\) \{ if/, terrain: /if \(terrainColorRatio > 0\.0 &&[^{]*\) \{ if/, "texture pick (4)": /vec4 pkr_t3 = /,
-    "day/night colour": /\/\*pkr\|dayNightTint = pkr_dayNightTint;\*\//, "shadow tests": /if \(spriteY >= 0\.9\) \{ if \(color\.a == 0\.0 \|\| yOverflow\)/ };
+    "day/night colour": /\/\*pkr\|color\.rgb = color\.rgb \* pkr_tintMul \+ pkr_tintAdd;\*\//, "shadow tests": /if \(spriteY >= 0\.9\) \{ if \(color\.a == 0\.0 \|\| yOverflow\)/ };
   for (const [name, [vsrc, fsrc, expected]] of Object.entries(shaders)) {
     let orig, fixed;
     try {

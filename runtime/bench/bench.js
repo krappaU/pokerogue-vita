@@ -116,6 +116,7 @@ const FIELD = [
   ["as shipped", null, false],
   ["rewritten + variants (shaderfix)", null, true],
   ["shaderfix + day/night colour per pixel (0.76)", null, true, ["day/night colour"]],
+  ["shaderfix + hard light per pixel (0.77)", null, true, ["hard light"]],
   ["shaderfix + one texture unit", ONE_TEXTURE, true],
   ["shaderfix + no day/night tint", NO_DAYNIGHT, true],
   ["one texture (no if-chain)", ONE_TEXTURE],
@@ -128,16 +129,13 @@ const FIELD = [
 const NO_LOOPS = remove(/for \(int i = 0; i < 32; i\+\+\)/);
 const NO_TERA = remove(/if \(color\.a > 0\.0 && all\(lessThan\(vec3\(0\.0\), teraColor\)\)\)/);
 const NO_SHADOW = remove(/if \(hasShadow\)/);
-const NO_DISCARD = replace(/discard;/, "color = vec4(0.0);");
 const NO_TONE = all(replace(/float luma = dot\(color\.rgb, lumaF\);/, ""), replace(/color\.rgb = mix\(color\.rgb, vec3\(luma\), tone\.w\);/, ""),
   replace(/color\.rgb \+= tone\.rgb \* \(color\.a \/ 255\.0\);/, ""));
 const SPRITE = [
   ["as shipped", null, false],
   ["rewritten + variants (shaderfix)", null, true],
-  ["shaderfix + day/night colour per pixel (0.76)", null, true, ["day/night colour"]],
-  ["shaderfix + shadow tests as shipped (0.76)", null, true, ["shadow tests"]],
+  ["shaderfix + hard light per pixel (0.77)", null, true, ["hard light"]],
   ["shaderfix as in 0.76", null, true, ["day/night colour", "shadow tests"]],
-  ["shaderfix + shadow without discard", NO_DISCARD, true],
   ["shaderfix + no shadow", NO_SHADOW, true],
   ["shaderfix + no day/night tint", NO_DAYNIGHT, true],
   ["no colour loops", NO_LOOPS],

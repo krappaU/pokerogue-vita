@@ -812,3 +812,17 @@ with a copy (one more precompiled copy of the field shader: 20 in all). The shad
 same pixels; whether the Vita's GPU then skips the rest is for the benchmark to show). The
 benchmark compares both with 0.76's code, and has rows for the field shader with one texture unit
 (the game's field draws are one sprite each, so always unit 0) and the shadow without `discard`.
+
+### Day/night once per draw: a third off both shaders (logs 100 and 102, 0.77, 2026-10-21; runtime 0.78)
+The benchmark (log100, ms per full screen, 0.77 against 0.76's code in the same run): field shader
+as drawn 7.7 against 11.7 (without day/night at all 4.8, with one texture unit 6.9); sprite shader
+11.1 against 17.0 (day/night per pixel alone 15.2, the shadow tests as shipped alone 12.9, without
+the shadow 7.9, without day/night 9.1). So the per-draw colour saved ~4 ms per full screen in each
+shader and the nested shadow tests ~1.8. Without `discard` the shadow was 0.2 ms cheaper: not worth
+changing what other blend modes would see. In the Ruins battle (log102, gpuprofile=1) the backdrop
+took 8.3 ms against 11.6 in 0.76; fps there isn't comparable (gpuprofile waits for every draw on the
+main thread). What day/night still costs, ~3 ms per full screen, is mostly its blend:
+blendHardLight(c, tint) per channel is tint < 0.5 ? 2 tint c : 1 - 2 (1 - tint)(1 - c), which
+is c * mul + add with mul and add from the tint alone. 0.78: the copies have that multiply-add
+(pkr_tintMul, pkr_tintAdd, worked out with the colour in gl.c). The pixels are within 1/255 of the
+original's (the multiply-add rounds differently; tests/shaders allows that for copies).
