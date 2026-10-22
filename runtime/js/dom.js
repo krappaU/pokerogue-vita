@@ -80,6 +80,7 @@
   const kebab = (s) => s.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase());
   function makeStyle(owner) {
     const props = {};
+    owner._styleProps = props; // read without the Proxy (js/input.js)
     const api = {
       setProperty(k, v) { props[camel(k)] = String(v); if (owner._styleChanged) owner._styleChanged(); },
       getPropertyValue(k) { return props[camel(k)] ?? ""; },

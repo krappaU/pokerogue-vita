@@ -162,8 +162,9 @@ async function run() {
     }
     const hex = (h) => ({ r: parseInt(h.slice(1, 3), 16), g: parseInt(h.slice(3, 5), 16), b: parseInt(h.slice(5, 7), 16), a: 255 });
     const cache = { pkmn_1: { 1: { "#102030": "#405060", "#a0b0c0": "#d0e0f0" } } };
+    let zeros = 0; // colour arrays handed over as the shared zeros (no copy)
     const calls = (fn, ...args) => {
-      const out = [], p = { set4fv: (n, v) => (out.push(n + "=" + v.join(",")), p), set4iv: (n, v) => (out.push(n + "=" + v.join(",")), p) };
+      const out = [], set = (n, v) => (v === globalThis.__pkrZero128 && zeros++, out.push(n + "=" + v.join(",")), p), p = { set4fv: set, set4iv: set };
       fn.apply(p, args);
       return out.join(" | ");
     };
@@ -172,19 +173,13 @@ async function run() {
     const batches = [{ pipelineData: {} }, { pipelineData: { shiny: true, spriteKey: "pkmn_1", variant: 1 } },
       { pipelineData: {}, parentContainer: new Pokemon(true, 1, "pkmn_1") }, { pipelineData: {}, parentContainer: new Pokemon(false, 1, "pkmn_1") },
       { pipelineData: { variant: 2 }, parentContainer: new Pokemon(true, 1, "pkmn_1") }];
-    let zeros = 0;
-    const flat = Array.prototype.flat;
-    Array.prototype.flat = function (...a) { if (this === globalThis.__pkrZero128) zeros++; return flat.apply(this, a); };
-    try {
-      for (const [m, w] of binds) eq(calls(fixed.bindColors, m, w), calls(plain.bindColors, m, w), "onBind " + JSON.stringify(m) + " " + w);
-      for (let pass = 0; pass < 2; pass++) // the second time, shiny colours come from gamefix's memo
-        for (const b of batches) eq(calls(fixed.batchColors, b, Pokemon, cache, hex), calls(plain.batchColors, b, Pokemon, cache, hex), "onBatch " + JSON.stringify(b));
-    } finally {
-      Array.prototype.flat = flat;
-    }
+    for (const [m, w] of binds) eq(calls(fixed.bindColors, m, w), calls(plain.bindColors, m, w), "onBind " + JSON.stringify(m) + " " + w);
+    for (let pass = 0; pass < 2; pass++) // the second time, shiny colours come from gamefix's memo
+      for (const b of batches) eq(calls(fixed.batchColors, b, Pokemon, cache, hex), calls(plain.batchColors, b, Pokemon, cache, hex), "onBatch " + JSON.stringify(b));
     if (!zeros) return "not rewritten (no [gamefix] line?)";
     if (!globalThis.__pkrMemo.has(cache.pkmn_1[1])) return "shiny colours not kept";
-    // FieldSpritePipeline.onBind: two binds in a frame, then the arena changes and a new frame binds.
+    // FieldSpritePipeline.onBind: binds of two sprites in a frame, then the arena changes and a new
+    // frame binds. The uniforms after each bind are the same; repeated binds make fewer calls.
     let outside = 1, terrain = 2, arenaCalls = 0;
     const B = { currentBattle: { waveIndex: 7 }, waveCycleOffset: 3, arena: {
       isOutside: () => (arenaCalls++, outside === 1), getDayTint: () => [128, 128, 128],
@@ -192,20 +187,23 @@ async function run() {
       get terrainType() { return terrain; } } };
     const over = () => [0, 0, 0], terrainColor = (t) => [[0, 0, 0], [232, 136, 200], [248, 248, 120]][t], now = () => 0.3;
     const fieldBinds = (fn, game) => {
-      const out = [], p = { game };
-      for (const k of ["set1f", "setBoolean", "set3fv"]) p[k] = (n, v) => (out.push(n + "=" + String(v)), p);
-      const sprite = { pipelineData: { terrainColorRatio: 0.5 } };
-      fn.call(p, sprite, B, over, terrainColor, now);
-      fn.call(p, { pipelineData: { ignoreTimeTint: true } }, B, over, terrainColor, now);
+      const states = [], u = {}, p = { game, currentShader: {} };
+      let n = 0;
+      for (const k of ["set1f", "setBoolean", "set3fv"]) p[k] = (name, v) => (n++, (u[name] = String(v)), p);
+      const sprite = { pipelineData: { terrainColorRatio: 0.5 } }, other = { pipelineData: { ignoreTimeTint: true } };
+      const bind = (o) => { fn.call(p, o, B, over, terrainColor, now); states.push(JSON.stringify(u)); };
+      bind(sprite), bind(sprite), bind(other), bind(sprite);
       game.loop.frame++, outside = 0, terrain = 1;
-      fn.call(p, sprite, B, over, terrainColor, now);
+      bind(sprite), bind(sprite);
       outside = 1, terrain = 2;
-      return out.join(" | ");
+      return { states: states.join(" | "), n };
     };
-    eq(fieldBinds(fixed.fieldBind, { loop: { frame: 5 } }), fieldBinds(plain.fieldBind, { loop: { frame: 5 } }), "field onBind");
+    const ff = fieldBinds(fixed.fieldBind, { loop: { frame: 5 } }), fp = fieldBinds(plain.fieldBind, { loop: { frame: 5 } });
+    eq(ff.states, fp.states, "field onBind");
+    if (!(ff.n < fp.n)) return "field onBind: repeated binds not skipped (" + ff.n + " uniform calls, " + fp.n + " plain)";
     arenaCalls = 0;
     fieldBinds(fixed.fieldBind, { loop: { frame: 9 } });
-    if (arenaCalls !== 2) return "arena tints not kept per frame (" + arenaCalls + " isOutside calls for 3 binds in 2 frames)";
+    if (arenaCalls !== 2) return "arena tints not kept per frame (" + arenaCalls + " isOutside calls for 6 binds in 2 frames)";
     // PokemonIconAnimHelper's loop: live icons move the same; destroyed ones (no scene) are dropped.
     const helper = () => {
       const live = { scene: {}, y: 0 }, dead = { scene: undefined, y: 0 }, live2 = { scene: {}, y: 0 };

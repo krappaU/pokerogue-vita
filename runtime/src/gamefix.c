@@ -13,9 +13,19 @@
 // 128 zeros (globalThis.__pkrZero128, js/core.js) instead of the loop. For a shiny sprite (onBatch)
 // the arrays come from the variant colour cache's entry, a JSON object the game replaces but never
 // changes (src/sprites/variant.ts), parsing 64 hex colours on the way: they are kept per entry
-// (globalThis.__pkrMemo, a WeakMap) and built once. The arrays are only ever read (flat()), so
-// sharing them is safe. On the Vita the pipeline's methods were ~37% of a battle frame's JS (0.78,
-// log108; a shiny Pokémon was on the field).
+// (globalThis.__pkrMemo, a WeakMap) and built once. The arrays are only ever read, so sharing them
+// is safe. On the Vita the pipeline's methods were ~37% of a battle frame's JS (0.78, log108; a
+// shiny Pokémon was on the field). Since 0.90 the arrays go to the uniform setters without the
+// flat() copy (they are flat already: numbers spread in by splice). Phaser skips a uniform write
+// when it gets the same array as last time, so the shared ones (zeros, a shiny's kept colours) are
+// uploaded once instead of four 128-value uploads per Pokémon sprite per frame.
+//
+// arena uniforms once per frame: after the tints above, FieldSpritePipeline.onBind still makes nine
+// uniform calls per sprite, most of them writing what the previous sprite wrote. A bind in the same
+// frame, on the same shader, with the same sprite values (ignoreTimeTint, terrainColorRatio, time)
+// as the pipeline's previous bind now returns before them: each would have found its uniform
+// already holding that value (Phaser compares) and done nothing. (0.89, log140: ~3% of a Temple
+// battle frame's JS in that method's own code.)
 //
 // party icons of destroyed slots dropped: PokemonIconAnimHelper (party screen) keeps every icon
 // added to it, and the party screen destroys its slots (clearPartySlots) without taking their icons
@@ -50,14 +60,16 @@ static const fix FIXES[] = {
      "else for(let @1=0;@1<32;@1++)@2.splice(@2.length,0,...@3),@4.splice(@4.length,0,...@3);"
      "this.set4fv(`baseVariantColors`,@2.flat()).set4fv(`variantColors`,@4.flat())",
      "else @2=@4=globalThis.__pkrZero128;"
-     "this.set4fv(`baseVariantColors`,@2.flat()).set4fv(`variantColors`,@4.flat())",
+     "this.set4fv(`baseVariantColors`,@2).set4fv(`variantColors`,@4)",
      "@3=[0,0,0,0],@2=[],@4=[];", "baseVariantColors", 0},
     {"sprite colours (no fusion)",
      "@1=[0,0,0,0],@2=[],@3=[];for(let @4=0;@4<32;@4++)@2.splice(@2.length,0,...@4<@5.length?@5[@4].map(@6=>@6/255):@1),"
-     "@3.splice(@3.length,0,...@4<@7.length?@7[@4]:@1);",
+     "@3.splice(@3.length,0,...@4<@7.length?@7[@4]:@1);"
+     "this.set4fv(`spriteColors`,@2.flat()).set4iv(`fusionSpriteColors`,@3.flat())",
      "@1=[0,0,0,0],@2=[],@3=[];if(@5.length===0&&@7.length===0)@2=@3=globalThis.__pkrZero128;"
      "else for(let @4=0;@4<32;@4++)@2.splice(@2.length,0,...@4<@5.length?@5[@4].map(@6=>@6/255):@1),"
-     "@3.splice(@3.length,0,...@4<@7.length?@7[@4]:@1);",
+     "@3.splice(@3.length,0,...@4<@7.length?@7[@4]:@1);"
+     "this.set4fv(`spriteColors`,@2).set4iv(`fusionSpriteColors`,@3)",
      NULL, "baseVariantColors", 0},
     {"shiny colours kept",
      "&&Object.hasOwn(@1,@2)){let @3=Object.keys(@1[@2]);for(let @4=0;@4<32;@4++)if(@4<@3.length){"
@@ -81,6 +93,15 @@ static const fix FIXES[] = {
      "tc:@7(@1.arena.terrainType).map(@8=>@8/255)})).o).set3fv(`overrideTint`,this.__pkrT.ot)"
      ".set3fv(`dayTint`,this.__pkrT.d).set3fv(`duskTint`,this.__pkrT.du).set3fv(`nightTint`,this.__pkrT.n)"
      ".set3fv(`terrainColor`,this.__pkrT.tc)",
+     NULL, "terrainColorRatio", 0},
+    {"arena uniforms once per frame",
+     "let @1=@2.pipelineData,@3=!!@1.ignoreTimeTint,@4=@1.terrainColorRatio??0,"
+     "@5=@6.currentBattle?.waveIndex?(@6.currentBattle.waveIndex+@6.waveCycleOffset)%40/40:@7();this.set1f(`time`,@5)",
+     "let @1=@2.pipelineData,@3=!!@1.ignoreTimeTint,@4=@1.terrainColorRatio??0,"
+     "@5=@6.currentBattle?.waveIndex?(@6.currentBattle.waveIndex+@6.waveCycleOffset)%40/40:@7(),"
+     "pkrS=this.__pkrS,pkrF=this.game.loop.frame;"
+     "if(pkrS&&pkrS.f===pkrF&&pkrS.s===this.currentShader&&pkrS.m===@3&&pkrS.v===@4&&pkrS.y===@5)return;"
+     "this.__pkrS={f:pkrF,s:this.currentShader,m:@3,v:@4,y:@5};this.set1f(`time`,@5)",
      NULL, "terrainColorRatio", 0},
     {"party icons of destroyed slots dropped",
      "for(let[@1,@2]of this.icons)@1.y=@2.restY+this.getCurrentOffset(@2.mode)",

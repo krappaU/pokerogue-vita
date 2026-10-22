@@ -206,7 +206,7 @@ static char *module_normalize(JSContext *ctx, const char *base, const char *name
 #define BYTECODE_SALT "pkr-bytecode-3" // -3: Phaser's chunk with its source (see bytecode_write_flags)
 // gamefix.c's rewrites are in the compiled code: a new set of them (or gamefix=0) must not find code
 // compiled with another. Bump with every change to its FIXES.
-#define GAMEFIX_SALT "gamefix-4"
+#define GAMEFIX_SALT "gamefix-5"
 #define BYTECODE_EXT ".qbc3"
 
 // Phaser's chunk keeps its source: js/fastpath.js installs each native fast path only after
@@ -735,11 +735,22 @@ static JSValue n_wait_writes(JSContext *ctx, JSValueConst this_val, int argc, JS
     return JS_UNDEFINED;
 }
 
+// The same array as the previous call while nothing changed (js/input.js then keeps its pad objects).
 static JSValue n_gamepads(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    static plat_gamepad last[4];
+    static char last_id[4][128]; // copies: the platform's name strings may go with their pad
+    static int last_n = -1;
+    static JSValue last_arr = JS_UNDEFINED;
     plat_gamepad pads[4];
     int n = plat_gamepads(pads, 4);
     if (osk_mutes_pad() || link_mutes_pad()) // the built-in keyboard or a shown link has the controls
         for (int i = 0; i < n; i++) memset(pads[i].axes, 0, sizeof pads[i].axes), memset(pads[i].buttons, 0, sizeof pads[i].buttons);
+    bool same = n == last_n && JS_IsObject(last_arr);
+    for (int i = 0; same && i < n; i++)
+        same = pads[i].connected == last[i].connected && !memcmp(pads[i].axes, last[i].axes, sizeof pads[i].axes) &&
+               !memcmp(pads[i].buttons, last[i].buttons, sizeof pads[i].buttons) &&
+               !strcmp(pads[i].id ? pads[i].id : "", last_id[i]);
+    if (same) return JS_DupValue(ctx, last_arr);
     JSValue arr = JS_NewArray(ctx);
     for (int i = 0; i < n; i++) {
         JSValue p = JS_NewObject(ctx);
@@ -751,6 +762,10 @@ static JSValue n_gamepads(JSContext *ctx, JSValueConst this_val, int argc, JSVal
         JS_SetPropertyStr(ctx, p, "buttons", buttons);
         JS_SetPropertyUint32(ctx, arr, i, p);
     }
+    for (int i = 0; i < n; i++) last[i] = pads[i], snprintf(last_id[i], sizeof last_id[i], "%s", pads[i].id ? pads[i].id : "");
+    last_n = n;
+    JS_FreeValue(ctx, last_arr);
+    last_arr = JS_DupValue(ctx, arr);
     return arr;
 }
 

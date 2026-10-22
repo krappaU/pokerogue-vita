@@ -7,8 +7,19 @@
   // ---------------------------------------------------------------- gamepads
   class GamepadButton { constructor(v) { this.value = v; this.pressed = v > 0.5; this.touched = this.pressed; } }
   const known = new Map(); // index -> Gamepad
+  // N.gamepads() returns the same array as last time while no button or stick changed: the pads
+  // (and their button objects) stay as they are, only their timestamp moves on. _pkrSeq counts the
+  // changes, for Phaser's Gamepad.update below.
+  let lastRaw = null, padSeq = 0;
   function pollPads() {
     const raw = N.gamepads();
+    if (raw === lastRaw) {
+      const now = g.performance.now();
+      for (const p of padSnapshot) if (p) p.timestamp = now;
+      return padSnapshot;
+    }
+    lastRaw = raw;
+    padSeq++;
     const out = [null, null, null, null];
     raw.forEach((p, i) => {
       let pad = known.get(i);
@@ -20,6 +31,7 @@
       pad.axes = p.axes.slice();
       pad.buttons = p.buttons.map((v) => new GamepadButton(v));
       pad.timestamp = g.performance.now();
+      pad._pkrSeq = padSeq;
       out[i] = pad;
       if (isNew) g.dispatchEvent(new GamepadEvent("gamepadconnected", { gamepad: pad }));
     });
@@ -108,6 +120,34 @@
     if (!DE || !DE.renderWebGL) return;
     const render = DE.renderWebGL;
     DE.renderWebGL = function (renderer, src) { if (src) src._pkrSeen = frameNo; return render.apply(this, arguments); };
+    // Phaser 3.90's DOMElement.preRender hides the element of a field whose container won't render,
+    // every frame: the game's ten login and registration fields, hidden all game long, wrote
+    // display = "none" through the style object (a Proxy) each frame. Writing it again when it is
+    // already "none" changes nothing, so that write is left out (the container check still runs).
+    if (/^function\s*\w*\(\)\s*\{\s*var (\w+)\s*=\s*this\.parentContainer,\s*(\w+)\s*=\s*this\.node;?\s*\2\s*&&\s*\1\s*&&\s*!\1\.willRender\(\)\s*&&\s*\(\2\.style\.display\s*=\s*[`"']none[`"']\);?\s*\}$/.test(String(DE.preRender))) {
+      const orig = DE.preRender;
+      DE.preRender = function () {
+        const c = this.parentContainer, node = this.node;
+        if (node && c && !c.willRender() && !(node._styleProps && node._styleProps.display === "none")) node.style.display = "none";
+      };
+      rt.domPreRenderSwap = [orig, DE.preRender]; // tests/phaser
+    } else N.log("[input] DOMElement.preRender is not Phaser 3.90's: left as it is");
+  });
+  // Phaser's Gamepad.update(pad) passes every button and axis value to its Button and Axis objects,
+  // every frame. With the same values as last time that changes nothing (a value is stored again;
+  // presses and releases are only emitted on a change), so a pad that hasn't changed since this
+  // Gamepad's last update is skipped.
+  rt.onPhaserLoaded.push((P) => {
+    const GP = P.Input && P.Input.Gamepad && P.Input.Gamepad.Gamepad && P.Input.Gamepad.Gamepad.prototype;
+    if (!GP || typeof GP.update !== "function") return;
+    const update = GP.update;
+    GP.update = function (pad) {
+      if (pad && pad === this._pkrPad && pad._pkrSeq === this._pkrSeq) return;
+      this._pkrPad = pad;
+      this._pkrSeq = pad && pad._pkrSeq;
+      return update.call(this, pad);
+    };
+    rt.gamepadSwap = [update, GP.update]; // tests/phaser
   });
   function drawField(fc, text, font, color, w, h) {
     const cv = fc.canvas;

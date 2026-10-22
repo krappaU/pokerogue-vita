@@ -972,3 +972,33 @@ shader benchmark as a mode (as `bench=shaders`) and the on/off options as toggle
 config.txt (gamefix, shaderfix, precompile, sample, hud, gpuprofile, plainshaders, nettrace). The
 log notes each switch (`[start] key=value`). `log=1` isn't there: debug builds always log.
 `audio=0` isn't either: sound starts before the start screen.
+
+### A Temple battle's JS (log140, 0.89, 2026-10-22; runtime 0.90)
+log140 (Temple, profiler on): 25-35 fps, JS 32 ms and GPU 22 ms per frame, so the JS sets the pace.
+Ten reports of the battle (35k samples): update 40% (tweens 16.5%, sprite animations 11.7%, timers
+12.3%), rendering 39% (PokeRogue's sprite pipelines 15.2%, Phaser's JS 12.2%, native 9.4%, text
+2.9%), frame events 10% (two fifths the game's button handling, the rest Phaser's per-frame
+listeners). The game's own work shows up as events (mode changes, messages, summons, move
+animations); the steady per-frame parts were looked at with a Temple copy of the saved battle on the
+desktop (.cache/session.json with arena.biome 29), timing each piece:
+- PokeRogue's sprite pipeline: per Pokémon sprite per frame, four 128-value colour arrays went to
+  set4fv/set4iv through `.flat()` (a copy of an array that is flat already), so Phaser's uniform
+  cache (it compares the array) never matched and all four were uploaded every time: ~13 of the
+  bind's ~18 us on the desktop. gamefix.c's colour rules now hand the arrays over as they are: the
+  shared zeros and a shiny Pokémon's kept colours are uploaded once.
+- FieldSpritePipeline.onBind: nine uniform calls per field sprite (5 per frame in this battle), most
+  writing what the previous sprite wrote. A new rule ("arena uniforms once per frame") returns early
+  when the frame, shader and the sprite's own values match the pipeline's previous bind (2 of 5 binds
+  in this battle).
+- Phaser's DOMElement.preRender: the game's ten login and registration fields, hidden all game,
+  each wrote `style.display = "none"` through the DOM shim's style Proxy every frame (~4% of the
+  desktop's samples). js/input.js leaves the write out when it is "none" already.
+- Gamepad: every frame the runtime built a new pad with 18 button objects and Phaser passed all 18
+  buttons and 4 axes to its Button/Axis objects (Gamepad.update: 1.9% of the Vita frame on its own).
+  The native layer now returns the same array while nothing changed, js/input.js keeps the same pad
+  objects, and Phaser's Gamepad.update is skipped for a pad unchanged since its last update (same
+  values give the same state and no events: tests/phaser compares a sequence with Phaser's own).
+Desktop, JS per frame without GL time (idle in the command menu / fighting, two runs each): 0.89
+1.59, 1.56 / 2.27, 2.21 ms; 0.90 1.46, 1.62 / 1.98, 2.09 ms. The desktop has no gamepad and a
+single battle with one Pokémon a side, so the Vita's numbers will say more.
+

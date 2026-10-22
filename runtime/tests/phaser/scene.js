@@ -199,6 +199,57 @@ async function run() {
     const out = (0, eval)(await (await fetch("probe_verify_emit.js")).text());
     report("probe_verify_emit.js", /^identical: /.test(out), out.slice(0, 200));
   }
+  // js/input.js: Gamepad.update skips a pad that hasn't changed since its last update. A sequence of
+  // pad states (changes and repeats) goes through Phaser's own update and the patched one.
+  {
+    const [orig, fast] = rt.gamepadSwap || [];
+    let detail = !orig ? "not installed" : "";
+    if (orig) {
+      const mk = () => {
+        const mgr = new Phaser.Events.EventEmitter(), log = [];
+        mgr.on("down", (pad, b, v) => log.push("down" + b.index + "=" + v)).on("up", (pad, b, v) => log.push("up" + b.index + "=" + v));
+        const pad0 = { id: "pad", index: 0, timestamp: 1e12, axes: [0, 0, 0, 0], buttons: Array.from({ length: 18 }, () => ({ value: 0 })) };
+        const gp = new Phaser.Input.Gamepad.Gamepad(mgr, pad0);
+        gp.on("down", (i, v) => log.push("pad-down" + i + "=" + v)).on("up", (i, v) => log.push("pad-up" + i + "=" + v));
+        return { gp, log };
+      };
+      const a = mk(), b = mk();
+      const pad = { id: "pad", index: 0, timestamp: 1e12, axes: [0, 0, 0, 0], buttons: [] };
+      const steps = [[0, 0, 0], [1, 1, 0], [1, 1, 0], [2, 1, 0.7], [2, 1, 0.7], [3, 0, -0.3], [3, 0, -0.3], [4, 0, 0]];
+      for (const [seq, b0, ax] of steps) {
+        pad._pkrSeq = seq, pad.timestamp += 16;
+        pad.buttons = Array.from({ length: 18 }, (_, i) => ({ value: i === 0 ? b0 : i === 13 ? 1 - b0 : 0 }));
+        pad.axes = [ax, 0, 0, -ax];
+        fast.call(a.gp, pad);
+        orig.call(b.gp, pad);
+        const st = (g) => g.buttons.map((x) => x.value + "/" + x.pressed).join() + " " + g.axes.map((x) => x.value).join() + " " + g.leftStick.x + "," + g.rightStick.y;
+        if (!detail && (st(a.gp) !== st(b.gp) || a.log.join() !== b.log.join())) detail = "step " + seq + ": " + st(a.gp) + " " + a.log.join() + " vs " + st(b.gp) + " " + b.log.join();
+      }
+      if (!detail && a.log.length < 4) detail = "too few events: " + a.log.join();
+    }
+    report("input: gamepad updates skipped while the pad is unchanged give Phaser's state and events", !detail, detail);
+  }
+  // js/input.js: DOMElement.preRender leaves out the display = "none" write when already "none".
+  {
+    const [orig, fast] = rt.domPreRenderSwap || [];
+    let detail = !orig ? "not installed" : "";
+    if (orig) {
+      const run = (fn) => {
+        const out = [];
+        for (const [shown, display] of [[true, ""], [false, ""], [false, "none"], [true, "none"], [false, "block"]]) {
+          const node = document.createElement("input");
+          if (display) node.style.display = display;
+          fn.call({ parentContainer: { willRender: () => shown }, node });
+          out.push(node.style.display + "|" + node.style.cssText);
+        }
+        fn.call({ parentContainer: null, node: document.createElement("input") });
+        return out.join(" ");
+      };
+      const x = run(fast), y = run(orig);
+      if (x !== y) detail = x + " vs " + y;
+    }
+    report("input: DOMElement.preRender's style write left out when it changes nothing", !detail, detail);
+  }
   for (const which of ["pipeline", "graphics", "nineslice", "shapes", "emit"]) {
     globalThis.__vfpWhich = which;
     await probe(game, "probe_verify_pipeline.js", "__vfp", which);
