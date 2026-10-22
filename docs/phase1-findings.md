@@ -1042,3 +1042,11 @@ data alone doesn't cause a collection every few frames). getImageData collects a
 when it runs out of memory. With live data growing ~30 MB an hour, collections come more often
 late in a long session; live data alone filling the heap stays possible after a few hours.
 
+### 0.93 on the console, and the release (log145, 0.93, 2026-10-22)
+log145, a new run (Town, Metropolis, Plains; profiler on): battles 33-45 fps (JS 21-30 ms, GPU
+19-25 ms per frame), the menus between them 21-22 fps (party icons' animations and button
+handling). All seven gamefix.c rewrites applied; no out-of-memory error. One unhandled rejection
+from the game's own code ("cannot read property 'play' of undefined" in Pokemon.playAnim after
+loadAssets: the Pokémon's sprite was already gone); the game carried on. Released as v0.93, the
+first release without "beta" (docs/releases/v0.93.md).
+
