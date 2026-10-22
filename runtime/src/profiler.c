@@ -10,7 +10,8 @@
 // (game JS, drawing, buffer swap / GPU wait, network...).
 //
 // Every 30 s (while sampling) the log gets the busiest functions (self time = the sample's innermost frame;
-// total = anywhere on the stack) and the main-loop split; <data>/profile.txt gets all stacks in
+// total = anywhere on the stack), the main-loop split, the groups (and for tweens, updates and frame
+// events, the game's own functions under them); <data>/profile.txt gets all stacks in
 // collapsed form (one "frame;frame;frame count" line each, for flame graph tools).
 
 #include <pthread.h>
@@ -279,6 +280,65 @@ static int group_of(const char *key) {
     return G_EVENTS;
 }
 
+// For the game-logic groups: the first frame of the game's own code (not Phaser's, native or ours)
+// below where the group starts (tweenStep for tweens, else Phaser's Game.step), e.g. a tween's
+// onUpdate callback. Returns its length at *f, or 0.
+static size_t game_frame(const char *key, int group, const char **f) {
+    const char *fr[64];
+    size_t fl[64];
+    int n = 0;
+    for (const char *p = key; n < 64;) {
+        const char *e = strchr(p, ';');
+        fr[n] = p, fl[n] = e ? (size_t)(e - p) : strlen(p), n++;
+        if (!e) break;
+        p = e + 1;
+    }
+    int i = 0;
+    if (group == G_TWEENS)
+        while (i < n && !frame_is(fr[i], fl[i], "tweenStep")) i++;
+    else
+        for (int k = 0; k < n; k++)
+            if (frame_is(fr[k], fl[k], "step")) i = k;
+    for (; i < n; i++)
+        if (!has(fr[i], fl[i], "@phaser:") && !has(fr[i], fl[i], "@native") && !frame_in_ours(fr[i], fl[i])) {
+            *f = fr[i];
+            return fl[i];
+        }
+    return 0;
+}
+
+// "[prof]   update: tweens: 40% onUpdate@loading-scene:17:2032, ..." for the groups of game logic.
+static void report_game_frames(int group, unsigned group_total) {
+    enum { SLOTS = 48 };
+    static struct { const char *f; size_t len; unsigned count; } t[SLOTS];
+    int nt = 0;
+    for (int i = 0; i < MAX_STACKS; i++) {
+        if (!stacks[i].key || group_of(stacks[i].key) != group) continue;
+        const char *f = NULL;
+        size_t len = game_frame(stacks[i].key, group, &f);
+        if (!len) f = "(Phaser's or native code only)", len = strlen(f);
+        int k = 0;
+        while (k < nt && !(t[k].len == len && !memcmp(t[k].f, f, len))) k++;
+        if (k == nt) {
+            if (nt == SLOTS) continue;
+            t[nt].f = f, t[nt].len = len, t[nt].count = 0, nt++;
+        }
+        t[k].count += stacks[i].count;
+    }
+    char line[600];
+    size_t ll = 0;
+    for (int shown = 0; shown < 5 && ll < sizeof line - 100; shown++) {
+        int best = -1;
+        for (int k = 0; k < nt; k++)
+            if (t[k].count && (best < 0 || t[k].count > t[best].count)) best = k;
+        if (best < 0) break;
+        ll += snprintf(line + ll, sizeof line - ll, "%s%.0f%% %.*s", ll ? ", " : "", 100.0 * t[best].count / group_total,
+                       (int)(t[best].len < 80 ? t[best].len : 80), t[best].f);
+        t[best].count = 0;
+    }
+    if (ll) host_log("[prof]   %s: %s", group_names[group], line);
+}
+
 static void report_groups(unsigned total) {
     unsigned g[G_COUNT] = {0};
     for (int i = 0; i < MAX_STACKS; i++)
@@ -290,6 +350,10 @@ static void report_groups(unsigned total) {
         if (g[k] * 200 >= total) // 0.5% and up
             ll += snprintf(line + ll, sizeof line - ll, "%s%s %.0f%%", ll ? ", " : "", group_names[k], 100.0 * g[k] / total);
     host_log("[prof] groups: %s", line);
+    // where the game logic's share goes (5% of the samples and up)
+    const int logic[] = {G_TWEENS, G_UPDATE, G_EVENTS};
+    for (int k = 0; k < 3; k++)
+        if (g[logic[k]] * 20 >= total) report_game_frames(logic[k], g[logic[k]]);
 }
 
 // <data>/profile.txt, written by a thread of its own: in small pieces to the memory card from the

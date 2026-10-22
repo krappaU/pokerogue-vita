@@ -887,3 +887,13 @@ and without it, and tests/smoke runs the game's onBind both ways over two frames
 isOutside calls instead of three per bind). Desktop battle: JS per frame ~1.95 -> ~1.55 ms
 (FieldSprite.onBind 25 -> 18 us, SpritePipeline.onBind 63 -> 49 us, onBatch 46 -> 31 us with fewer
 uniform writes per flush).
+
+### 0.82 on the console: tweens first, and the GPU in the Ruins (log114, 0.82, 2026-10-22; runtime 0.83)
+0.82: Forest battles 28-41 fps (JS 21-29 ms, GPU 18-28 ms per frame); the Ruins 27-32 fps in later
+waves, but 18-26 fps in one stretch where the GPU took 35-49 ms a frame (swap waits 4-10 ms): there
+the GPU, not the JS, sets the frame rate. In the JS, tweens are now the largest group (16-29%), and
+almost all of it under Phaser's Tween.update is `call` (callbacks), not the stepping; on the desktop a
+turn of the first battle shows tweens at 4-8% and only Phaser's own code. 0.83: the 30 s profile
+report adds, for tweens, other updates and frame events (each at 5% and up), the game's own functions
+under them (the first frame of the game's code below tweenStep or Game.step), so the next console log
+names the callbacks.
