@@ -11,7 +11,12 @@ phases, open items), `docs/development.md` (tooling and Vita gotchas) and the re
 Goal: parity with the online mode of Admiral-Billy's PokeRogue App. That means the live client with
 auto-updates, the same rendering, gamepad controls, online saves, and an on-screen keyboard for login
 (the app's own; the owner dropped the system keyboard, whose memory now goes to the GPU).
-Never fork or patch the game itself. Anything the game needs is provided by the runtime.
+Never fork the game. Anything the game needs is provided by the runtime. Exception (owner's decision,
+2026-10-22): for performance, the runtime may change pieces of the game's code that rarely change
+(`src/gamefix.c` rewrites exact pieces of the minified source as it is compiled; `js/lazy_ui.js`
+patches classes found by name), as long as an update to that code makes the change not apply
+rather than break, the game's results stay the same (check them both ways, as `tests/smoke` does),
+and `gamefix=0` in config.txt still gives the game as published.
 
 ## Where things are
 - `archive/phase0/`: the original feasibility benchmark (history only; its findings are in
