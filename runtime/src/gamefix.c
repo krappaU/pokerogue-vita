@@ -27,6 +27,18 @@
 // already holding that value (Phaser compares) and done nothing. (0.89, log140: ~3% of a Temple
 // battle frame's JS in that method's own code.)
 //
+// starter slots from one starter list: the starter select screen's setup (after every game reset:
+// a new run rebuilds the UI) creates its 81 slots with `getAllStarters()[i]`, and each call goes
+// through all ~1300 species to list the starters again: 4.7 s of an 11 s frame on the Vita (0.89,
+// log141). The list is now made once for the loop; nothing in it changes the species data.
+//
+// starter filters read once per filtering: StarterSelectUiHandler.filterStarters runs its filter over
+// every starter and reads the filter bar ten times per starter (getVals: the dropdown's options
+// filtered and mapped into a new array each time); ~0.65 of the 0.94 s each filter change took on
+// the Vita (log141). Within one filtering the filter bar doesn't change and the arrays are only read
+// (includes, some), so filterStarters now runs the original (as pkrFilterStarters) with getVals
+// remembering each result for that run, and puts getVals back afterwards.
+//
 // party icons of destroyed slots dropped: PokemonIconAnimHelper (party screen) keeps every icon
 // added to it, and the party screen destroys its slots (clearPartySlots) without taking their icons
 // out, so each opening adds the party's icons again; two endless tweens set the y of all of them
@@ -107,6 +119,17 @@ static const fix FIXES[] = {
      "for(let[@1,@2]of this.icons)@1.y=@2.restY+this.getCurrentOffset(@2.mode)",
      "for(let[@1,@2]of this.icons)@1.scene?@1.y=@2.restY+this.getCurrentOffset(@2.mode):this.icons.delete(@1)",
      NULL, "updateJumpIcons", 2},
+    {"starter slots from one starter list",
+     "for(let @1=0;@1<81;@1++){let @2=calcStarterContainerPosition(@1),@3=new StarterContainer(@4.getAllStarters()[@1])",
+     "for(let @1=0,pkrA=@4.getAllStarters();@1<81;@1++){let @2=calcStarterContainerPosition(@1),@3=new StarterContainer(pkrA[@1])",
+     NULL, "calcStarterContainerPosition", 0},
+    {"starter filters read once per filtering",
+     "filterStarters(){this.filteredStarterIds=@1.getAllStarters().filter(",
+     "filterStarters(){let pkrB=this.filterBar,pkrG=pkrB.getVals,pkrH=Object.hasOwn(pkrB,`getVals`),pkrM=new Map;"
+     "pkrB.getVals=function(pkrK){let pkrV=pkrM.get(pkrK);return pkrV===void 0&&pkrM.set(pkrK,pkrV=pkrG.call(this,pkrK)),pkrV};"
+     "try{return this.pkrFilterStarters()}finally{pkrH?pkrB.getVals=pkrG:delete pkrB.getVals}}"
+     "pkrFilterStarters(){this.filteredStarterIds=@1.getAllStarters().filter(",
+     NULL, "filteredStarterIds", 0},
 };
 #define NFIX (int)(sizeof FIXES / sizeof FIXES[0])
 
@@ -195,7 +218,7 @@ char *gamefix_source(const char *url, const char *src, size_t len, size_t *out_l
     char *cur = NULL;
     size_t cur_len = len;
     const char *in = src;
-    char applied[200] = "";
+    char applied[400] = "";
     for (int f = 0; f < NFIX; f++) {
         const fix *x = &FIXES[f];
         if (!has_marker[f]) continue;

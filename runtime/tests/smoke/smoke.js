@@ -217,6 +217,53 @@ async function run() {
     eq([hf.live.y, hf.live2.y].join(), [hp.live.y, hp.live2.y].join(), "icon positions");
     if (hf.h.icons.size !== 2 || hf.h.icons.has(hf.dead) || hp.h.icons.size !== 3) return "destroyed icon not dropped (" + hf.h.icons.size + ")";
   });
+  await check("gamefix: the starter select screen's slots and filters come out the same rewritten", async () => {
+    const fixed = await import("./assets/starter-Pk7rTst2.js"); // a chunk: src/gamefix.c rewrites it
+    const text = await (await fetch("./assets/starter-Pk7rTst2.js")).text();
+    const plain = new Function(text.replace(/export (function|class)/g, "$1") + "\nreturn { useRegistry, makeSlots, StarterSelect };")();
+    const species = Array.from({ length: 120 }, (_, i) => ({ id: i + 1, generation: 1 + (i % 9), types: [i % 18, (i * 7) % 18], favorite: i % 5 === 0 }));
+    const registry = () => {
+      const r = { calls: 0, getAllStarters() { r.calls++; return species.filter((s) => s.id % 3 !== 0).map((s) => s.id); },
+        getSpecies: (id) => { const s = species[id - 1]; return { generation: s.generation, favorite: s.favorite, isOfType: (t) => s.types.includes(t) }; } };
+      return r;
+    };
+    // the slots
+    const slots = (mod) => {
+      const r = registry();
+      mod.useRegistry(r);
+      class StarterContainer { constructor(id) { this.id = id; } }
+      const out = mod.makeSlots((i) => ({ x: i % 9, y: Math.floor(i / 9) }), StarterContainer).map(([p, c]) => p.x + "," + p.y + ":" + c.id).join(" ");
+      return { out, calls: r.calls };
+    };
+    const sf = slots(fixed), sp = slots(plain);
+    eq(sf.out, sp.out, "starter slots");
+    if (sf.calls !== 1) return "starter slots: getAllStarters called " + sf.calls + " times (plain " + sp.calls + ")";
+    // the filters: a filter bar whose answer changes between filterings
+    class FilterBar {
+      constructor() { this.gens = [1, 2, 3, 5]; this.types = [2, 5, 9, 12]; this.fav = 0; this.calls = 0; }
+      getVals(k) {
+        this.calls++;
+        if (k === 0) return this.gens.slice();
+        if (k === 1) return this.types.map((t) => t + 1);
+        return [{ val: "FAVORITE", state: this.fav }, { val: "WIN", state: 1 }];
+      }
+    }
+    const filters = (mod) => {
+      const r = registry();
+      mod.useRegistry(r);
+      const fb = new FilterBar(), ui = new mod.StarterSelect(fb), out = [];
+      for (const [gens, fav] of [[[1, 2, 3, 5], 0], [[4, 6], 2], [[1, 2, 3, 4, 5, 6, 7, 8, 9], 1]]) {
+        fb.gens = gens, fb.fav = fav;
+        ui.filterStarters();
+        out.push(ui.filteredStarterIds.join(","));
+      }
+      return { out: out.join(" | "), calls: fb.calls, own: Object.hasOwn(fb, "getVals") };
+    };
+    const ff = filters(fixed), fp = filters(plain);
+    eq(ff.out, fp.out, "filtered starters");
+    if (ff.calls !== 9) return "starter filters: getVals called " + ff.calls + " times for 3 filterings (plain " + fp.calls + ")";
+    if (ff.own) return "starter filters: getVals not put back";
+  });
   await check("net: Blob, object URLs and FileReader", async () => {
     const blob = new Blob(["abc", new Uint8Array([100, 101])], { type: "text/plain" });
     eq(blob.size, 5, "size");

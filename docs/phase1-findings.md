@@ -1012,3 +1012,17 @@ login form's submit through it. 0.90's CI desktop job failed (a static JSValue i
 desktop compiler rejects). Locally build_linux.sh had hidden it (its check found the previous
 binary); it now fails on a compile error. 0.90 was never published as a dev build.
 
+### A 38-minute session, and starter select (log141, 0.89, 2026-10-22; runtime 0.92)
+log141: Town, then Temple battles at 27-30 fps (JS 33-42 ms, GPU 19-24 ms per frame, as log140),
+four game resets (new runs, 7.6 s each) and, from t=1800 s, the starter select screen at 17-20 fps
+(JS 50-57 ms, GPU 24-37 ms, up to 50 draw calls: the grid of icons). Two of the game's own costs
+there, both now rewritten by gamefix.c (same results; tests/smoke compares them):
+- Opening starter select after a reset took one 11 s frame: the screen's setup (run again after
+  every reset, which rebuilds the UI) called getAllStarters() once per slot, 81 times, each a walk
+  over all species: 4.7 s. Garbage collection was 2.4 s of the rest.
+- Each filter change (toggling a generation, type...) took 0.94 s: filterStarters read the filter
+  bar ten times per starter; ~70% of the frame went to those reads.
+A reset also leaves about six endless tweens running (the icon helpers of the old party and starter
+screens, a blinking text): measured on the desktop, 8 tweens before a reset and 14 after. They step
+every frame but their work is small (the old icons are dropped since 0.86).
+
