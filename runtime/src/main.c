@@ -774,7 +774,10 @@ static void save_screenshot(const char *path) {
 //   shaderfix=0                     the game's shaders as they are, without js/webgl.js's rewrites (to compare)
 //   precompile=0                    shader variants built only when first drawn, not ahead (to compare)
 //   bench=shaders                   dev builds: the shader benchmark (bench/) instead of the game; its log
-//                                   goes to the log server by itself, marked "shader benchmark"
+//                                   goes to the log server by itself, marked "shader benchmark" (also a
+//                                   mode of the start screen)
+// Debug builds' start screen switches gamefix, shaderfix, precompile, sample, hud, gpuprofile,
+// plainshaders and nettrace, writing them here.
 // Dev builds only (devtools.c):
 //   devserver=https://host/         log server for log upload (tools/devserver), devkey=<its key>
 //   devbuilds=off|<url>             test builds: off, or another build.json than the dev-build release
@@ -816,6 +819,59 @@ void host_frame_drawn(void) {
 static void launcher_poll(bool *quit) {
     control_poll(NULL, quit);
     frame_no++;
+}
+
+#ifdef PKR_DEBUG
+// The shader benchmark page (bench/; the dev build carries it), run instead of the game.
+static const char *bench_dir(void) {
+    static char dir[600];
+#ifdef __vita__
+    snprintf(dir, sizeof dir, "app0:bench");
+#else
+    snprintf(dir, sizeof dir, "%s/../bench", g_cfg.js_dir);
+#endif
+    return dir;
+}
+static bool bench_available(void) {
+    char probe[700];
+    snprintf(probe, sizeof probe, "%s/index.html", bench_dir());
+    FILE *f = fopen(probe, "rb");
+    if (f) fclose(f);
+    return f != NULL;
+}
+static void bench_mode(void) {
+    g_cfg.local_dir = bench_dir();
+    g_cfg.base_url = LOCAL_ORIGIN "/";
+}
+#endif
+
+// Sets key=value in config.txt (the start screen's toggles), keeping every other line.
+void config_set(const char *key, const char *value) {
+    char path[512], tmp[520], line[1100];
+    snprintf(path, sizeof path, "%s/config.txt", g_cfg.data_dir);
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    FILE *in = fopen(path, "r"), *out = fopen(tmp, "w");
+    if (!out) {
+        if (in) fclose(in);
+        return;
+    }
+    size_t kl = strlen(key);
+    bool done = false;
+    while (in && fgets(line, sizeof line, in)) {
+        if (!strncmp(line, key, kl) && line[kl] == '=') {
+            if (done) continue;
+            fprintf(out, "%s=%s\n", key, value);
+            done = true;
+        } else {
+            fputs(line, out);
+            if (!strchr(line, '\n')) fputc('\n', out);
+        }
+    }
+    if (!done) fprintf(out, "%s=%s\n", key, value);
+    if (in) fclose(in);
+    bool ok = fclose(out) == 0;
+    remove(path);
+    if (ok) rename(tmp, path);
 }
 
 static void load_config_file(void) {
@@ -865,15 +921,7 @@ static void load_config_file(void) {
             g_cfg.no_precompile = atoi(v) == 0;
 #ifdef PKR_DEV
         } else if (!strcmp(k, "bench") && !strcmp(v, "shaders")) {
-            // The shader benchmark page the dev build carries (bench/), run instead of the game.
-            static char dir[600];
-#ifdef __vita__
-            snprintf(dir, sizeof dir, "app0:bench");
-#else
-            snprintf(dir, sizeof dir, "%s/../bench", g_cfg.js_dir);
-#endif
-            g_cfg.local_dir = dir;
-            g_cfg.base_url = LOCAL_ORIGIN "/";
+            bench_mode();
 #endif
         } else if (!strcmp(k, "profile")) {
             g_cfg.no_profile = atoi(v) == 0;
@@ -1001,9 +1049,20 @@ int main(int argc, char **argv) {
         g_cfg.base_url = LOCAL_ORIGIN "/";
     }
     while (!g_cfg.local_dir && !g_cfg.force_online && strcmp(again, "online")) {
-        int choice = launcher_run(have_offline, offline_version, launcher_poll);
+#ifdef PKR_DEBUG
+        bool bench_ok = bench_available();
+#else
+        bool bench_ok = false;
+#endif
+        int choice = launcher_run(have_offline, offline_version, bench_ok, launcher_poll);
         if (choice < 0) return 0;
         if (choice == 0) break;
+#ifdef PKR_DEBUG
+        if (choice == 4) {
+            bench_mode();
+            break;
+        }
+#endif
         if (choice == 2 || choice == 3) { // download, or update to a newer release
             offline_install();
             have_offline = offline_installed();

@@ -226,7 +226,8 @@ void overlay_image_draw(const uint8_t *rgba, int w, int h, bool changed, int *ox
 void overlay_rgba_at(int slot, const uint8_t *rgba, int w, int h, bool changed, float x, float y, float dw, float dh);
 void gl_game_to_screen(float gx, float gy, float *sx, float *sy, float *scale);
 void host_frame_drawn(void); // screenshots from screens outside the game loop
-int launcher_run(bool offline_ok, const char *offline_version, void (*poll)(bool *quit)); // 0 online, 1 offline, -1 quit
+int launcher_run(bool offline_ok, const char *offline_version, bool bench_ok, void (*poll)(bool *quit)); // 0 online, 1 offline, 4 benchmark, -1 quit
+void config_set(const char *key, const char *value); // key=value in config.txt (main.c)
 bool fields_draw(void); // the game's text input fields (js/input.js -> __native.setFieldOverlays)
 void fields_set(int n);
 bool fields_draw_pending(void);

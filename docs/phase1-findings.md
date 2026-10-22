@@ -965,3 +965,10 @@ with the variant colours, and the GPU runs its 32 steps for every pixel of the q
 ones included (most of a sprite's quad, and all of the shadow strip below it). 0.88: the loops only
 run for texels that aren't transparent (the match needs texture.a > 0, so the pixels are the same).
 The benchmark gets rows with a 12-colour shiny palette, with and without that test.
+
+### Debug options on the start screen (owner's request, 2026-10-22; runtime 0.89)
+Editing config.txt on the console for each test was slow. Debug builds' start screen now lists the
+shader benchmark as a mode (as `bench=shaders`) and the on/off options as toggles written back to
+config.txt (gamefix, shaderfix, precompile, sample, hud, gpuprofile, plainshaders, nettrace). The
+log notes each switch (`[start] key=value`). `log=1` isn't there: debug builds always log.
+`audio=0` isn't either: sound starts before the start screen.

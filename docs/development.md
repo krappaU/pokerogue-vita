@@ -260,7 +260,14 @@ without a copy.
   is the median GPU time of 12 full-screen draws, each waited for alone (the "empty" line is that
   wait's own cost). The variants are for measuring only. When it's done the log goes to the log
   server by itself, as kind `bench` ("benchmark" in the list) with "| shader benchmark" after the
-  build. Remove the line to play again.
+  build. Remove the line to play again. Since 0.89 it is also a mode of the start screen
+  ("Shader benchmark", shown when the build carries `bench/`), next to online and offline.
+- Start screen of debug builds (dev and profiling builds, the desktop; 0.89): below the modes,
+  toggles for config.txt's on/off options (gamefix, shaderfix, precompile, sample, hud,
+  gpuprofile, plainshaders, nettrace). D-pad (left/right between the two columns) and cross, or
+  touch; a switch is written to config.txt at once (other lines are kept) and applies to the run
+  that starts next, since all of them are read after the start screen. Player builds show only
+  the modes.
 
 ## Memory: texture eviction
 Phaser never frees textures. When GPU texture memory exceeds 64 MB, image-backed textures not drawn
