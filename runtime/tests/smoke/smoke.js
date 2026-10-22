@@ -155,7 +155,7 @@ async function run() {
   await check("gamefix: the sprite pipeline's palette code gives the same colours rewritten", async () => {
     const fixed = await import("./assets/sprite-Pk7rTst1.js"); // a chunk: src/gamefix.c rewrites it
     const text = await (await fetch("./assets/sprite-Pk7rTst1.js")).text();
-    const plain = new Function(text.replace(/export function/g, "function") + "\nreturn { bindColors, batchColors };")();
+    const plain = new Function(text.replace(/export function/g, "function") + "\nreturn { bindColors, batchColors, fieldBind };")();
     class Pokemon {
       constructor(shiny, variant, key) { this.shiny = shiny, this.variant = variant, this.key = key; }
       getSprite() { return { texture: { key: this.key } }; }
@@ -184,6 +184,28 @@ async function run() {
     }
     if (!zeros) return "not rewritten (no [gamefix] line?)";
     if (!globalThis.__pkrMemo.has(cache.pkmn_1[1])) return "shiny colours not kept";
+    // FieldSpritePipeline.onBind: two binds in a frame, then the arena changes and a new frame binds.
+    let outside = 1, terrain = 2, arenaCalls = 0;
+    const B = { currentBattle: { waveIndex: 7 }, waveCycleOffset: 3, arena: {
+      isOutside: () => (arenaCalls++, outside === 1), getDayTint: () => [128, 128, 128],
+      getDuskTint: () => (outside ? [113, 88, 101] : [0, 0, 0]), getNightTint: () => (outside ? [48, 48, 98] : [64, 64, 64]),
+      get terrainType() { return terrain; } } };
+    const over = () => [0, 0, 0], terrainColor = (t) => [[0, 0, 0], [232, 136, 200], [248, 248, 120]][t], now = () => 0.3;
+    const fieldBinds = (fn, game) => {
+      const out = [], p = { game };
+      for (const k of ["set1f", "setBoolean", "set3fv"]) p[k] = (n, v) => (out.push(n + "=" + String(v)), p);
+      const sprite = { pipelineData: { terrainColorRatio: 0.5 } };
+      fn.call(p, sprite, B, over, terrainColor, now);
+      fn.call(p, { pipelineData: { ignoreTimeTint: true } }, B, over, terrainColor, now);
+      game.loop.frame++, outside = 0, terrain = 1;
+      fn.call(p, sprite, B, over, terrainColor, now);
+      outside = 1, terrain = 2;
+      return out.join(" | ");
+    };
+    eq(fieldBinds(fixed.fieldBind, { loop: { frame: 5 } }), fieldBinds(plain.fieldBind, { loop: { frame: 5 } }), "field onBind");
+    arenaCalls = 0;
+    fieldBinds(fixed.fieldBind, { loop: { frame: 9 } });
+    if (arenaCalls !== 2) return "arena tints not kept per frame (" + arenaCalls + " isOutside calls for 3 binds in 2 frames)";
   });
   await check("net: Blob, object URLs and FileReader", async () => {
     const blob = new Blob(["abc", new Uint8Array([100, 101])], { type: "text/plain" });

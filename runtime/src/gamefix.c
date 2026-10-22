@@ -16,6 +16,14 @@
 // (globalThis.__pkrMemo, a WeakMap) and built once. The arrays are only ever read (flat()), so
 // sharing them is safe. On the Vita the pipeline's methods were ~37% of a battle frame's JS (0.78,
 // log108; a shiny Pokémon was on the field).
+//
+// arena tints per frame: FieldSpritePipeline.onBind (every field and Pokémon sprite) works out the
+// arena's day, dusk, night, override and terrain colours (five new arrays, `isOutside` three times)
+// for each sprite, though they only change between frames (game logic runs in Phaser's update, the
+// binds in its render). They are kept on the pipeline for the frame (game.loop.frame), computed in
+// the same order; the same arrays passed again also let Phaser skip the repeated uniform writes
+// (its WebGLShader compares the value with the last one). 0.81's battle frames (log111): ~12% of
+// the frame's JS in that method, isOutside and map.
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -55,6 +63,17 @@ static const fix FIXES[] = {
      "else @8.splice(@8.length,0,...@C),@9.splice(@9.length,0,...@C);"
      "typeof pkrK===`object`&&pkrK&&globalThis.__pkrMemo.set(pkrK,[@8,@9])}}else ",
      "@C=[0,0,0,0],@8=[],@9=[];"},
+    {"arena tints per frame",
+     ".setBoolean(`isOutside`,@1.arena.isOutside()).set3fv(`overrideTint`,@2().map(@3=>@3/255))"
+     ".set3fv(`dayTint`,@1.arena.getDayTint().map(@4=>@4/255)).set3fv(`duskTint`,@1.arena.getDuskTint().map(@5=>@5/255))"
+     ".set3fv(`nightTint`,@1.arena.getNightTint().map(@6=>@6/255)).set3fv(`terrainColor`,@7(@1.arena.terrainType).map(@8=>@8/255))",
+     ".setBoolean(`isOutside`,(this.__pkrT&&this.__pkrT.f===this.game.loop.frame?this.__pkrT:(this.__pkrT={f:this.game.loop.frame,"
+     "o:@1.arena.isOutside(),ot:@2().map(@3=>@3/255),d:@1.arena.getDayTint().map(@4=>@4/255),"
+     "du:@1.arena.getDuskTint().map(@5=>@5/255),n:@1.arena.getNightTint().map(@6=>@6/255),"
+     "tc:@7(@1.arena.terrainType).map(@8=>@8/255)})).o).set3fv(`overrideTint`,this.__pkrT.ot)"
+     ".set3fv(`dayTint`,this.__pkrT.d).set3fv(`duskTint`,this.__pkrT.du).set3fv(`nightTint`,this.__pkrT.n)"
+     ".set3fv(`terrainColor`,this.__pkrT.tc)",
+     NULL},
 };
 #define NFIX (int)(sizeof FIXES / sizeof FIXES[0])
 

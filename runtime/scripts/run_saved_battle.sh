@@ -52,6 +52,10 @@ while true; do
     case $m in
         2) echo "in the command menu after $((SECONDS - start)) s"; exit 0 ;;
         1|0) scripts/drive.sh "key Space" "sleep 3" ;;
+        # (the offline build of 2026-10) a saved run with the "switch Pokémon?" setting asks at the
+        # start: yes opens the party screen (8), whose cancel leads to the command menu
+        14) scripts/drive.sh "key Space" "sleep 3" ;;
+        8) scripts/drive.sh "key Backspace" "sleep 3" ;;
         *) sleep 3 ;;  # still loading (none), a transition, or a long frame
     esac
     if (( SECONDS - start > 300 )); then echo "no command menu after 300 s (last mode $m)" >&2; exit 1; fi

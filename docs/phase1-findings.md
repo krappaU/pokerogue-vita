@@ -873,3 +873,17 @@ tinted, letter-spaced, drop shadow, rotated, in a container, and one long enough
 in both passes; pixel rounding on). It found one difference on the way: the native rounding gave +0
 where Math.round gives -0 (-0.5 <= x < 0); fastpath.c now has QuickJS's Math.round (js_round),
 also used for NineSlice vertices.
+
+### 0.81 on the console, and the arena tints once per frame (log111, 0.81, 2026-10-22; runtime 0.82)
+0.81 in the same Ruins battles as log108: 27-32 fps (17-22 in 0.78), JS per frame 25-33 ms at the
+median (41-51). The battle reports now put the sprite pipelines at 16-26% (FieldSpritePipeline.onBind
+with `isOutside` and `map` ~12%), tweens 13-18% and the game's frame listeners 8-14% (one report 30%:
+the game's own button handlers, run from Phaser's gamepad button events). FieldSpritePipeline.onBind
+works out the arena's five colours (new arrays, isOutside three times) for every sprite, though they
+only change between frames; src/gamefix.c's fourth rewrite keeps them on the pipeline for the frame
+(game.loop.frame), so the same arrays also let Phaser's WebGLShader skip the repeated uniform writes.
+Checked: the uniform state at every field and Pokémon draw of three frozen frames is the same with
+and without it, and tests/smoke runs the game's onBind both ways over two frames (same calls, two
+isOutside calls instead of three per bind). Desktop battle: JS per frame ~1.95 -> ~1.55 ms
+(FieldSprite.onBind 25 -> 18 us, SpritePipeline.onBind 63 -> 49 us, onBatch 46 -> 31 us with fewer
+uniform writes per flush).
