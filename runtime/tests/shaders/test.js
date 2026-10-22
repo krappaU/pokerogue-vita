@@ -219,11 +219,11 @@ async function run() {
   const spriteVert = await text("sprite-shader.vert");
   const shaders = {
     sprite: [spriteVert, parse(await text("sprite-frag-shader.frag")), ["tint effect", "colour loops (2)", "tera", "day/night", "day/night colour", "shadow tests"]],
-    field: [spriteVert, parse(await text("field-sprite-frag-shader.frag")), ["tint effect", "texture pick (4)", "day/night", "day/night colour", "terrain"]],
+    field: [spriteVert, parse(await text("field-sprite-frag-shader.frag")), ["tint effect", "texture pick (4)", "day/night", "day/night colour", "terrain", "transparent early"]],
     multi: [await phaserShader("PHASER_MULTI_VS"), parse(await phaserShader("PHASER_MULTI_FS")), ["tint effect", "texture pick (4)"]],
   };
   const marks = { "tint effect": /pkr_tintEffect = floor\(outTintEffect \+ 0\.5\)/, "colour loops (2)": /\[0\]\.a != 0\.0|\[0\]\[3\] != 0\.0/, tera: /if \(all\(lessThan\(vec3\(0\.0\), teraColor\)\)\) \{ if/,
-    "day/night": /if \(!ignoreTimeTint\) \{ if/, terrain: /if \(terrainColorRatio > 0\.0 &&[^{]*\) \{ if/, "texture pick (4)": /vec4 pkr_t3 = /,
+    "day/night": /if \(!ignoreTimeTint\) \{ if/, terrain: /if \(terrainColorRatio > 0\.0 &&[^{]*\) \{ if/, "texture pick (4)": /vec4 pkr_t3 = /, "transparent early": /if \(pkr_texture\.a == 0\.0 && pkr_tintEffect == 0\.0\) \{ gl_FragColor = color; return; \}/,
     "day/night colour": /\/\*pkr\|color\.rgb = color\.rgb \* pkr_tintMul \+ pkr_tintAdd;\*\//, "shadow tests": /if \(spriteY >= 0\.9\) \{ if \(color\.a == 0\.0 \|\| yOverflow\)/ };
   for (const [name, [vsrc, fsrc, expected]] of Object.entries(shaders)) {
     let orig, fixed;

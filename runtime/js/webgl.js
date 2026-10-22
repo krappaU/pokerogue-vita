@@ -165,6 +165,18 @@
         applied.push("day/night colour per draw" + (hl ? " (with its blend)" : ""));
       }
     }
+    // PokeRogue's field shader draws the arena's bases (two 1920x792 images, 73% of the screen each,
+    // mostly transparent) and the backdrop: for a transparent texel without a fill tint, everything
+    // after `color = texture * texel` leaves color as it is (the tint effects need effect 1 or 2,
+    // day/night and terrain color.a > 0), so it can end right there. Not the sprite shader: its
+    // shadow is drawn on transparent pixels.
+    if (!skip.has("transparent early") && /terrainColor/.test(src) && !/hasShadow/.test(src) && /pkr_tintEffect = floor/.test(src)) {
+      const re = /vec4 color = pkr_texture \* texel;/;
+      if (re.test(src)) {
+        src = src.replace(re, "vec4 color = pkr_texture * texel; if (pkr_texture.a == 0.0 && pkr_tintEffect == 0.0) { gl_FragColor = color; return; }");
+        applied.push("transparent early");
+      }
+    }
     // Per-pixel test && setting: the setting first, on its own.
     const splits = [
       [/if \(color\.a > 0\.0 && (all\(lessThan\(vec3\(0\.0\), teraColor\)\))\) \{/g, (m) => [m[1], "color.a > 0.0"], "tera", "tera"],

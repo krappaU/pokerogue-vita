@@ -117,6 +117,7 @@ const FIELD = [
   ["rewritten + variants (shaderfix)", null, true],
   ["shaderfix + day/night colour per pixel (0.76)", null, true, ["day/night colour"]],
   ["shaderfix + hard light per pixel (0.77)", null, true, ["hard light"]],
+  ["shaderfix + no transparent early exit (0.83)", null, true, ["transparent early"]],
   ["shaderfix + one texture unit", ONE_TEXTURE, true],
   ["shaderfix + no day/night tint", NO_DAYNIGHT, true],
   ["one texture (no if-chain)", ONE_TEXTURE],

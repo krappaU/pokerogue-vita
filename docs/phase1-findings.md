@@ -897,3 +897,17 @@ turn of the first battle shows tweens at 4-8% and only Phaser's own code. 0.83: 
 report adds, for tweens, other updates and frame events (each at 5% and up), the game's own functions
 under them (the first frame of the game's code below tweenStep or Game.step), so the next console log
 names the callbacks.
+
+### 0.83's logs: where the game logic goes, and transparent arena bases (logs 117-119, 0.83, 2026-10-22; runtime 0.84)
+The new report lines (log118): under tweens, 51-83% is Phaser's own stepping and the rest the game's
+callbacks (battle animation onRepeat/onComplete, UI onUpdate); under frame events, the game's
+gamepadButtonDown handler, which in one menu (remembering a move: every cursor move recomputes the
+learnable level moves through the pre-evolutions, ~0.5 s per press) was 43% of the JS. The GPU profile
+(log119, Forest): the field shader ~14.5 ms a frame in 3 draws, and one Pokémon-shader draw of 9-11 ms
+in many frames, the cost of a whole screen of that shader (not seen on the desktop, where the Pokémon
+quads are 2-4% of the screen; maybe a move animation's backdrop). On the desktop the arena's two
+bases are 1920x792 images, 73% of the screen each and mostly transparent, drawn with the field shader
+like the backdrop: about 2.5 screens of it per frame. 0.84: for a transparent texel without a fill
+tint the field shader ends right after `color = texture * texel` (the rest leaves color as it is:
+the tint effects need effect 1 or 2, day/night and terrain need color.a > 0); tests/shaders now
+matches the original exactly in every field case. The benchmark has a row without it.
