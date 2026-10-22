@@ -31,7 +31,8 @@ pokerogue.net (index.html, JS chunks, assets)  ←→  api.pokerogue.net
           │ fetch (libcurl + TLS, browser UA/Origin; Cloudflare returns 403 without them)
 ┌─────────▼──────────────────────────────────────────────────────┐
 │ Host app (C)                                                    │
-│  QuickJS-ng ── runs the unmodified game bundle (ES2023, modules) │
+│  QuickJS-ng ── runs the game bundle as served (ES2023, modules;  │
+│                a few exact speed rewrites: src/gamefix.c)        │
 │  Web API shim:                                                  │
 │   WebGL1        → vitaGL (GLSL translated at runtime)           │
 │   Canvas2D/text → plutovg (fonts with per-character fallback)   │
