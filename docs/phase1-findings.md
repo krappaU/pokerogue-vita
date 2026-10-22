@@ -937,3 +937,15 @@ without the code are skipped quickly, and may apply more than once (this loop is
 The two ~10 s pauses in the log were not garbage collection mid-battle: the collection itself took
 1.7 s under the loading screen; the rest was the game resetting for a new run (reset, launchBattle,
 the UI screens set up again: MoveInfoOverlay alone ~3 s).
+
+### 0.86 over a long session (log126, 0.86, 2026-10-22; runtime 0.87)
+20 minutes in the Jungle and the Temple, battles getting harder: JS per frame stayed at 27-35 ms at
+the median from the first battle to the last, mostly 24-32 fps (0.85's log went from 20-30 to 34-44
+ms over the same time), so the party icons were the slowdown. Two things are left. An 80 s stretch
+in the Jungle where the GPU took 47-60 ms a frame (18-20 fps), the most yet, with nothing in the log
+to say what was drawn. And ~10 s pauses when a new run starts (game over): the game resets and sets
+its UI up again, and two collections of its ~65 MB of live JS data run in that frame (2 s under the
+loading screen, ~3.4 s in MoveInfoOverlay's setup, where the threshold is crossed). 0.87: the GPU
+profile (gpuprofile=1) also logs the frame's three slowest draws with their shader, the size of the
+texture on unit 0 and the area their vertices cover (desktop: "PokeRogue field 3.6 ms, texture 320x180,
+6 vertices over x 0..1920 y 0..1080" is the backdrop), so a costly draw can be named from the log.

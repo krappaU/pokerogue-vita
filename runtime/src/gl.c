@@ -480,8 +480,15 @@ FN(w_bufferSubData) {
     return JS_UNDEFINED;
 }
 
+#ifdef PKR_DEBUG
+static void prof_capture(int target, int offset, const void *p, size_t len);
+#else
+#define prof_capture(target, offset, p, len) ((void)0)
+#endif
+
 // gl.bufferSubData(target, offset, bytes) without a JS view (WebGLPipeline.flush in fastpath.c).
 void gl_buffer_sub_data(int target, int offset, const void *p, size_t len) {
+    prof_capture(target, offset, p, len);
     buf_info *b = buffer_info(bound_buffer(target), false);
     if (b && b->size) {
         if (offset == 0 && !b->partial && len <= b->size) {
@@ -1576,11 +1583,44 @@ typedef struct { GLuint prog; double ms, max; int draws, verts; } prof_entry;
 static prof_entry prof[PROF_MAX];
 static int n_prof;
 static double prof_min;
+// The frame's three slowest draws, with what they drew: the texture on unit 0 and the area their
+// vertices cover (from the last vertex upload, in Phaser's layout of 7 floats per vertex), so a
+// costly draw can be told apart in the log (a whole-screen backdrop, a big transparent image...).
+typedef struct { double ms; GLuint prog; int tw, th, verts; float x0, y0, x1, y1; bool area; } prof_slow;
+static prof_slow prof_top[3];
+static float prof_vb[16384]; // the profiled frame's last vertex upload (from offset 0)
+static size_t prof_vb_floats;
+static void prof_capture(int target, int offset, const void *p, size_t len) {
+    if (!prof_on || target != GL_ARRAY_BUFFER || offset != 0 || !p) return;
+    prof_vb_floats = len / 4 < sizeof prof_vb / 4 ? len / 4 : sizeof prof_vb / 4;
+    memcpy(prof_vb, p, prof_vb_floats * 4);
+}
 
-static void prof_draw(int verts, double t0) {
+static void prof_draw(int first, int verts, double t0) {
     glFinish();
     double ms = host_now_ms() - t0;
     GLuint prog = oid(st.bound_program);
+    int slot = -1;
+    for (int k = 0; k < 3; k++)
+        if (ms > prof_top[k].ms && (slot < 0 || prof_top[k].ms < prof_top[slot].ms)) slot = k;
+    if (slot >= 0) {
+        prof_slow *t = &prof_top[slot];
+        GLuint tex = oid(st.bound_texture[0]);
+        *t = (prof_slow){.ms = ms, .prog = prog, .verts = verts};
+        if (tex && tex < TEX_MAX) t->tw = texrec[tex].w, t->th = texrec[tex].h;
+        size_t from = (size_t)first * 7, to = ((size_t)first + (size_t)verts) * 7;
+        if (first >= 0 && verts > 0 && to <= prof_vb_floats) {
+            t->x0 = t->y0 = 1e30f, t->x1 = t->y1 = -1e30f;
+            for (size_t v = from; v < to; v += 7) {
+                float x = prof_vb[v], y = prof_vb[v + 1];
+                if (x < t->x0) t->x0 = x;
+                if (x > t->x1) t->x1 = x;
+                if (y < t->y0) t->y0 = y;
+                if (y > t->y1) t->y1 = y;
+            }
+            t->area = true;
+        }
+    }
     int i = 0;
     while (i < n_prof && prof[i].prog != prog) i++;
     if (i == n_prof) {
@@ -1616,11 +1656,27 @@ static void prof_after_frame(void) {
                           prof[k].ms, prof[k].draws, prof[k].max, prof[k].verts);
         }
         host_log("%s", line);
+        o = snprintf(line, sizeof line, "[gpu] slowest draws:");
+        for (int k = 0; k < 3; k++) {
+            int best = k;
+            for (int i = k + 1; i < 3; i++) if (prof_top[i].ms > prof_top[best].ms) best = i;
+            prof_slow t = prof_top[k];
+            prof_top[k] = prof_top[best], prof_top[best] = t;
+            const prof_slow *d = &prof_top[k];
+            if (d->ms <= 0) break;
+            const char *name = d->prog < MAX_GL_IDS && prog_names[d->prog][0] ? prog_names[d->prog] : "?";
+            o += snprintf(line + o, sizeof line - o, "%s %s %.1f ms, texture %dx%d, %d vertices", k ? " |" : "", name, d->ms,
+                          d->tw, d->th, d->verts);
+            if (d->area)
+                o += snprintf(line + o, sizeof line - o, " over x %.0f..%.0f y %.0f..%.0f", d->x0, d->x1, d->y0, d->y1);
+        }
+        host_log("%s", line);
         return;
     }
     if (!g_cfg.gpu_profile || host_now_ms() < prof_next) return;
     prof_next = host_now_ms() + 10000;
-    n_prof = 0, prof_min = 0;
+    n_prof = 0, prof_min = 0, prof_vb_floats = 0;
+    memset(prof_top, 0, sizeof prof_top);
     glFinish(); // the GPU is idle when the profiled frame starts
     prof_on = true;
 }
@@ -1636,7 +1692,7 @@ FN(w_drawArrays) {
     draw_ms_frame += host_now_ms() - t0;
     draws_total++;
 #ifdef PKR_DEBUG
-    if (prof_on) prof_draw(gi(ctx, A(2)), t0);
+    if (prof_on) prof_draw(gi(ctx, A(1)), gi(ctx, A(2)), t0);
 #endif
     return JS_UNDEFINED;
 }
@@ -1649,7 +1705,7 @@ FN(w_drawElements) {
     draw_ms_frame += host_now_ms() - t0;
     draws_total++;
 #ifdef PKR_DEBUG
-    if (prof_on) prof_draw(gi(ctx, A(1)), t0);
+    if (prof_on) prof_draw(-1, gi(ctx, A(1)), t0);
 #endif
     return JS_UNDEFINED;
 }
