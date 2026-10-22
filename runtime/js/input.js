@@ -161,14 +161,16 @@
     ctx.fillText(text, tw > w - 4 ? w - 2 - tw : 2, h / 2); // long text: show its end, like a browser
     return ctx.getImageData(0, 0, cv.width, cv.height);
   }
+  let fieldShown = false;
   function updateFields() {
     if (frameNo % 30 === 1) inputs = Array.from(g.document.querySelectorAll("input"));
     const out = [];
-    let sig = "";
+    let sig = "", shown = false;
     for (let k = 0; k < inputs.length; k++) {
       const el = inputs[k], go = el.phaser;
       // drawn last frame (cheap checks first: this runs every frame for every input)
       if (!go || go._pkrSeen === undefined || frameNo - go._pkrSeen > 1) continue;
+      shown = true;
       if (!el.value || out.length >= 8) continue;
       const st = el.style;
       if (st.display === "none" || st.visibility === "hidden" || parseFloat(st.opacity) === 0) continue;
@@ -199,6 +201,7 @@
       lastSig = sig;
       N.setFieldOverlays(out);
     }
+    if (shown !== fieldShown && N.setTextFieldShown) N.setTextFieldShown((fieldShown = shown));
   }
   rt.frameHooks.push(() => { frameNo++; updateFields(); });
 

@@ -166,8 +166,12 @@ back, or touch the keys. The system keyboard (Vita IME dialog) is not used (0.59
 on the test console (`sceImeDialogInit` 0x800204c4; it worked in Vita3K), most likely because
 vitaGL had taken part of the system dialogs' memory budget, which now serves as GPU memory. On the
 desktop runtime a field is answered through the control channel (`ime <text>`, `ime-cancel`)
-unless `osk=1` (then arrows, Enter, Backspace, Escape, typed characters). The rear touchpad is
-unused: resting fingers held "submit" down.
+unless `osk=1` (then arrows, Enter, Backspace, Escape, typed characters).
+Buttons (0.91): L and R are the gamepad's L1 and R1; a touch on the upper half of the rear touchpad
+is L2 (left side) or R2 (right side), which the game uses to cycle gender and ability in starter
+select. The rear touchpad is off while one of the game's text fields is on screen (until 0.20 it was
+the "submit" button, and resting fingers sent the login form over and over), and its lower half,
+where fingers rest, does nothing. The submit button (the DualShock touchpad click) stays unmapped.
 The game's text fields are HTML `<input>` elements over the canvas; `js/input.js` draws their text
 (the field's font and colour, passwords as asterisks) and the native layer puts it over the game.
 

@@ -115,7 +115,8 @@ Features and checks:
   texture eviction under pressure (0.41), the input-repeat fix and QR links (0.40).
 - Login uses the built-in keyboard; the system keyboard is no longer used (0.59). Discord/Google
   sign-in can't work (a QR code explains it).
-- Most game settings are untested; the rear touchpad is off (resting fingers pressed "submit").
+- Most game settings are untested. The rear touchpad's upper half is L2/R2 (off while a text field
+  is shown); the game's "submit" button (touchpad click) is unmapped.
 - Video elements show a stand-in frame (no video decoding).
 ## Requirements on the Vita
 - HENkaku or Ensō, with unsafe homebrew enabled; VitaShell to install builds (over FTP or USB)

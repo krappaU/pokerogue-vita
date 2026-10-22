@@ -52,6 +52,9 @@ static bool file_exists(const char *path) {
 
 extern char vgl_shader_dump_path[256]; // vitaGL, patches/vitagl-0002
 
+// The rear touchpad's middle (panel coordinates; sceTouchGetPanelInfo), for L2/R2 (plat_gamepads).
+static int back_mid_x = 960, back_mid_y = 498;
+
 bool plat_init(int w, int h) {
     scePowerSetArmClockFrequency(444);
     scePowerSetBusClockFrequency(222);
@@ -104,6 +107,10 @@ bool plat_init(int w, int h) {
 
     sceCtrlSetSamplingMode(SCE_CTRL_MODE_ANALOG_WIDE);
     sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_START);
+    sceTouchSetSamplingState(SCE_TOUCH_PORT_BACK, SCE_TOUCH_SAMPLING_STATE_START);
+    SceTouchPanelInfo back;
+    if (sceTouchGetPanelInfo(SCE_TOUCH_PORT_BACK, &back) >= 0 && back.maxAaX > back.minAaX && back.maxAaY > back.minAaY)
+        back_mid_x = (back.minAaX + back.maxAaX) / 2, back_mid_y = (back.minAaY + back.maxAaY) / 2;
     host_log("GL: %s | %s | shader compiler: %s", (const char *)glGetString(GL_VERSION),
              (const char *)glGetString(GL_RENDERER), shacccg);
     (void)w, (void)h;
@@ -201,16 +208,27 @@ int plat_gamepads(plat_gamepad *out, int max) {
     p->id = "PS Vita Controls (STANDARD GAMEPAD Vendor: 054c Product: 09cc)";
     // (The Sony id above, vendor 054c, makes the game pick its DualShock layout and PS button icons.)
     unsigned b = pad.buttons;
+    // L and R are L1 and R1. (The SDK's SCE_CTRL_L2/R2 are the same bits as L/R, the PS TV's names
+    // for them: mapped as well until 0.91, they made L and R act as L1+L2 and R1+R2.)
     static const unsigned map[17] = {
         SCE_CTRL_CROSS, SCE_CTRL_CIRCLE, SCE_CTRL_SQUARE, SCE_CTRL_TRIANGLE, SCE_CTRL_LTRIGGER, SCE_CTRL_RTRIGGER,
-        SCE_CTRL_L2, SCE_CTRL_R2, SCE_CTRL_SELECT, SCE_CTRL_START, SCE_CTRL_L3, SCE_CTRL_R3,
+        0, 0, SCE_CTRL_SELECT, SCE_CTRL_START, SCE_CTRL_L3, SCE_CTRL_R3,
         SCE_CTRL_UP, SCE_CTRL_DOWN, SCE_CTRL_LEFT, SCE_CTRL_RIGHT, SCE_CTRL_PSBUTTON,
     };
     if ((b & HUD_COMBO) == HUD_COMBO) b &= ~SCE_CTRL_SELECT; // SELECT belongs to the debug toggle then
     for (int i = 0; i < 17; i++) p->buttons[i] = (b & map[i]) ? 1.0f : 0.0f;
-    // The rear touchpad is not used: fingers resting on the back of the console kept "pressing" the
-    // game's submit button (the DualShock touchpad click) and sent the login form over and over.
-    // Submit by tapping the button on screen, or selecting it and pressing cross.
+    // L2 and R2 (the game: cycle gender / ability in starter select): a touch on the upper half of
+    // the rear touchpad, left or right side. The lower half, where fingers rest while holding the
+    // console, does nothing. Off while one of the game's text fields is on screen: until 0.20 the
+    // rear touchpad was the submit button, and resting fingers sent the login form over and over.
+    // (The game's submit button, the DualShock touchpad click, stays unmapped: tap the button on
+    // screen, or select it and press cross.)
+    if (!text_field_shown()) {
+        SceTouchData back;
+        if (sceTouchPeek(SCE_TOUCH_PORT_BACK, &back, 1) >= 0)
+            for (unsigned i = 0; i < back.reportNum && i < SCE_TOUCH_MAX_REPORT; i++)
+                if (back.report[i].y < back_mid_y) p->buttons[back.report[i].x < back_mid_x ? 6 : 7] = 1.0f;
+    }
     p->axes[0] = stick(pad.lx);
     p->axes[1] = stick(pad.ly);
     p->axes[2] = stick(pad.rx);

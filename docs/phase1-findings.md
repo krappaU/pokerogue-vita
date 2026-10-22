@@ -1002,3 +1002,13 @@ Desktop, JS per frame without GL time (idle in the command menu / fighting, two 
 1.59, 1.56 / 2.27, 2.21 ms; 0.90 1.46, 1.62 / 1.98, 2.09 ms. The desktop has no gamepad and a
 single battle with one Pokémon a side, so the Vita's numbers will say more.
 
+### L and R pressed two buttons each (owner's report, 2026-10-22; runtime 0.91)
+The Vita SDK's SCE_CTRL_L2/R2 are the same bits as SCE_CTRL_LTRIGGER/RTRIGGER (the PS TV's names
+for them), and both were mapped: L reached the game as L1 and L2 (in starter select: cycle form and
+gender at once), R as R1 and R2 (shiny and ability). L and R are now L1 and R1 only, and the rear
+touchpad is back as L2/R2: a touch on its upper half, left or right side; off while a game text
+field is on screen (js/input.js tells the native layer), as resting fingers once kept pressing the
+login form's submit through it. 0.90's CI desktop job failed (a static JSValue initializer the
+desktop compiler rejects). Locally build_linux.sh had hidden it (its check found the previous
+binary); it now fails on a compile error. 0.90 was never published as a dev build.
+

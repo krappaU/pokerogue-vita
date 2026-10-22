@@ -740,12 +740,12 @@ static JSValue n_gamepads(JSContext *ctx, JSValueConst this_val, int argc, JSVal
     static plat_gamepad last[4];
     static char last_id[4][128]; // copies: the platform's name strings may go with their pad
     static int last_n = -1;
-    static JSValue last_arr = JS_UNDEFINED;
+    static JSValue last_arr; // valid once last_n >= 0
     plat_gamepad pads[4];
     int n = plat_gamepads(pads, 4);
     if (osk_mutes_pad() || link_mutes_pad()) // the built-in keyboard or a shown link has the controls
         for (int i = 0; i < n; i++) memset(pads[i].axes, 0, sizeof pads[i].axes), memset(pads[i].buttons, 0, sizeof pads[i].buttons);
-    bool same = n == last_n && JS_IsObject(last_arr);
+    bool same = n == last_n;
     for (int i = 0; same && i < n; i++)
         same = pads[i].connected == last[i].connected && !memcmp(pads[i].axes, last[i].axes, sizeof pads[i].axes) &&
                !memcmp(pads[i].buttons, last[i].buttons, sizeof pads[i].buttons) &&
@@ -763,8 +763,8 @@ static JSValue n_gamepads(JSContext *ctx, JSValueConst this_val, int argc, JSVal
         JS_SetPropertyUint32(ctx, arr, i, p);
     }
     for (int i = 0; i < n; i++) last[i] = pads[i], snprintf(last_id[i], sizeof last_id[i], "%s", pads[i].id ? pads[i].id : "");
+    if (last_n >= 0) JS_FreeValue(ctx, last_arr);
     last_n = n;
-    JS_FreeValue(ctx, last_arr);
     last_arr = JS_DupValue(ctx, arr);
     return arr;
 }
@@ -993,6 +993,15 @@ static JSValue n_set_field_overlays(JSContext *ctx, JSValueConst this_val, int a
     return JS_UNDEFINED;
 }
 
+// setTextFieldShown(bool): whether one of the game's text fields (login, registration, rename) is on
+// screen; the Vita's rear touchpad is off then (platform_vita.c).
+static bool text_field_on;
+bool text_field_shown(void) { return text_field_on; }
+static JSValue n_set_text_field_shown(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    text_field_on = JS_ToBool(ctx, argv[0]) > 0;
+    return JS_UNDEFINED;
+}
+
 static JSValue n_clock_offset(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     return JS_NewFloat64(ctx, net_clock_offset_ms());
 }
@@ -1113,6 +1122,7 @@ static const JSCFunctionListEntry native_funcs[] = {
     JS_CFUNC_DEF("imeOpen", 4, n_ime_open),
     JS_CFUNC_DEF("imePoll", 0, n_ime_poll),
     JS_CFUNC_DEF("setFieldOverlays", 1, n_set_field_overlays),
+    JS_CFUNC_DEF("setTextFieldShown", 1, n_set_text_field_shown),
     JS_CFUNC_DEF("clockOffset", 0, n_clock_offset),
     JS_CFUNC_DEF("loadScript", 1, n_load_script),
     JS_CFUNC_DEF("utf8Decode", 1, n_utf8_decode),
