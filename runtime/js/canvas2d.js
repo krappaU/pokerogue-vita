@@ -290,7 +290,18 @@
       this._n.drawImage(src, sx, sy, sw, sh, dx, dy, dw, dh);
     }
     createImageData(w, h) { return w instanceof ImageData ? new ImageData(w.width, w.height) : new ImageData(Math.abs(w), Math.abs(h)); }
-    getImageData(x, y, w, h) { return new ImageData(new Uint8ClampedArray(this._n.getImageData(x, y, w, h)), w, h); }
+    getImageData(x, y, w, h) {
+      try {
+        return new ImageData(new Uint8ClampedArray(this._n.getImageData(x, y, w, h)), w, h);
+      } catch (e) {
+        // A large copy (Phaser's CanvasTexture keeps one: 7 MB for the stat change animation) that
+        // found the heap full of garbage: collect it and try once more (log142's hang).
+        if (!(e instanceof InternalError) || !/out of memory/.test(e.message)) throw e;
+        N.log("[canvas] getImageData " + w + "x" + h + ": out of memory, collecting and retrying");
+        N.gc();
+        return new ImageData(new Uint8ClampedArray(this._n.getImageData(x, y, w, h)), w, h);
+      }
+    }
     putImageData(img, dx, dy) { this._n.putImageData(img.data, img.width, img.height, dx, dy); }
     createLinearGradient() { return new CanvasGradient(); }
     createRadialGradient() { return new CanvasGradient(); }

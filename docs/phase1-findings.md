@@ -1026,3 +1026,19 @@ A reset also leaves about six endless tweens running (the icon helpers of the ol
 screens, a blinking text): measured on the desktop, 8 tweens before a reset and 14 after. They step
 every frame but their work is small (the old icons are dropped since 0.86).
 
+### The game stopped after an hour: the heap ran out (log142, 0.89, 2026-10-22; runtime 0.93)
+log142 (the same session as log141, sent after it hung at t=3480 s): a stat change animation threw
+"InternalError: out of memory" in getImageData (Phaser's CanvasTexture keeps a copy of the
+TileSprite's 936x1896 canvas, 7 MB), the battle phase never ended, and the game sat there drawing
+frames. The heap (256 MB) had 247 MB in use. JS objects alive after a collection: 43 MB in the first
+battle, 61, 74 and 91 MB later; QuickJS collects when its heap reaches 1.5x that, so up to ~45 MB of
+garbage sat on top. The rest of the heap grew as the run went on (decoded sounds 16 -> 29 MB,
+textures 1599 -> 1787, sprite atlases): the game keeps what it loads for the whole run. Game
+resets add a little (desktop: +2 MB of JS objects, +6 tweens, +42 textures per reset).
+0.93: the next collection is due before garbage would leave less than 40 MB of the heap free (the
+1.5x rule otherwise, also after QuickJS's own collections), and a frame that finds less than 20 MB
+free collects first, under the loading screen (not again until the heap has grown by 8 MB, so live
+data alone doesn't cause a collection every few frames). getImageData collects and retries once
+when it runs out of memory. With live data growing ~30 MB an hour, collections come more often
+late in a long session; live data alone filling the heap stays possible after a few hours.
+

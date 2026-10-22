@@ -662,6 +662,32 @@ static void draw_over_game(JSContext *ctx, double js_ms) {
 // log68). Under the loading screen (once per long frame) a collection costs nothing visible: if
 // the heap is at least a third of the way to the next one, run it now, which also puts the next one
 // further off.
+// The heap (256 MB on the Vita) holds the JS heap and everything else (decoded audio, fonts,
+// images...). Late in a long session the JS heap kept ~90 MB alive, its next collection was due at
+// 1.5x that, and the garbage in between filled the heap: in log142 (0.89, after an hour) a 7 MB
+// canvas copy failed with "out of memory" during a stat change animation and the battle stopped.
+// The next collection is now due before garbage would leave less than HEAP_RESERVE of the heap free,
+// and a frame that finds the heap nearly full anyway collects first (gc_when_heap_low).
+#ifdef __vita__
+#define HEAP_SIZE ((size_t)_newlib_heap_size_user)
+#else
+#define HEAP_SIZE ((size_t)0) // the desktop: no fixed heap
+#endif
+#define HEAP_RESERVE ((size_t)40 << 20)
+static size_t heap_used(void) {
+    struct mallinfo mi = mallinfo();
+    return (size_t)(unsigned)mi.uordblks;
+}
+// The JS heap size at which the next collection is due, after one that left `js` bytes.
+static size_t gc_next_threshold(size_t js) {
+    size_t t = js + js / 2;
+    if (!HEAP_SIZE) return t;
+    size_t used = heap_used(), room = used + HEAP_RESERVE < HEAP_SIZE ? HEAP_SIZE - HEAP_RESERVE - used : 0;
+    if (room >= js / 2) return t;
+    size_t least = js + ((size_t)8 << 20); // not every few frames either
+    return js + room > least ? js + room : least;
+}
+
 static void gc_during_loading(void) {
     static double done_t0;
     if (!g_ctx_for_mem || done_t0 == phase_t0) return;
@@ -676,7 +702,7 @@ static void gc_during_loading(void) {
     double ms = host_now_ms() - t0;
     size_t before = m.malloc_size;
     JS_ComputeMemoryUsage(rt, &m);
-    JS_SetGCThreshold(rt, m.malloc_size + m.malloc_size / 2);
+    JS_SetGCThreshold(rt, gc_next_threshold(m.malloc_size));
     host_log("[gc] collected under the loading screen: %.0f ms, JS heap %.1f -> %.1f MB", ms, before / 1048576.0,
              m.malloc_size / 1048576.0);
 }
@@ -705,6 +731,30 @@ static void busy_poll(void) {
     // state as it was). The next poll redraws the screen right after a slow one.
     if (pre_left) gl_precompile(BUSY_EVERY_MS / 2);
     else gc_during_loading();
+}
+
+// Between frames: the heap is nearly full (less than half of HEAP_RESERVE free). Collect now, with
+// the loading screen up, rather than let an allocation fail in the game's code. Not again until the
+// heap has grown by 8 MB since (when what is left is live data, collecting again frees nothing).
+static void gc_when_heap_low(void) {
+    static int frames;
+    static size_t used_after;
+    if (!HEAP_SIZE || !g_ctx_for_mem || ++frames % 30) return;
+    size_t used = heap_used();
+    if (used + HEAP_RESERVE / 2 < HEAP_SIZE || (used_after && used < used_after + ((size_t)8 << 20))) return;
+    overlay_busy_draw("Loading...");
+    plat_swap();
+    gl_restore_state();
+    JSRuntime *rt = JS_GetRuntime(g_ctx_for_mem);
+    double t0 = host_now_ms();
+    JS_RunGC(rt);
+    double ms = host_now_ms() - t0;
+    JSMemoryUsage m;
+    JS_ComputeMemoryUsage(rt, &m);
+    JS_SetGCThreshold(rt, gc_next_threshold(m.malloc_size));
+    used_after = heap_used();
+    host_log("[gc] heap nearly full (%.0f of %.0f MB in use): collected in %.0f ms, %.0f MB in use now (JS %.1f MB)",
+             used / 1048576.0, HEAP_SIZE / 1048576.0, ms, used_after / 1048576.0, m.malloc_size / 1048576.0);
 }
 
 // Shader variants not built during loading (gl_precompile): between frames, at most one slow build
@@ -1171,6 +1221,7 @@ int main(int argc, char **argv) {
         dev_frame();
         set_phase("network");
         net_poll(ctx);
+        gc_when_heap_low();
         set_phase("promise jobs");
         in_frame_js = true;
         size_t gc_threshold = JS_GetGCThreshold(JS_GetRuntime(ctx));
@@ -1193,6 +1244,9 @@ int main(int argc, char **argv) {
             double all = host_now_ms() - t_jobs;
             perf_gc++;
             if (all > perf_gc_max) perf_gc_max = all;
+            // QuickJS collected and set the next threshold to 1.5x what was left: keep the heap's reserve
+            JSRuntime *rt = JS_GetRuntime(ctx);
+            JS_SetGCThreshold(rt, gc_next_threshold(JS_GetGCThreshold(rt) / 3 * 2));
         }
         perf_add(js_ms);
         module_list_flush();
