@@ -130,6 +130,9 @@ const FIELD = [
 const NO_LOOPS = remove(/for \(int i = 0; i < 32; i\+\+\)/);
 const NO_TERA = remove(/if \(color\.a > 0\.0 && all\(lessThan\(vec3\(0\.0\), teraColor\)\)\)/);
 const NO_SHADOW = remove(/if \(hasShadow\)/);
+// A shiny Pokémon's palette: 12 colours that none of the benchmark's texels match (the worst case).
+const SHINY = { baseVariantColors: Array.from({ length: 128 }, (_, i) => (i < 48 ? (i % 4 === 3 ? 1 : ((i * 37) % 251 + 0.5) / 255) : 0)),
+  variantColors: Array.from({ length: 128 }, (_, i) => (i < 48 ? 0.5 : 0)) };
 const NO_TONE = all(replace(/float luma = dot\(color\.rgb, lumaF\);/, ""), replace(/color\.rgb = mix\(color\.rgb, vec3\(luma\), tone\.w\);/, ""),
   replace(/color\.rgb \+= tone\.rgb \* \(color\.a \/ 255\.0\);/, ""));
 const SPRITE = [
@@ -137,6 +140,8 @@ const SPRITE = [
   ["rewritten + variants (shaderfix)", null, true],
   ["shaderfix + hard light per pixel (0.77)", null, true, ["hard light"]],
   ["shaderfix as in 0.76", null, true, ["day/night colour", "shadow tests"]],
+  ["shaderfix, shiny (12 colours)", null, true, [], SHINY],
+  ["shaderfix, shiny, palette for transparent texels too (0.87)", null, true, ["palette alpha"], SHINY],
   ["shaderfix + no shadow", NO_SHADOW, true],
   ["shaderfix + no day/night tint", NO_DAYNIGHT, true],
   ["no colour loops", NO_LOOPS],
@@ -221,7 +226,7 @@ const UNIFORMS = [
   ["baseVariantColors", "4fv", new Array(128).fill(0)], ["variantColors", "4fv", new Array(128).fill(0)],
   ["spriteColors", "4fv", new Array(128).fill(0)], ["fusionSpriteColors", "4iv", new Array(128).fill(0)],
 ];
-function setup(p) {
+function setup(p, extra) {
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   gl.viewport(0, 0, W, H);
   gl.enable(gl.BLEND);
@@ -232,7 +237,8 @@ function setup(p) {
   gl.uniformMatrix4fv(loc("uProjectionMatrix"), false, new Float32Array([2 / W, 0, 0, 0, 0, -2 / H, 0, 0, 0, 0, 0, 0, -1, 1, 0, 1]));
   if (loc("uResolution")) gl.uniform2fv(loc("uResolution"), [W, H]);
   if (loc("uRoundPixels")) gl.uniform1i(loc("uRoundPixels"), 0);
-  for (const [n, t, v] of UNIFORMS) {
+  for (const [n, t, v0] of UNIFORMS) {
+    const v = extra && n in extra ? extra[n] : v0;
     const l = loc(n);
     if (!l) continue;
     if (t === "1f") gl.uniform1f(l, v);
@@ -272,7 +278,7 @@ const show = (text) => N.showMessage && N.showMessage("Shader benchmark\n\n" + t
 
 async function bench(group, vsrc, fsrc, variants) {
   const results = [];
-  for (const [i, [label, change, fix, skip]] of variants.entries()) {
+  for (const [i, [label, change, fix, skip, uniforms]] of variants.entries()) {
     show(group + ", " + (i + 1) + " of " + variants.length + ":\n" + label);
     await nextFrame();
     let p;
@@ -282,7 +288,7 @@ async function bench(group, vsrc, fsrc, variants) {
       log(group + " | " + label + ": skipped (" + (e && e.message || e) + ")");
       continue;
     }
-    setup(p);
+    setup(p, uniforms);
     const r = timeDraws(() => gl.drawArrays(gl.TRIANGLES, 0, 6));
     const err = gl.getError();
     log(group + " | " + label + ": " + fmt(r) + (err ? " (GL error " + err + ")" : ""));

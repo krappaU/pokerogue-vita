@@ -1231,8 +1231,9 @@ static inline void var_end(GLuint prog) {
 // linked, the copies it is likely to need are queued and built ahead of use: during the game's
 // long loading frames (main.c's busy_poll, which shows the progress on its loading screen), else
 // between frames with a notice over the game. Likely: terrain, day/night and shadow each on or off,
-// with at most one of tera, shiny variants and fusion palettes on (16 copies of the sprite shader;
-// 4 of the field's, one with every effect, which a family with swaps draws with too).
+// with at most one of tera, shiny variants and fusion palettes on, then every other combination
+// (32 copies of the sprite shader, 4 of the field's, one with every effect, which a family with
+// swaps draws with too).
 #define PRE_MAX 256
 static struct { GLuint prog; unsigned off; } pre_queue[PRE_MAX];
 static int pre_n, pre_done, pre_built;
@@ -1244,8 +1245,13 @@ static void precompile_queue(GLuint prog, unsigned present, bool swaps) {
         if (pre_queue[i].prog != prog) pre_queue[n++] = pre_queue[i];
     pre_n = n;
     if (g_cfg.no_precompile) return;
+    // The likely ones first (terrain, day/night and shadow each on or off, with at most one of tera,
+    // shiny variants and fusion palettes on), then every other combination: a shiny Pokémon that
+    // terastallizes needs tera and variants together, and building that copy in battle stalled the
+    // game for 3.3 s (log130).
     const unsigned common = present & (1u << VF_TERRAIN | 1u << VF_DAYNIGHT | 1u << VF_SHADOW);
     static const int rare[] = {-1, VF_TERA, VF_VARIANTS, VF_FUSION};
+    int first = pre_n;
     for (int r = 0; r < 4; r++) {
         unsigned one = rare[r] < 0 ? 0 : 1u << rare[r];
         if (rare[r] >= 0 && !(present & one)) continue;
@@ -1254,6 +1260,13 @@ static void precompile_queue(GLuint prog, unsigned present, bool swaps) {
             if ((off || swaps) && pre_n < PRE_MAX) pre_queue[pre_n].prog = prog, pre_queue[pre_n++].off = off;
             if (!s) break;
         }
+    }
+    for (unsigned s = present;; s = (s - 1) & present) { // every subset switched on
+        unsigned off = present & ~s;
+        bool queued = false;
+        for (int i = first; i < pre_n && !queued; i++) queued = pre_queue[i].off == off;
+        if (!queued && (off || swaps) && pre_n < PRE_MAX) pre_queue[pre_n].prog = prog, pre_queue[pre_n++].off = off;
+        if (!s) break;
     }
 }
 

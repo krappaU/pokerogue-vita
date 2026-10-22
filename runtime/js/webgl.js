@@ -78,15 +78,21 @@
     }
     return [out + src.slice(from), n];
   }
-  // `for (...) { if (C[i].a == 0.0) break; ... }` -> `if (C[0].a != 0.0) { for ... }`
-  function guardLoops(src) {
+  // `for (...) { if (C[i].a == 0.0) break; ... }` -> `if (C[0].a != 0.0) { if (texture.a > 0.0) { for ... } }`
+  function guardLoops(src, skip) {
     const re = /for \(int i = 0; i < 32; i\+\+\) \{\s*if \((\w+)\[i\](\.a|\[3\]) == 0\.0\)\s*break;/g;
     let out = "", from = 0, n = 0, m;
     while ((m = re.exec(src))) {
       const end = blockEnd(src, src.indexOf("{", m.index));
       if (end < 0) continue;
       const name = { baseVariantColors: "variants", spriteColors: "fusion" }[m[1]];
-      out += src.slice(from, m.index) + mark(name, "if (" + m[1] + "[0]" + m[2] + " != 0.0) { " + src.slice(m.index, end) + " }");
+      // and only for texels that aren't transparent: the loop changes nothing for them (its match
+      // needs texture.a > 0), and the GPU ran its 32 steps for every pixel of a shiny sprite's quad,
+      // most of it transparent (0.87, log131: ~100 ms of GPU per full screen for a shiny Pokémon)
+      const tex = /\bpkr_texture\b/.test(src) ? "pkr_texture" : "texture";
+      out += src.slice(from, m.index) + mark(name, skip.has("palette alpha")
+        ? "if (" + m[1] + "[0]" + m[2] + " != 0.0) { " + src.slice(m.index, end) + " }"
+        : "if (" + m[1] + "[0]" + m[2] + " != 0.0) { if (" + tex + ".a > 0.0) { " + src.slice(m.index, end) + " } }");
       from = end;
       re.lastIndex = end;
       n++;
@@ -139,7 +145,7 @@
       applied.push("tint effect test");
     }
     // PokeRogue's colour loops stop at the first entry with alpha 0: skip them when that's the first.
-    [src, n] = guardLoops(src);
+    [src, n] = guardLoops(src, skip);
     if (n) applied.push("colour loops (" + n + ")");
     // PokeRogue's day/night colour: an if-chain on settings only, so the same for every pixel of a
     // draw, but the GPU ran it for each (0.76's benchmark: day/night cost ~7 ms per full screen in

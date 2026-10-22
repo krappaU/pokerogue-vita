@@ -949,3 +949,19 @@ loading screen, ~3.4 s in MoveInfoOverlay's setup, where the threshold is crosse
 profile (gpuprofile=1) also logs the frame's three slowest draws with their shader, the size of the
 texture on unit 0 and the area their vertices cover (desktop: "PokeRogue field 3.6 ms, texture 320x180,
 6 vertices over x 0..1920 y 0..1080" is the backdrop), so a costly draw can be named from the log.
+
+### A stall when terastallizing, and shiny sprites on the GPU (logs 130-131, 0.87, 2026-10-22; runtime 0.88)
+log130: a one-second loading screen when a Pokémon terastallized: "shader variant: program 13 without
+fusion (3274 ms to build)", the sprite shader with tera and shiny colours both on (a shiny Pokémon).
+Only combinations with at most one of tera, variants and fusion were precompiled. 0.88 precompiles
+every combination (after the likely ones): 32 copies of the sprite shader, 4 of the field's (the
+first start after installing prepares ~16 more, a few seconds each; later starts load them from the
+cache in milliseconds).
+log131 (gpuprofile=1, Temple), with 0.87's slowest-draw lines: the backdrop 6.7 ms (320x180 over the
+whole screen), each base 3.3 ms (320x132 over 1920x792), UI draws up to 8 ms, and Pokémon draws of
+6.3 ms (a 73x73 texture over ~6% of the screen) and 10.5 ms (514x514, ~12%): about 100 ms per full
+screen, ten times a plain Pokémon. Those are shiny sprites: the palette loop compares each pixel
+with the variant colours, and the GPU runs its 32 steps for every pixel of the quad, transparent
+ones included (most of a sprite's quad, and all of the shadow strip below it). 0.88: the loops only
+run for texels that aren't transparent (the match needs texture.a > 0, so the pixels are the same).
+The benchmark gets rows with a 12-colour shiny palette, with and without that test.
