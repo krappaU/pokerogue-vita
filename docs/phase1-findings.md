@@ -911,3 +911,13 @@ like the backdrop: about 2.5 screens of it per frame. 0.84: for a transparent te
 tint the field shader ends right after `color = texture * texel` (the rest leaves color as it is:
 the tint effects need effect 1 or 2, day/night and terrain need color.a > 0); tests/shaders now
 matches the original exactly in every field case. The benchmark has a row without it.
+0.85: Phaser's tween stepping in C (src/fastpath.c "tweens", js/fastpath.js part 19): Tween.update of
+an active, started, unpaused tween, and TweenData.update while playing forward or backward without
+finishing in the step (Linear, Sine and Cubic eases computed with the same operations as Phaser's,
+which covers nearly all of PokeRogue's; others called; onUpdate dispatched only when someone
+listens). Starts, ends, repeats, yoyos, holds, delays and texture tweens stay in Phaser's code.
+probe_verify_tweens.js (CI, tests/phaser) steps the same tweens (every ease the game uses, yoyo,
+repeat, hold, delays, a number tween, two targets, time scale, update listeners) natively and with
+Phaser's code over the same deltas and compares targets, state and callbacks after each step; it
+catches a 1e-12 change in an ease. Desktop: 0.55 against ~2.9 us per running tween of two properties;
+the first battle's idle tweens 89-99 -> 73 us a frame (the rest: the game's callbacks and setters).

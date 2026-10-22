@@ -191,9 +191,10 @@ async function run() {
   await probe(game, "probe_verify_batching.js", "__vfb");
   await probe(game, "probe_verify_uniforms.js", "__vfu");
   await probe(game, "probe_verify_bitmaptext.js", "__vbt");
+  await probe(game, "probe_verify_tweens.js", "__vtw");
   report("phaser: native pipeline machinery and shapes active",
-    !!(rt.pipelineSwaps && rt.graphicsSwap && rt.nineSliceSwap && rt.shapesSwap && rt.emitSwap && rt.bitmapTextSwap),
-    ["pipelineSwaps", "graphicsSwap", "nineSliceSwap", "shapesSwap", "emitSwap", "bitmapTextSwap"].filter((k) => !rt[k]).join(" "));
+    !!(rt.pipelineSwaps && rt.graphicsSwap && rt.nineSliceSwap && rt.shapesSwap && rt.emitSwap && rt.bitmapTextSwap && rt.tweenSwap),
+    ["pipelineSwaps", "graphicsSwap", "nineSliceSwap", "shapesSwap", "emitSwap", "bitmapTextSwap", "tweenSwap"].filter((k) => !rt[k]).join(" "));
   {
     const out = (0, eval)(await (await fetch("probe_verify_emit.js")).text());
     report("probe_verify_emit.js", /^identical: /.test(out), out.slice(0, 200));

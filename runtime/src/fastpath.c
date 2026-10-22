@@ -2658,6 +2658,199 @@ static JSValue js_replace_wrap(JSContext *ctx, JSValueConst this_val, int argc, 
     return JS_NewCFunction(ctx, js_replace, "replace", 2);
 }
 
+// ---------------------------------------------------------------- tweens
+// Phaser 3.90's Tween.update and TweenData.update in C for the common case, with Phaser's own code
+// for everything else (js/fastpath.js part 19 installs __native.tweenUpdate as Tween.prototype.update
+// and passes the originals). A tween that is active, not paused and started steps its data here; a
+// datum playing forward or backward that doesn't finish in this step is advanced here (the ease, the
+// value, the target's property, the onUpdate dispatch when anyone listens), every other datum by its
+// own update(). Linear, Sine and Cubic eases are computed here exactly as Phaser's JS does (same
+// operations in the same order, the same libm); other eases are called as JS functions.
+enum { TA_state, TA_paused, TA_hasStarted, TA_timeScale, TA_parent, TA_data, TA_totalData, TA_elapsed, TA_duration,
+       TA_progress, TA_totalElapsed, TA_totalDuration, TA_totalProgress, TA_nextState, TA_persist, TA_setFinishedState,
+       TA_isCountdown, TA_interpolation, TA_tween, TA_targets, TA_targetIndex, TA_key, TA_previous, TA_current, TA_ease,
+       TA_start, TA_end, TA_isSeeking, TA__events, TA_callbacks, TA_onUpdate, TA_dispatchEvent, TA_update, TA_COUNT };
+static const char *const ta_names[TA_COUNT] = {
+    "state", "paused", "hasStarted", "timeScale", "parent", "data", "totalData", "elapsed", "duration",
+    "progress", "totalElapsed", "totalDuration", "totalProgress", "nextState", "persist", "setFinishedState",
+    "isCountdown", "interpolation", "tween", "targets", "targetIndex", "key", "previous", "current", "ease",
+    "start", "end", "isSeeking", "_events", "callbacks", "onUpdate", "dispatchEvent", "update"};
+static JSAtom TA[TA_COUNT];
+enum { EASE_LINEAR, EASE_SINE_IN, EASE_SINE_OUT, EASE_SINE_INOUT, EASE_CUBIC_IN, EASE_CUBIC_OUT, EASE_CUBIC_INOUT, EASE_COUNT };
+static struct {
+    bool ready;
+    JSValue orig_update, td_update, eases[EASE_COUNT]; // Tween's and TweenData's update
+    JSAtom ev_update; // Events.TWEEN_UPDATE
+} TW;
+
+#define TG(o, a) JS_GetProperty(ctx, (o), TA[a])
+static double tnum(JSContext *ctx, JSValueConst o, int a) {
+    JSValue v = TG(o, a);
+    double d = num(ctx, v);
+    JS_FreeValue(ctx, v);
+    return d;
+}
+static bool tbool(JSContext *ctx, JSValueConst o, int a) {
+    JSValue v = TG(o, a);
+    bool b = JS_ToBool(ctx, v) > 0;
+    JS_FreeValue(ctx, v);
+    return b;
+}
+static void tset(JSContext *ctx, JSValueConst o, int a, double d) { JS_SetProperty(ctx, o, TA[a], JS_NewFloat64(ctx, d)); }
+static inline bool is_num(JSValueConst v) { int t = JS_VALUE_GET_TAG(v); return t == JS_TAG_INT || JS_TAG_IS_FLOAT64(t); }
+static double js_min(double a, double b) { return a != a || b != b ? NAN : a < b ? a : b; } // Math.min for these
+
+static double ease_native(int e, double v) {
+    switch (e) {
+    case EASE_LINEAR: return v;
+    case EASE_SINE_IN: return v == 0 ? 0 : v == 1 ? 1 : 1 - cos(v * M_PI / 2);
+    case EASE_SINE_OUT: return v == 0 ? 0 : v == 1 ? 1 : sin(v * M_PI / 2);
+    case EASE_SINE_INOUT: return v == 0 ? 0 : v == 1 ? 1 : 0.5 * (1 - cos(M_PI * v));
+    case EASE_CUBIC_IN: return v * v * v;
+    case EASE_CUBIC_OUT: --v; return v * v * v + 1;
+    case EASE_CUBIC_INOUT:
+        if ((v *= 2) < 1) return 0.5 * v * v * v;
+        v -= 2;
+        return 0.5 * (v * v * v + 2);
+    }
+    return v;
+}
+
+// TweenData.update(delta) for a datum playing forward or backward that doesn't finish in this step:
+// 1 (still playing) or 0, -1 with an exception; 2: not the common case (the caller runs Phaser's).
+static int tween_data_fast(JSContext *ctx, JSValueConst d, JSValueConst tween, JSValueConst targets, double delta) {
+    double state = tnum(ctx, d, TA_state);
+    bool forward = state == 5, backward = state == 6; // PLAYING_FORWARD, PLAYING_BACKWARD
+    if (!forward && !backward) return 2;
+    JSValue interp = TG(d, TA_interpolation), ease = TG(d, TA_ease), start = TG(d, TA_start), end = TG(d, TA_end);
+    int rc = 2;
+    JSValue target = JS_UNDEFINED, key = JS_UNDEFINED;
+    JSValue upd = TG(d, TA_update);
+    bool plain = same(upd, TW.td_update); // not TweenFrameData (texture frames) or a subclass
+    JS_FreeValue(ctx, upd);
+    if (!plain || JS_ToBool(ctx, interp) > 0 || tbool(ctx, d, TA_isCountdown) || !is_num(start) || !is_num(end) ||
+        !JS_IsFunction(ctx, ease))
+        goto out;
+    double elapsed = tnum(ctx, d, TA_elapsed) + delta, duration = tnum(ctx, d, TA_duration);
+    if (!(elapsed < duration) || elapsed < 0) goto out; // finishing (or rewinding past 0): Phaser's code
+    target = JS_GetPropertyInt64(ctx, targets, (int64_t)tnum(ctx, d, TA_targetIndex));
+    if (JS_ToBool(ctx, target) <= 0) goto out;
+    key = TG(d, TA_key);
+    if (!JS_IsString(key)) goto out;
+    double progress = clamp01(elapsed / duration);
+    tset(ctx, d, TA_elapsed, elapsed);
+    tset(ctx, d, TA_progress, progress);
+    JSValue prev = TG(d, TA_current);
+    JS_SetProperty(ctx, d, TA[TA_previous], prev); // takes prev
+    if (!forward) progress = 1 - progress;
+    double v;
+    int e = 0;
+    while (e < EASE_COUNT && !same(ease, TW.eases[e])) e++;
+    if (e < EASE_COUNT) {
+        v = ease_native(e, progress);
+    } else {
+        JSValue arg = JS_NewFloat64(ctx, progress), r = JS_Call(ctx, ease, d, 1, &arg);
+        if (JS_IsException(r)) { rc = -1; goto out; }
+        if (JS_ToFloat64(ctx, &v, r)) { JS_FreeValue(ctx, r); rc = -1; goto out; }
+        JS_FreeValue(ctx, r);
+    }
+    double s = num(ctx, start), current = s + ((num(ctx, end) - s) * v);
+    tset(ctx, d, TA_current, current);
+    JSAtom ka = JS_ValueToAtom(ctx, key);
+    int w = JS_SetProperty(ctx, target, ka, JS_NewFloat64(ctx, current));
+    JS_FreeAtom(ctx, ka);
+    if (w < 0) { rc = -1; goto out; }
+    // dispatchEvent(TWEEN_UPDATE, 'onUpdate'): skipped when seeking or nobody listens
+    if (!tbool(ctx, tween, TA_isSeeking)) {
+        JSValue evs = TG(tween, TA__events), cbs = TG(tween, TA_callbacks);
+        JSValue l = JS_IsObject(evs) ? JS_GetProperty(ctx, evs, TW.ev_update) : JS_UNDEFINED;
+        JSValue h = JS_IsObject(cbs) ? TG(cbs, TA_onUpdate) : JS_UNDEFINED;
+        bool listen = !JS_IsUndefined(l) || JS_ToBool(ctx, h) > 0 || !JS_IsObject(evs);
+        JS_FreeValue(ctx, evs), JS_FreeValue(ctx, cbs), JS_FreeValue(ctx, l), JS_FreeValue(ctx, h);
+        if (listen) {
+            JSValueConst args[2] = {JS_AtomToString(ctx, TW.ev_update), JS_NewAtomString(ctx, "onUpdate")};
+            JSValue r = JS_Invoke(ctx, d, TA[TA_dispatchEvent], 2, args);
+            JS_FreeValue(ctx, (JSValue)args[0]), JS_FreeValue(ctx, (JSValue)args[1]);
+            if (JS_IsException(r)) { rc = -1; goto out; }
+            JS_FreeValue(ctx, r);
+        }
+    }
+    rc = tnum(ctx, d, TA_state) != 9; // !isComplete()
+out:
+    JS_FreeValue(ctx, interp), JS_FreeValue(ctx, ease), JS_FreeValue(ctx, start), JS_FreeValue(ctx, end);
+    JS_FreeValue(ctx, target), JS_FreeValue(ctx, key);
+    return rc;
+}
+
+// Tween.prototype.update(delta)
+static JSValue js_tween_update(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    JSValueConst t = this_val;
+    if (!TW.ready || argc < 1 || !JS_IsObject(t) || tnum(ctx, t, TA_state) != 21 /* ACTIVE */ || tbool(ctx, t, TA_paused) ||
+        !tbool(ctx, t, TA_hasStarted))
+        return JS_Call(ctx, TW.orig_update, t, argc, argv);
+    JSValue parent = TG(t, TA_parent);
+    double delta = num(ctx, argv[0]);
+    delta *= tnum(ctx, t, TA_timeScale) * tnum(ctx, parent, TA_timeScale);
+    JS_FreeValue(ctx, parent);
+    JSValue data = TG(t, TA_data), targets = TG(t, TA_targets);
+    double total = tnum(ctx, t, TA_totalData);
+    bool running = false;
+    JSValue ret = JS_EXCEPTION;
+    for (int64_t i = 0; i < (int64_t)total; i++) {
+        JSValue d = JS_GetPropertyInt64(ctx, data, i);
+        int r = JS_IsObject(d) ? tween_data_fast(ctx, d, t, targets, delta) : 2;
+        if (r == 2) {
+            JSValue dv = JS_NewFloat64(ctx, delta), v = JS_Invoke(ctx, d, TA[TA_update], 1, (JSValueConst *)&dv);
+            r = JS_IsException(v) ? -1 : JS_ToBool(ctx, v) > 0;
+            JS_FreeValue(ctx, v);
+        }
+        JS_FreeValue(ctx, d);
+        if (r < 0) goto out;
+        if (r) running = true;
+    }
+    double el = tnum(ctx, t, TA_elapsed) + delta;
+    tset(ctx, t, TA_elapsed, el);
+    tset(ctx, t, TA_progress, js_min(el / tnum(ctx, t, TA_duration), 1));
+    double tel = tnum(ctx, t, TA_totalElapsed) + delta;
+    tset(ctx, t, TA_totalElapsed, tel);
+    tset(ctx, t, TA_totalProgress, js_min(tel / tnum(ctx, t, TA_totalDuration), 1));
+    if (!running) {
+        JSValue v = JS_Invoke(ctx, t, TA[TA_nextState], 0, NULL);
+        if (JS_IsException(v)) goto out;
+        JS_FreeValue(ctx, v);
+    }
+    bool remove = tnum(ctx, t, TA_state) == 25; // isPendingRemove()
+    if (remove && tbool(ctx, t, TA_persist)) {
+        JSValue v = JS_Invoke(ctx, t, TA[TA_setFinishedState], 0, NULL);
+        if (JS_IsException(v)) goto out;
+        JS_FreeValue(ctx, v);
+        remove = false;
+    }
+    ret = JS_NewBool(ctx, remove);
+out:
+    JS_FreeValue(ctx, data), JS_FreeValue(ctx, targets);
+    return ret;
+}
+
+// tweenSetup(origUpdate, eases: [Linear, Sine.In, Sine.Out, Sine.InOut, Cubic.In, Cubic.Out,
+//   Cubic.InOut], updateEvent, TweenData.prototype.update) -> the native Tween.prototype.update
+static JSValue js_tween_setup(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    if (argc < 4 || !JS_IsFunction(ctx, argv[0]) || !JS_IsFunction(ctx, argv[3])) return JS_ThrowTypeError(ctx, "tweenSetup: bad arguments");
+    JS_FreeValue(ctx, TW.td_update);
+    TW.td_update = JS_DupValue(ctx, argv[3]);
+    if (!TA[0])
+        for (int i = 0; i < TA_COUNT; i++) TA[i] = JS_NewAtom(ctx, ta_names[i]);
+    JS_FreeValue(ctx, TW.orig_update);
+    TW.orig_update = JS_DupValue(ctx, argv[0]);
+    for (int e = 0; e < EASE_COUNT; e++) {
+        JS_FreeValue(ctx, TW.eases[e]);
+        TW.eases[e] = JS_GetPropertyUint32(ctx, argv[1], e);
+    }
+    TW.ev_update = JS_ValueToAtom(ctx, argv[2]);
+    TW.ready = true;
+    return JS_NewCFunction(ctx, js_tween_update, "update", 1);
+}
+
 void fastpath_register(JSContext *ctx, JSValue native) {
     JS_SetPropertyStr(ctx, native, "pipelinePushBatch", JS_NewCFunction(ctx, js_push_batch, "pushBatch", 1));
     JS_SetPropertyStr(ctx, native, "pipelineFlush", JS_NewCFunction(ctx, js_flush, "flush", 1));
@@ -2677,6 +2870,7 @@ void fastpath_register(JSContext *ctx, JSValue native) {
     JS_SetPropertyStr(ctx, native, "batchVerts", JS_NewCFunction(ctx, js_batch_verts, "batchVerts", 8));
     JS_SetPropertyStr(ctx, native, "batchChars", JS_NewCFunction(ctx, js_batch_chars, "batchChars", 17));
     JS_SetPropertyStr(ctx, native, "bitmapTextSetup", JS_NewCFunction(ctx, js_bitmap_text_setup, "bitmapTextSetup", 3));
+    JS_SetPropertyStr(ctx, native, "tweenSetup", JS_NewCFunction(ctx, js_tween_setup, "tweenSetup", 4));
     JS_SetPropertyStr(ctx, native, "renderContainer", JS_NewCFunction(ctx, js_render_container, "renderContainer", 4));
     JS_SetPropertyStr(ctx, native, "renderSetup", JS_NewCFunction(ctx, js_render_setup, "renderSetup", 1));
     JS_SetPropertyStr(ctx, native, "replaceWrap", JS_NewCFunction(ctx, js_replace_wrap, "replaceWrap", 1));

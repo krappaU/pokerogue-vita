@@ -25,10 +25,11 @@ draws correctly, and what differs between screens is how much of the drawing tak
 | QuickJS: spread arguments, array species creation, appending `splice`, small `apply`, `flat()` of numbers | `patches/quickjs-0002`, `-0004` | 0.42, 0.44 (steps 1, 3b) |
 | eventemitter3 `emit` (skips WebGLPipeline's empty render listeners); text size read from the drawn text | `js_ee_emit`, `fast_text` | 0.47 (step 3d) |
 | BitmapText (item stack counts): the character loop everywhere; in containers the whole renderer (no per-character colours or post pipeline) | `batchChars`, `batch_bitmap_text` | 0.81 |
+| Tween stepping: `Tween.update` of running tweens and `TweenData.update` while playing forward/backward (Linear, Sine, Cubic eases native; others called); starts, ends, repeats, yoyos, holds and delays stay in Phaser's code | "tweens" (`js_tween_update`) | 0.85 |
 
 Each is checked frame by frame against Phaser with `probe_verify_render.js`,
 `probe_verify_uniforms.js`, `probe_verify_batching.js`, `probe_verify_pipeline.js` (every WebGL call)
-`probe_verify_emit.js` and `probe_verify_bitmaptext.js`, all run in CI on `tests/phaser`. localStorage switches turn them off
+`probe_verify_emit.js`, `probe_verify_bitmaptext.js` and `probe_verify_tweens.js`, all run in CI on `tests/phaser`. localStorage switches turn them off
 (`PKR_FASTPATH`, `PKR_NATIVE_RENDER`, `PKR_NATIVE_BATCH`, `PKR_NATIVE_UNIFORMS` set to `0`).
 
 ## Still on Phaser's JS path
@@ -40,7 +41,7 @@ Each is checked frame by frame against Phaser with `probe_verify_render.js`,
 | TileSprite, RenderTexture, DynamicBitmapText; BitmapText with per-character colours | 3 (not needed so far) | Not seen in the battle and menu screens measured |
 | Text that is flipped, cropped, or on a post or non-plain pipeline | 3 | |
 | Top-level render walk (`WebGLRenderer.render`: cameras, scene display list, pre/postRender) | 4 | Only containers are walked in C |
-| Tween and animation stepping | 5 | The update list already visits only animating sprites |
+| Animation stepping; tween starts, ends, repeats and delays | 5 | The update list already visits only animating sprites; tween stepping is native since 0.85 |
 | Masks, post pipelines, cropped sprites, custom pivots | none | Always Phaser's path, by design |
 
 

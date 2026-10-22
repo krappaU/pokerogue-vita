@@ -20,6 +20,7 @@
 // 13. WebGLShader.setUniform1..4 in C (PokeRogue's sprite pipelines set ~10 uniforms per sprite).
 // 14-17. Pipeline switching, Graphics, Rectangle/GeometryMask, EventEmitter.emit in C (see below).
 // 18. BitmapText.renderWebGL with its character loop in C; in containers, all of it in C.
+// 19. Tween.update and the common case of TweenData.update in C.
 //
 // Anything unusual (cropped sprites, custom pivots, masks, post pipelines, pipelines that
 // override batchSprite/batchQuad such as PokeRogue's SpritePipeline) takes Phaser's own path.
@@ -941,13 +942,37 @@
     }
   }
 
+  // 19. Tween.update and the common case of TweenData.update in C (src/fastpath.c "tweens"): a running
+  //     tween's data playing forward or backward, the ease (Linear, Sine, Cubic computed there,
+  //     others called), the target's property, onUpdate only when someone listens. Starting,
+  //     finishing, repeats, yoyos, holds and delays stay in Phaser's code. 13-27% of a battle frame's
+  //     JS on the Vita was tweens, most of it Phaser's stepping (0.83, log118). Only if Phaser's
+  //     tween code looks like 3.90's. localStorage PKR_NATIVE_TWEENS=0: off.
+  {
+    const TW = Phaser.Tweens && Phaser.Tweens.Tween, TD = Phaser.Tweens && Phaser.Tweens.TweenData;
+    const E = Phaser.Math && Phaser.Math.Easing, Ev = Phaser.Tweens && Phaser.Tweens.Events;
+    const tu = TW && String(TW.prototype.update), du = TD && String(TD.prototype.update), de = TD && String(TD.prototype.dispatchEvent);
+    let on = !!(g.__native.tweenSetup && E && E.Sine && E.Cubic && Ev && Ev.TWEEN_UPDATE &&
+      /isLoopDelayed\(\)/.test(tu) && /isCompleteDelayed\(\)/.test(tu) && /hasStarted/.test(tu) && /totalProgress/.test(tu) &&
+      /\.update\(\w+\)/.test(tu) && /nextState\(\)/.test(tu) && /isPendingRender\(\)/.test(du) && /isNumberTween/.test(du) &&
+      /interpolation/.test(du) && /setStateFromEnd/.test(du) && /onUpdate/.test(du) && /isSeeking/.test(de) && /callbacks\[/.test(de));
+    try { if (g.localStorage.getItem("PKR_NATIVE_TWEENS") === "0") on = false; } catch (e) { /* keep */ }
+    if (on) {
+      const orig = TW.prototype.update;
+      const nat = g.__native.tweenSetup(orig, [E.Linear, E.Sine.In, E.Sine.Out, E.Sine.InOut, E.Cubic.In, E.Cubic.Out, E.Cubic.InOut],
+        Ev.TWEEN_UPDATE, TD.prototype.update);
+      g.__rt.tweenSwap = [[TW.prototype, "update", orig, nat]];
+      TW.prototype.update = nat;
+    }
+  }
+
   // Which of the checked fast paths went in. Each one is skipped silently when Phaser's code no
   // longer looks like 3.90's, or when its source isn't there to check (0.49-0.54: compiled code
   // without source, so none were installed on the Vita); this line makes that visible.
   {
     const rt = g.__rt, parts = [["uniforms", rt.origSetUniform], ["pipeline", rt.pipelineSwaps && rt.pipelineSwaps.length],
       ["graphics", rt.graphicsSwap], ["shapes", rt.shapesSwap], ["emit", rt.emitSwap], ["uuid", rt.uuidWrap],
-      ["bitmap text", rt.bitmapTextSwap]];
+      ["bitmap text", rt.bitmapTextSwap], ["tweens", rt.tweenSwap]];
     const on = parts.filter((p) => p[1]).map((p) => p[0] + (typeof p[1] === "number" ? " (" + p[1] + " functions)" : ""));
     const off = parts.filter((p) => !p[1]).map((p) => p[0]);
     g.__native.log("[fastpath] native: " + (on.join(", ") || "none") + (off.length ? " | left to Phaser's JS: " + off.join(", ") : ""));
