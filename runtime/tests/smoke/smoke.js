@@ -155,7 +155,7 @@ async function run() {
   await check("gamefix: the sprite pipeline's palette code gives the same colours rewritten", async () => {
     const fixed = await import("./assets/sprite-Pk7rTst1.js"); // a chunk: src/gamefix.c rewrites it
     const text = await (await fetch("./assets/sprite-Pk7rTst1.js")).text();
-    const plain = new Function(text.replace(/export function/g, "function") + "\nreturn { bindColors, batchColors, fieldBind };")();
+    const plain = new Function(text.replace(/export function/g, "function") + "\nreturn { bindColors, batchColors, fieldBind, updateJumpIcons };")();
     class Pokemon {
       constructor(shiny, variant, key) { this.shiny = shiny, this.variant = variant, this.key = key; }
       getSprite() { return { texture: { key: this.key } }; }
@@ -206,6 +206,18 @@ async function run() {
     arenaCalls = 0;
     fieldBinds(fixed.fieldBind, { loop: { frame: 9 } });
     if (arenaCalls !== 2) return "arena tints not kept per frame (" + arenaCalls + " isOutside calls for 3 binds in 2 frames)";
+    // PokemonIconAnimHelper's loop: live icons move the same; destroyed ones (no scene) are dropped.
+    const helper = () => {
+      const live = { scene: {}, y: 0 }, dead = { scene: undefined, y: 0 }, live2 = { scene: {}, y: 0 };
+      const h = { icons: new Map([[live, { restY: 10, mode: 1 }], [dead, { restY: 20, mode: 2 }], [live2, { restY: 30, mode: 2 }]]),
+        getCurrentOffset: (m) => -m };
+      return { h, live, dead, live2 };
+    };
+    const hf = helper(), hp = helper();
+    fixed.updateJumpIcons.call(hf.h);
+    plain.updateJumpIcons.call(hp.h);
+    eq([hf.live.y, hf.live2.y].join(), [hp.live.y, hp.live2.y].join(), "icon positions");
+    if (hf.h.icons.size !== 2 || hf.h.icons.has(hf.dead) || hp.h.icons.size !== 3) return "destroyed icon not dropped (" + hf.h.icons.size + ")";
   });
   await check("net: Blob, object URLs and FileReader", async () => {
     const blob = new Blob(["abc", new Uint8Array([100, 101])], { type: "text/plain" });

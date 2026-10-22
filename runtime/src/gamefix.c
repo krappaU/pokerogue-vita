@@ -17,6 +17,12 @@
 // sharing them is safe. On the Vita the pipeline's methods were ~37% of a battle frame's JS (0.78,
 // log108; a shiny Pokémon was on the field).
 //
+// party icons of destroyed slots dropped: PokemonIconAnimHelper (party screen) keeps every icon
+// added to it, and the party screen destroys its slots (clearPartySlots) without taking their icons
+// out, so each opening adds the party's icons again; two endless tweens set the y of all of them
+// (every 200 ms, and every frame of a jump). In a long session that was hundreds of destroyed sprites
+// per frame. The two loops now drop an icon whose sprite was destroyed (no scene) instead of moving it.
+//
 // arena tints per frame: FieldSpritePipeline.onBind (every field and Pokémon sprite) works out the
 // arena's day, dusk, night, override and terrain colours (five new arrays, `isOutside` three times)
 // for each sprite, though they only change between frames (game logic runs in Phaser's update, the
@@ -35,6 +41,8 @@
 typedef struct {
     const char *name, *find, *replace;
     const char *before; // must also occur, with the same names, in the 800 bytes before the match
+    const char *marker; // a chunk without this text is skipped quickly
+    int max;            // matches to rewrite (0: one; a second copy would be a different game build)
 } fix;
 
 static const fix FIXES[] = {
@@ -43,14 +51,14 @@ static const fix FIXES[] = {
      "this.set4fv(`baseVariantColors`,@2.flat()).set4fv(`variantColors`,@4.flat())",
      "else @2=@4=globalThis.__pkrZero128;"
      "this.set4fv(`baseVariantColors`,@2.flat()).set4fv(`variantColors`,@4.flat())",
-     "@3=[0,0,0,0],@2=[],@4=[];"},
+     "@3=[0,0,0,0],@2=[],@4=[];", "baseVariantColors", 0},
     {"sprite colours (no fusion)",
      "@1=[0,0,0,0],@2=[],@3=[];for(let @4=0;@4<32;@4++)@2.splice(@2.length,0,...@4<@5.length?@5[@4].map(@6=>@6/255):@1),"
      "@3.splice(@3.length,0,...@4<@7.length?@7[@4]:@1);",
      "@1=[0,0,0,0],@2=[],@3=[];if(@5.length===0&&@7.length===0)@2=@3=globalThis.__pkrZero128;"
      "else for(let @4=0;@4<32;@4++)@2.splice(@2.length,0,...@4<@5.length?@5[@4].map(@6=>@6/255):@1),"
      "@3.splice(@3.length,0,...@4<@7.length?@7[@4]:@1);",
-     NULL},
+     NULL, "baseVariantColors", 0},
     {"shiny colours kept",
      "&&Object.hasOwn(@1,@2)){let @3=Object.keys(@1[@2]);for(let @4=0;@4<32;@4++)if(@4<@3.length){"
      "let @5=Array.from(Object.values(@6(@3[@4]))),@7=Array.from(Object.values(@6(@1[@2][@3[@4]])));"
@@ -62,7 +70,7 @@ static const fix FIXES[] = {
      "@8.splice(@8.length,0,...@5.map(@A=>@A/255)),@9.splice(@9.length,0,...@7.map(@B=>@B/255))}"
      "else @8.splice(@8.length,0,...@C),@9.splice(@9.length,0,...@C);"
      "typeof pkrK===`object`&&pkrK&&globalThis.__pkrMemo.set(pkrK,[@8,@9])}}else ",
-     "@C=[0,0,0,0],@8=[],@9=[];"},
+     "@C=[0,0,0,0],@8=[],@9=[];", "baseVariantColors", 0},
     {"arena tints per frame",
      ".setBoolean(`isOutside`,@1.arena.isOutside()).set3fv(`overrideTint`,@2().map(@3=>@3/255))"
      ".set3fv(`dayTint`,@1.arena.getDayTint().map(@4=>@4/255)).set3fv(`duskTint`,@1.arena.getDuskTint().map(@5=>@5/255))"
@@ -73,7 +81,11 @@ static const fix FIXES[] = {
      "tc:@7(@1.arena.terrainType).map(@8=>@8/255)})).o).set3fv(`overrideTint`,this.__pkrT.ot)"
      ".set3fv(`dayTint`,this.__pkrT.d).set3fv(`duskTint`,this.__pkrT.du).set3fv(`nightTint`,this.__pkrT.n)"
      ".set3fv(`terrainColor`,this.__pkrT.tc)",
-     NULL},
+     NULL, "terrainColorRatio", 0},
+    {"party icons of destroyed slots dropped",
+     "for(let[@1,@2]of this.icons)@1.y=@2.restY+this.getCurrentOffset(@2.mode)",
+     "for(let[@1,@2]of this.icons)@1.scene?@1.y=@2.restY+this.getCurrentOffset(@2.mode):this.icons.delete(@1)",
+     NULL, "updateJumpIcons", 2},
 };
 #define NFIX (int)(sizeof FIXES / sizeof FIXES[0])
 
@@ -149,10 +161,14 @@ static size_t expanded_len(const char *t, const caps *c) {
 char *gamefix_source(const char *url, const char *src, size_t len, size_t *out_len) {
     if (g_cfg.no_gamefix || !src) return NULL;
     // Cheap test first: every chunk passes through here.
-    static const char marker[] = "baseVariantColors";
-    bool any = false;
-    for (size_t i = 0; !any && i + sizeof marker - 1 <= len; i++)
-        any = src[i] == 'b' && !memcmp(src + i, marker, sizeof marker - 1);
+    bool has_marker[NFIX], any = false;
+    for (int f = 0; f < NFIX; f++) {
+        const char *mk = FIXES[f].marker;
+        size_t ml = strlen(mk);
+        has_marker[f] = false;
+        for (size_t i = 0; !has_marker[f] && i + ml <= len; i++) has_marker[f] = src[i] == mk[0] && !memcmp(src + i, mk, ml);
+        any |= has_marker[f];
+    }
     if (!any) return NULL;
 
     char *cur = NULL;
@@ -161,10 +177,10 @@ char *gamefix_source(const char *url, const char *src, size_t len, size_t *out_l
     char applied[200] = "";
     for (int f = 0; f < NFIX; f++) {
         const fix *x = &FIXES[f];
+        if (!has_marker[f]) continue;
         const char *e = in + cur_len;
-        int hits = 0;
-        // Each match only once: a second copy of the same code would be a different game build.
-        for (const char *s = in; s < e; s++) {
+        int hits = 0, max = x->max > 0 ? x->max : 1;
+        for (const char *s = in; s < e && hits < max; s++) {
             if (x->find[0] == '@' ? s > in && ident_char(s[-1]) : *s != x->find[0]) continue;
             caps c = {0};
             size_t m = match_at(s, e, x->find, &c);
@@ -190,10 +206,11 @@ char *gamefix_source(const char *url, const char *src, size_t len, size_t *out_l
             memcpy(out + o, s + m, (size_t)(e - (s + m)));
             o += (size_t)(e - (s + m));
             out[o] = 0;
+            size_t next = (size_t)(s - in) + rlen; // go on after the rewritten text
             free(cur);
-            cur = out, in = out, cur_len = o;
+            cur = out, in = out, cur_len = o, e = in + cur_len;
+            s = in + next - 1;
             hits++;
-            break;
         }
         if (hits) snprintf(applied + strlen(applied), sizeof applied - strlen(applied), "%s%s", applied[0] ? ", " : "", x->name);
     }

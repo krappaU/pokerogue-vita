@@ -921,3 +921,19 @@ repeat, hold, delays, a number tween, two targets, time scale, update listeners)
 Phaser's code over the same deltas and compares targets, state and callbacks after each step; it
 catches a 1e-12 change in an ease. Desktop: 0.55 against ~2.9 us per running tween of two properties;
 the first battle's idle tweens 89-99 -> 73 us a frame (the rest: the game's callbacks and setters).
+
+### A long session slows down: the party screen's icons pile up (log123, 0.85, 2026-10-22; runtime 0.86)
+A 21-minute session on 0.85: the first battles ran at 28-41 fps with 20-30 ms of JS at the median;
+after ~8 minutes many battles took 34-44 ms (18-25 fps), and tweenStep's own share of the samples
+went from 2% to 8%. PokeRogue's PokemonIconAnimHelper (the party screen's jumping icons) keeps every
+icon added to it, and the party screen destroys its slots on every opening (clearPartySlots) without
+taking their icons out: each opening adds the party's icons again, and two endless tweens of the
+helper set the y of all of them every 200 ms and on every frame of a jump. Desktop, ten openings
+with a party of two: 22 icons kept (all but two destroyed sprites). 0.86: src/gamefix.c's fifth
+rewrite drops an icon whose sprite was destroyed (no scene) in those two loops instead of moving it
+(the live ones move as before; tests/smoke runs the game's loop both ways); after ten openings the
+helper keeps none (two while the screen is open). Each rewrite now has its own marker, so chunks
+without the code are skipped quickly, and may apply more than once (this loop is in two places).
+The two ~10 s pauses in the log were not garbage collection mid-battle: the collection itself took
+1.7 s under the loading screen; the rest was the game resetting for a new run (reset, launchBattle,
+the UI screens set up again: MoveInfoOverlay alone ~3 s).
