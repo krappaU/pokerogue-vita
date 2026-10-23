@@ -223,6 +223,7 @@
 
   g.fetch = function (input, init = {}) {
     const req = new Request(input, init);
+    if (/\/savedata\/(updateall|session\/update)\b/.test(req.url) && N.gcAtSave) N.gcAtSave(); // the run saved online (main.c gc_at_save)
     const ct = contentTypeFor(req._body);
     if (ct && !req.headers.has("content-type")) req.headers.set("content-type", ct);
     return request(req.method, req.url, req.headers, req._body, req.signal).then((r) => {

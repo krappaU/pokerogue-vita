@@ -751,6 +751,30 @@ static void busy_poll(void) {
     else gc_during_loading();
 }
 
+// The game saves its run at the start of every wave (localStorage sessionData..., or the server's
+// savedata API online): js/storage.js and js/net.js call gc_at_save_request. A collection there,
+// behind the loading screen, is less in the way than one QuickJS starts in the middle of a battle
+// (1.6-4 s on the Vita, about every 25 minutes: logs 142, 145), so when the JS heap is two thirds of
+// the way to its next collection, the next frame collects first.
+static bool gc_save_requested;
+void gc_at_save_request(void) { gc_save_requested = true; }
+static void gc_at_save(void) {
+    if (!gc_save_requested || !g_ctx_for_mem) return;
+    gc_save_requested = false;
+    JSRuntime *rt = JS_GetRuntime(g_ctx_for_mem);
+    double threshold = (double)JS_GetGCThreshold(rt), after_last = threshold / 1.5, now = (double)JS_GetMallocSize(rt);
+    if (now < after_last + (threshold - after_last) * 2 / 3) return;
+    overlay_busy_draw("Loading...");
+    plat_swap();
+    gl_restore_state();
+    double t0 = host_now_ms();
+    JS_RunGC(rt);
+    double ms = host_now_ms() - t0;
+    size_t left = JS_GetMallocSize(rt);
+    JS_SetGCThreshold(rt, gc_next_threshold(left));
+    host_log("[gc] collected after the game saved: %.0f ms, JS heap %.1f -> %.1f MB", ms, now / 1048576.0, left / 1048576.0);
+}
+
 // Between frames: the heap is nearly full (less than half of HEAP_RESERVE free). Collect now, with
 // the loading screen up, rather than let an allocation fail in the game's code. Not again until the
 // heap has grown by 8 MB since (when what is left is live data, collecting again frees nothing).
@@ -1248,6 +1272,7 @@ int main(int argc, char **argv) {
         set_phase("network");
         net_poll(ctx);
         gc_when_heap_low();
+        gc_at_save();
         set_phase("promise jobs");
         in_frame_js = true;
         size_t gc_threshold = JS_GetGCThreshold(JS_GetRuntime(ctx));

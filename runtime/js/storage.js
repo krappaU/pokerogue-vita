@@ -31,7 +31,12 @@
     const touch = () => { if (file) dirty.add(file); };
     const api = {
       getItem(k) { k = String(k); return data.has(k) ? data.get(k) : null; },
-      setItem(k, v) { data.set(String(k), String(v)); touch(); },
+      setItem(k, v) {
+        k = String(k);
+        data.set(k, String(v));
+        touch();
+        if (file && k.startsWith("sessionData") && N.gcAtSave) N.gcAtSave(); // the run saved (main.c gc_at_save)
+      },
       removeItem(k) { data.delete(String(k)); touch(); },
       clear() { data.clear(); touch(); },
       key(i) { return [...data.keys()][i] ?? null; },

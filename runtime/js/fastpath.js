@@ -10,7 +10,8 @@
 //    Phaser registers the function when each scene starts, so it can't be switched later.
 // 4. Text.updateText: measure on every change, draw and upload only when rendered (see below).
 // 5. NineSlice.renderWebGL: the vertex loop in native code.
-// 6. CanvasPool.create/remove: constant-time instead of scanning the whole pool.
+// 6. CanvasPool.create/remove: constant-time instead of scanning the whole pool. 6b: a new Text's
+//    canvas gets no GPU texture that its constructor would delete straight away.
 // 7. Display list / container membership from the objects' own fields instead of list scans.
 // 8. Utils.Array.Remove/RemoveAt and the WebGL renderer's wrapper lists: no JS shifting loop.
 // 9. AnimationManager: the sprites' animation-removed listeners in a Set instead of an array.
@@ -446,6 +447,35 @@
     return origFreeAll.apply(this, arguments);
   };
 
+  // 6b. A new Text's first GPU texture: Phaser 3.90's Text constructor registers its 1x1 canvas with the
+  // texture manager (addCanvas, which makes and filters a GPU texture for it) and deletes that texture
+  // right away ("we override it later"). PokeRogue makes ~1,500 texts when it builds its screens (at
+  // start and after every game reset), and each texture made and freed went through vitaGL's
+  // allocator: ~0.7 s of a 7.6 s reset on the Vita (log142). For the canvas of a Text being built
+  // (CanvasPool.create with a Text as parent, then addCanvas of that canvas), no texture is made: the
+  // constructor then deletes null and sets null, as it would have.
+  const TMP = Phaser.Textures && Phaser.Textures.TextureManager && Phaser.Textures.TextureManager.prototype;
+  if (TMP && typeof TMP.addCanvas === "function" &&
+      /deleteTexture\(this\.frame\.source\.glTexture\)/.test(String(Phaser.GameObjects.Text))) {
+    const poolCreate = CP.create, origAddCanvas = TMP.addCanvas, TextClass = Phaser.GameObjects.Text;
+    let pendingCanvas = null;
+    CP.create = function (parent) {
+      const c = poolCreate.apply(this, arguments);
+      if (parent instanceof TextClass && !parent.texture) pendingCanvas = c; // (its TextStyle measures with other canvases next)
+      return c;
+    };
+    const noTexture = () => null;
+    TMP.addCanvas = function (key, source) {
+      const r = this.game && this.game.renderer;
+      if (source !== pendingCanvas || !r || !r.gl) return origAddCanvas.apply(this, arguments);
+      pendingCanvas = null;
+      const filter = r.setTextureFilter;
+      r.createCanvasTexture = noTexture;
+      r.setTextureFilter = function (t) { return t ? filter.apply(this, arguments) : this; };
+      try { return origAddCanvas.apply(this, arguments); } finally { delete r.createCanvasTexture; delete r.setTextureFilter; }
+    };
+    g.__rt.textTextureSwap = true; // tests/phaser
+  }
   // 7. Display list and container membership: Phaser checks membership by scanning the scene's
   //    display list (thousands of objects in PokeRogue) when an object is added or moved into a
   //    container, and removes with indexOf plus a JS shifting loop: quadratic during UI setup
@@ -665,7 +695,8 @@
       if (keys.length === Object.keys(STYLE_PATHS).length && keys.every((k, i) => Object.keys(STYLE_PATHS)[i] === k)) {
         STYLE_MAP = keys.map((k) => {
           const path = STYLE_PATHS[k];
-          return { k, path, parts: path.includes(".") ? path.split(".") : null, def: probe[k],
+          const parts = path.includes(".") ? path.split(".") : null;
+          return { k, path, parts, top: parts ? parts[0] : path, def: probe[k],
                    raw: k === "wordWrapCallback" || k === "wordWrapCallbackScope" };
         });
       }
@@ -717,9 +748,13 @@
       if (!enabled) return origSetStyle.apply(this, arguments);
       if (t === undefined) t = true;
       if (n === undefined) n = false;
+      // A key the config doesn't have gives the default (or the current value): Phaser's GetValue
+      // only reads own properties. PokeRogue's configs have a few of the ~30 keys.
+      const own = e && (typeof e === "object" || typeof e === "function") ? new Set(Object.getOwnPropertyNames(e)) : null;
       for (let i = 0; i < STYLE_MAP.length; i++) {
         const s = STYLE_MAP[i], c = n ? s.def : this[s.k];
-        if (s.raw) this[s.k] = getValue(e, s.path, s.parts, c);
+        if (s.k !== "fontSize" && (!own || (!own.has(s.top) && !own.has(s.path)))) this[s.k] = c;
+        else if (s.raw) this[s.k] = getValue(e, s.path, s.parts, c);
         else if (e && s.k === "fontSize" && typeof e.fontSize === "number") this[s.k] = e.fontSize.toString() + "px";
         else this[s.k] = getAdvanced(e, s.path, s.parts, c);
       }

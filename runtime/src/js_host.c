@@ -993,6 +993,12 @@ static JSValue n_set_field_overlays(JSContext *ctx, JSValueConst this_val, int a
     return JS_UNDEFINED;
 }
 
+// gcAtSave(): the game just saved its run (js/storage.js, js/net.js); main.c may collect next frame.
+static JSValue n_gc_at_save(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    gc_at_save_request();
+    return JS_UNDEFINED;
+}
+
 // setTextFieldShown(bool): whether one of the game's text fields (login, registration, rename) is on
 // screen; the Vita's rear touchpad is off then (platform_vita.c).
 static bool text_field_on;
@@ -1123,6 +1129,7 @@ static const JSCFunctionListEntry native_funcs[] = {
     JS_CFUNC_DEF("imePoll", 0, n_ime_poll),
     JS_CFUNC_DEF("setFieldOverlays", 1, n_set_field_overlays),
     JS_CFUNC_DEF("setTextFieldShown", 1, n_set_text_field_shown),
+    JS_CFUNC_DEF("gcAtSave", 0, n_gc_at_save),
     JS_CFUNC_DEF("clockOffset", 0, n_clock_offset),
     JS_CFUNC_DEF("loadScript", 1, n_load_script),
     JS_CFUNC_DEF("utf8Decode", 1, n_utf8_decode),

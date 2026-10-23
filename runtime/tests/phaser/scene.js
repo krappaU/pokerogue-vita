@@ -229,6 +229,21 @@ async function run() {
     }
     report("input: gamepad updates skipped while the pad is unchanged give Phaser's state and events", !detail, detail);
   }
+  // js/fastpath.js 6b: a new Text makes no GPU texture just to delete it; it gets one when drawn.
+  {
+    const sc = game.scene.getScene("test"), gl = game.renderer.gl, mk = gl.createTexture;
+    let made = 0;
+    gl.createTexture = function () { made++; return mk.apply(this, arguments); };
+    let t;
+    try { t = sc.add.text(10, 10, "Gamefix", { fontFamily: "sans-serif", fontSize: "24px", color: "#ffffff" }); } finally { gl.createTexture = mk; }
+    const atBuild = made, nullAfter = t.frame.source.glTexture === null;
+    await nextFrames(game, 3);
+    const drawn = !!t.frame.source.glTexture;
+    t.destroy();
+    const detail = !rt.textTextureSwap ? "not installed" : atBuild ? atBuild + " textures made while building" :
+      !nullAfter ? "glTexture not null after the constructor" : !drawn ? "no texture after drawing" : "";
+    report("fastpath: a new text makes no texture until drawn", !detail, detail);
+  }
   // js/bootstrap.js: a destroyed timer event leaves its Clock's list; live and re-added ones keep running.
   {
     const clock = game.scene.getScene("test").time;

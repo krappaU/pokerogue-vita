@@ -1078,3 +1078,24 @@ to 2: the display shows a new frame every other vblank and the main loop waits f
 are 33.3 ms apart. Desktop (paced in the main loop): 60.2 -> 30.1 fps. The start screen's toggle
 rows are 22 px (from 26) so nine toggles and four modes fit the screen.
 
+### Shorter screen setup, and collections at saves (logs 142 and 145; runtime 0.96)
+Starting a new run rebuilds every screen of the game: one 7.6 s frame on the Vita (log142), with
+~1,500 text objects made. Two pieces of that, the same results and less work:
+- Phaser 3.90's Text constructor registers its 1x1 canvas with the texture manager, which makes a
+  GPU texture (and sets its filter), then deletes it at once. On the Vita each texture made and freed
+  goes through vitaGL's allocator: ~0.7 s of the 7.6 s in the delete alone. js/fastpath.js 6b makes no
+  texture for the canvas of a Text being built (CanvasPool.create with a Text parent, then addCanvas
+  of that canvas); the constructor then deletes null and sets null as before. Desktop, one reset:
+  1,426 GL textures made and 1,400 deleted before, 716 and 690 after. tests/phaser checks it.
+- TextStyle.setStyle (js/fastpath.js since 0.4x) looked up all ~30 style keys in the config through
+  Phaser's path rules; a key the config doesn't have gives the default, so those are now set
+  directly (fontSize keeps the full rule: it also reads inherited values). scripts/probe_textstyle.js
+  over a reset: 710 configs, 0 different from Phaser's own setStyle.
+On the desktop the reset frame changed little (GL is cheap there); the Vita's next log will say.
+Collections: QuickJS still collects in the middle of play about every 25 minutes (1.6-4 s; logs 142,
+145), and a long run has no loading screens to hide them under. The game saves its run at the start
+of every wave (localStorage sessionData..., or the server's savedata API online); after such a save,
+when the JS heap is two thirds of the way to its next collection, the next frame collects first
+behind the loading screen. QuickJS patch 0006 adds JS_GetMallocSize for that check (the heap's
+size without walking it). Desktop: a save per wave reaches it.
+

@@ -235,6 +235,7 @@ void config_set(const char *key, const char *value); // key=value in config.txt 
 bool fields_draw(void); // the game's text input fields (js/input.js -> __native.setFieldOverlays)
 void fields_set(int n);
 bool fields_draw_pending(void);
+void gc_at_save_request(void);       // the game saved its run: a good time to collect (main.c)
 bool text_field_shown(void);           // a game text field (login form...) was drawn last frame (js/input.js)
 void field_update(int i, const uint8_t *rgba, int w, int h, float x, float y, float dw, float dh);
 

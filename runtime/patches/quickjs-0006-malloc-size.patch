@@ -1,0 +1,30 @@
+Adds JS_GetMallocSize(rt): the bytes QuickJS has allocated (malloc_state.malloc_size), read
+without walking the heap as JS_ComputeMemoryUsage does, for decisions made every frame (when to
+collect garbage).
+
+--- a/quickjs.c
++++ b/quickjs.c
+@@ -7578,6 +7578,12 @@
+     }
+ }
+ 
++/* PKR: the bytes QuickJS has allocated, without walking the heap as JS_ComputeMemoryUsage does */
++size_t JS_GetMallocSize(JSRuntime *rt)
++{
++    return rt->malloc_state.malloc_size;
++}
++
+ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
+ {
+     struct list_head *el, *el1;
+--- a/quickjs.h
++++ b/quickjs.h
+@@ -604,6 +604,8 @@
+ } JSMemoryUsage;
+ 
+ JS_EXTERN void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s);
++/* PKR: QuickJS's allocated bytes (malloc_size), cheap enough for every frame */
++JS_EXTERN size_t JS_GetMallocSize(JSRuntime *rt);
+ JS_EXTERN void JS_DumpMemoryUsage(FILE *fp, const JSMemoryUsage *s, JSRuntime *rt);
+ 
+ /* atom support */
