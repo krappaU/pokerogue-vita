@@ -227,6 +227,7 @@ static float tap_x, tap_y;
 static double ctl_wait_until; // "wait": no further commands before this time
 
 static void toggle_variants(void);
+static void toggle_fps_lock(void);
 
 static void control_line(JSContext *ctx, char *line, bool *quit) {
     char *arg = strchr(line, ' ');
@@ -299,6 +300,8 @@ static void control_line(JSContext *ctx, char *line, bool *quit) {
         g_cfg.hud = !g_cfg.hud;
     } else if (!strcmp(line, "variants")) {
         toggle_variants();
+    } else if (!strcmp(line, "fps30")) {
+        toggle_fps_lock();
     } else if (!strcmp(line, "sendlog")) {
         dev_send_log();
     } else if (!strcmp(line, "quit")) {
@@ -625,17 +628,32 @@ static void draw_hud(JSContext *ctx, double js_ms) {
 // Native drawing over the game's frame: the built-in keyboard and the debug line.
 // L + R + TRIANGLE (debug builds) or "variants" on the control channel: shader variants off/on,
 // with a notice for a few seconds.
-static double variants_notice_until;
-static bool variants_on = true;
+static double notice_until;
+static const char *notice_text;
+static void notice(const char *text) {
+    notice_text = text;
+    notice_until = host_now_ms() + 3000;
+}
 static __attribute__((unused)) void toggle_variants(void) {
-    variants_on = gl_toggle_variants();
-    variants_notice_until = host_now_ms() + 3000;
+    notice(gl_toggle_variants() ? "Shader variants on" : "Shader variants off (original shaders)");
+}
+
+// The 30 fps lock (config.txt fps30=1, the start screen, L + R + SQUARE or "fps30" on the control
+// channel): the display shows a new frame every other vblank. Battles otherwise go between 30 and 45
+// fps, and an even 30 looks steadier. The desktop paces its frames in the main loop.
+static void apply_fps_lock(void) { plat_set_frame_interval(g_cfg.fps30 ? 2 : 1); }
+static void toggle_fps_lock(void) {
+    g_cfg.fps30 = !g_cfg.fps30;
+    apply_fps_lock();
+    config_set("fps30", g_cfg.fps30 ? "1" : "0");
+    host_log("[app] 30 fps lock %s", g_cfg.fps30 ? "on" : "off");
+    notice(g_cfg.fps30 ? "30 fps lock on" : "30 fps lock off");
 }
 
 static void draw_over_game(JSContext *ctx, double js_ms) {
     int pre_total, pre_left = gl_precompile_left(&pre_total);
-    bool variants_notice = host_now_ms() < variants_notice_until;
-    if (!osk_active() && !link_active() && !g_cfg.hud && !fields_draw_pending() && !pre_left && !variants_notice) return;
+    bool show_notice = host_now_ms() < notice_until;
+    if (!osk_active() && !link_active() && !g_cfg.hud && !fields_draw_pending() && !pre_left && !show_notice) return;
     host_call_rt(ctx, "beforeExternalGL", 0, NULL);
     fields_draw();
     osk_draw();
@@ -645,8 +663,8 @@ static void draw_over_game(JSContext *ctx, double js_ms) {
         char text[80];
         snprintf(text, sizeof text, "Preparing shaders %d/%d: the game may stutter", pre_total - pre_left, pre_total);
         overlay_notice_draw(text);
-    } else if (variants_notice) {
-        overlay_notice_draw(variants_on ? "Shader variants on" : "Shader variants off (original shaders)");
+    } else if (show_notice) {
+        overlay_notice_draw(notice_text);
     }
     host_call_rt(ctx, "afterExternalGL", 0, NULL);
 }
@@ -806,6 +824,8 @@ static void save_screenshot(const char *path) {
 //   online=1                        play the live site even if <data>/game exists
 //   log=1                           write log.txt (player builds; debug builds always do)
 //   gamefix=0                       the game's code exactly as it is, without gamefix.c's rewrites
+//   fps30=1                         30 fps lock: a frame every other vblank (also on the start screen,
+//                                   and L + R + SQUARE in game)
 // Debug builds only (dev, profiling and desktop builds; PKR_DEBUG in CMakeLists.txt):
 //   url=http://192.168.1.10:8000/   load the game from another server (testing)
 //   frames=600                      quit after N frames
@@ -976,6 +996,8 @@ static void load_config_file(void) {
         } else if (!strcmp(k, "profile")) {
             g_cfg.no_profile = atoi(v) == 0;
 #endif
+        } else if (!strcmp(k, "fps30")) {
+            g_cfg.fps30 = atoi(v) != 0;
         } else if (!strcmp(k, "osk")) {
             g_cfg.osk = atoi(v) != 0;
         } else if (!strcmp(k, "local") && v[0]) {
@@ -1171,7 +1193,7 @@ int main(int argc, char **argv) {
     }
 
     bool quit = false;
-    const double frame_ms = 1000.0 / 60.0;
+    apply_fps_lock();
     double next = host_now_ms();
     while (!quit) {
         plat_event ev;
@@ -1184,6 +1206,10 @@ int main(int argc, char **argv) {
 #ifdef PKR_DEBUG
                 g_cfg.hud = !g_cfg.hud;
 #endif
+                continue;
+            }
+            if (ev.type == PEV_TOGGLE_FPS_LOCK) {
+                toggle_fps_lock();
                 continue;
             }
             if (ev.type == PEV_TOGGLE_VARIANTS) {
@@ -1274,7 +1300,7 @@ int main(int argc, char **argv) {
 #ifndef __vita__
         // Pace to 60 Hz (Xvfb has no vsync; on the Vita, vglSwapBuffers waits for vblank).
         set_phase("idle (frame pacing)");
-        next += frame_ms;
+        next += g_cfg.fps30 ? 1000.0 / 30.0 : 1000.0 / 60.0;
         double now_ms = host_now_ms();
         if (next > now_ms) {
             double wait = next - now_ms;

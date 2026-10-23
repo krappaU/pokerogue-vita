@@ -172,6 +172,10 @@ is L2 (left side) or R2 (right side), which the game uses to cycle gender and ab
 select. The rear touchpad is off while one of the game's text fields is on screen (until 0.20 it was
 the "submit" button, and resting fingers sent the login form over and over), and its lower half,
 where fingers rest, does nothing. The submit button (the DualShock touchpad click) stays unmapped.
+30 fps lock (0.95): `fps30=1` in config.txt, a toggle on the start screen (all builds) or L + R + □
+in game (a notice confirms; saved to config.txt): the display takes a new frame every other vblank
+(vitaGL's `eglSwapInterval(2)`), so battles that run between 30 and 45 fps show an even 30. While
+L and R are held, □ and SELECT don't reach the game.
 The game's text fields are HTML `<input>` elements over the canvas; `js/input.js` draws their text
 (the field's font and colour, passwords as asterisks) and the native layer puts it over the game.
 

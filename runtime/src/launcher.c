@@ -2,8 +2,9 @@
 // Start screen: play the live site (online) or the game copied to the memory card (offline).
 // Shown before anything else loads, since the choice decides which game and which saves are used.
 // D-pad / left stick and cross (or START), or touch; the choice is remembered for next time.
-// Debug builds add the shader benchmark as a mode (when the build carries bench/) and the on/off
-// options of config.txt as toggles, written back to config.txt; all of them are read after this.
+// Below the modes, on/off options of config.txt as toggles, written back to config.txt (all are read
+// after this): the 30 fps lock in every build, and debug builds' options; debug builds also offer
+// the shader benchmark as a mode (when the build carries bench/).
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,13 +28,14 @@ static int box_y(int i, int n, int t) { return BOX_Y0 + i * (box_h(n, t) + box_g
 
 enum { M_ONLINE, M_OFFLINE, M_DOWNLOAD, M_UPDATE, M_BENCH };
 
-#ifdef PKR_DEBUG
 typedef struct {
     const char *label, *key;
     bool *v;
     bool inverted; // the field says "off" (no_*)
 } toggle;
 static const toggle toggles[] = {
+    {"30 fps lock (L+R+Square)", "fps30", &g_cfg.fps30, false},
+#ifdef PKR_DEBUG
     {"Game fixes (gamefix)", "gamefix", &g_cfg.no_gamefix, true},
     {"Shader fixes (shaderfix)", "shaderfix", &g_cfg.no_shader_fix, true},
     {"Precompile shaders", "precompile", &g_cfg.no_precompile, true},
@@ -42,19 +44,16 @@ static const toggle toggles[] = {
     {"GPU profile (gpuprofile)", "gpuprofile", &g_cfg.gpu_profile, false},
     {"Plain shaders (measuring)", "plainshaders", &g_cfg.plain_shaders, false},
     {"API headers (nettrace)", "nettrace", &g_cfg.net_trace, false},
+#endif
 };
 #define N_TOGGLES (int)(sizeof toggles / sizeof toggles[0])
 static bool toggle_on(int i) { return *toggles[i].v != toggles[i].inverted; }
-#else
-#define N_TOGGLES 0
-#endif
-#define TOG_H 26
-#define TOG_GAP 6
+#define TOG_H 22 // nine toggles and four modes still fit the 544-pixel screen
+#define TOG_GAP 4
 #define TOG_W ((BOX_W - 10) / 2)
 static int tog_y0(int n) { return box_y(n, n, N_TOGGLES) + 8; }
 static void tog_rect(int i, int n, int *x, int *y) { *x = BOX_X + (i % 2) * (TOG_W + 10), *y = tog_y0(n) + (i / 2) * (TOG_H + TOG_GAP); }
 static int img_h(int n) {
-    if (!N_TOGGLES) return 330;
     return tog_y0(n) + (N_TOGGLES + 1) / 2 * (TOG_H + TOG_GAP) - TOG_GAP + 56;
 }
 
@@ -117,21 +116,17 @@ static void render(int sel, const int *modes, int n, const char *offline_version
         text(BOX_X + 16, y + (small ? 36 : 44), a, 1, tc);
         if (!small && b) text(BOX_X + 16, y + 60, b, 1, tc);
     }
-#ifdef PKR_DEBUG
     static const uint8_t on[4] = {120, 220, 130, 255};
     for (int i = 0; i < N_TOGGLES; i++) {
         int x, y;
         tog_rect(i, n, &x, &y);
         bool s = n + i == sel;
         fill(x, y, TOG_W, TOG_H, s ? hi : box);
-        text(x + 10, y + 9, toggles[i].label, 1, s ? dark : fg);
+        text(x + 10, y + (TOG_H - 8) / 2, toggles[i].label, 1, s ? dark : fg);
         const char *st = toggle_on(i) ? "ON" : "off";
-        text(x + TOG_W - 10 - 8 * (int)strlen(st), y + 9, st, 1, s ? dark : toggle_on(i) ? on : dim);
+        text(x + TOG_W - 10 - 8 * (int)strlen(st), y + (TOG_H - 8) / 2, st, 1, s ? dark : toggle_on(i) ? on : dim);
     }
     text(BOX_X, H - 46, "D-pad and X (or touch): play, or switch an option (saved).", 1, dim);
-#else
-    text(BOX_X, H - 46, "D-pad and X (or touch) to choose. Your choice is remembered.", 1, dim);
-#endif
     text(BOX_X, H - 26, host_version_string(), 1, dim);
 }
 
@@ -161,13 +156,9 @@ static int move(int sel, int n, int dy, int dx) {
 
 // Cross on a toggle: flips it, for this run and in config.txt.
 static void flip(int i) {
-#ifdef PKR_DEBUG
     *toggles[i].v = !*toggles[i].v;
     config_set(toggles[i].key, toggle_on(i) ? "1" : "0");
     host_log("[start] %s=%d", toggles[i].key, toggle_on(i));
-#else
-    (void)i;
-#endif
 }
 
 static void choice_path(char *out, size_t n) { snprintf(out, n, "%s/launcher.txt", g_cfg.data_dir); }

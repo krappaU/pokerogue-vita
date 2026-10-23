@@ -1071,3 +1071,10 @@ updateJumpIcons, onAlternate) took 6-10% from the moment the run started.
 (The offline build of 2026-10-16 has no `jumpOffset=0` in PokemonIconAnimHelper, so its jumping icons
 get NaN there; the live game has the field. Not this runtime's.)
 
+### A 30 fps lock (owner's request, 2026-10-23; runtime 0.95)
+Battles on 0.93 ran between 30 and 45 fps; the owner prefers an even 30. `fps30=1` (start screen
+toggle in every build, L + R + □ in game, "fps30" on the control channel) sets vitaGL's swap interval
+to 2: the display shows a new frame every other vblank and the main loop waits for it, so frames
+are 33.3 ms apart. Desktop (paced in the main loop): 60.2 -> 30.1 fps. The start screen's toggle
+rows are 22 px (from 26) so nine toggles and four modes fit the screen.
+

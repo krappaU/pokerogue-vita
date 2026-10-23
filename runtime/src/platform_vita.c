@@ -148,6 +148,16 @@ bool plat_poll_event(plat_event *ev) {
             return true;
         }
         select_was_down = select_down;
+        // SQUARE pressed while holding L + R: the 30 fps lock on/off.
+        static bool square_was_down;
+        bool square_down = pad.buttons & SCE_CTRL_SQUARE;
+        if (square_down && !square_was_down && lr) {
+            square_was_down = true;
+            memset(ev, 0, sizeof *ev);
+            ev->type = PEV_TOGGLE_FPS_LOCK;
+            return true;
+        }
+        square_was_down = square_down;
         // START pressed while holding L + R: send the log to the dev server.
         static bool start_was_down;
         bool start_down = pad.buttons & SCE_CTRL_START;
@@ -215,7 +225,7 @@ int plat_gamepads(plat_gamepad *out, int max) {
         0, 0, SCE_CTRL_SELECT, SCE_CTRL_START, SCE_CTRL_L3, SCE_CTRL_R3,
         SCE_CTRL_UP, SCE_CTRL_DOWN, SCE_CTRL_LEFT, SCE_CTRL_RIGHT, SCE_CTRL_PSBUTTON,
     };
-    if ((b & HUD_COMBO) == HUD_COMBO) b &= ~SCE_CTRL_SELECT; // SELECT belongs to the debug toggle then
+    if ((b & HUD_COMBO) == HUD_COMBO) b &= ~(SCE_CTRL_SELECT | SCE_CTRL_SQUARE); // the combos' buttons then
     for (int i = 0; i < 17; i++) p->buttons[i] = (b & map[i]) ? 1.0f : 0.0f;
     // L2 and R2 (the game: cycle gender / ability in starter select): a touch on the upper half of
     // the rear touchpad, left or right side. The lower half, where fingers rest while holding the
@@ -271,6 +281,9 @@ void plat_swap(void) {
     vglSwapBuffers(GL_FALSE);
 #endif
 }
+
+// vitaGL's swap interval: the display waits for this many vblanks per frame.
+void plat_set_frame_interval(int vblanks) { eglSwapInterval(EGL_NO_DISPLAY, vblanks); }
 
 void plat_gpu_stats(double *avg_ms, double *max_ms, int *samples) {
     *avg_ms = gpu_n ? gpu_sum / gpu_n : 0, *max_ms = gpu_max, *samples = gpu_n;

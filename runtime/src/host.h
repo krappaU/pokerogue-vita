@@ -25,6 +25,8 @@ typedef struct {
     int busy_after_ms;       // config.txt busy=<ms>: loading screen during long frames (0: never)
     bool net_trace;          // config.txt nettrace=1: log API request headers
     bool osk;                // always use the built-in keyboard (config.txt osk=1)
+    bool fps30;              // config.txt fps30=1: a frame every other vblank (30 fps), steadier than
+                             // 30-45 (start screen toggle; L + R + SQUARE in game)
     bool hud;                // debug line over the game (config.txt hud=1; SELECT while holding L+R)
     bool sample;             // profiler sampling without the debug line (control channel "profile",
                              // config.txt sample=1; on from the start in profiling builds)
@@ -66,6 +68,7 @@ typedef enum {
     PEV_TOGGLE_HUD, // debug line on/off
     PEV_SEND_LOG,   // upload the log to the log server (devtools.c)
     PEV_TOGGLE_VARIANTS, // shader variants off/on (gl.c; debug builds, to tell their bugs apart)
+    PEV_TOGGLE_FPS_LOCK, // 30 fps lock on/off (L + R + SQUARE)
 } plat_event_type;
 
 typedef struct {
@@ -123,6 +126,7 @@ void plat_shutdown(void);
 // Returns false when there are no more events.
 bool plat_poll_event(plat_event *ev);
 void plat_swap(void);
+void plat_set_frame_interval(int vblanks); // 1: every vblank (60 Hz), 2: every other one (30 fps)
 void plat_gpu_stats(double *avg_ms, double *max_ms, int *samples); // debug builds: sampled GPU time per frame
 void plat_drawable_size(int *w, int *h);
 int plat_gamepads(plat_gamepad *pads, int max);
