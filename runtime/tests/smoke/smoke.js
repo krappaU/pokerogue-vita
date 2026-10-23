@@ -216,6 +216,23 @@ async function run() {
     plain.updateJumpIcons.call(hp.h);
     eq([hf.live.y, hf.live2.y].join(), [hp.live.y, hp.live2.y].join(), "icon positions");
     if (hf.h.icons.size !== 2 || hf.h.icons.has(hf.dead) || hp.h.icons.size !== 3) return "destroyed icon not dropped (" + hf.h.icons.size + ")";
+    // Icons in a hidden container are left as they are and set when it is shown, before drawing.
+    {
+      const P = globalThis.__pkrIcons, box = { visible: false }, outer = { visible: true };
+      box.parentContainer = outer;
+      const shown = { scene: {}, y: 0 }, hidden = { scene: {}, y: 0, parentContainer: box };
+      let off = -1;
+      const h = { icons: new Map([[shown, { restY: 10, mode: 1 }], [hidden, { restY: 20, mode: 1 }]]), getCurrentOffset: () => off };
+      P.sync(h, true);
+      if (shown.y !== 9 || hidden.y !== 0) return "hidden icon: shown " + shown.y + ", hidden " + hidden.y + " after a loop";
+      off = -2;
+      P.sync(h, true);
+      P.flush();
+      if (hidden.y !== 0) return "hidden icon moved while still hidden";
+      box.visible = true;
+      P.flush();
+      if (hidden.y !== 18 || shown.y !== 8) return "hidden icon not set when shown: " + hidden.y;
+    }
   });
   await check("gamefix: the starter select screen's slots and filters come out the same rewritten", async () => {
     const fixed = await import("./assets/starter-Pk7rTst2.js"); // a chunk: src/gamefix.c rewrites it

@@ -1050,3 +1050,24 @@ from the game's own code ("cannot read property 'play' of undefined" in Pokemon.
 loadAssets: the Pokémon's sprite was already gone); the game carried on. Released as v0.93, the
 first release without "beta" (docs/releases/v0.93.md).
 
+### Two costs that grow during a run (log145, 0.93, 2026-10-23; runtime 0.94)
+log145's battle reports, one per 30 s: Phaser's Clock.update (timer events) rose from 1.5% of the
+frame's JS to 11.7% over 25 minutes, and PokemonIconAnimHelper's loops (getCurrentOffset,
+updateJumpIcons, onAlternate) took 6-10% from the moment the run started.
+- Timers: Phaser 3.90's TimerEvent.destroy() only clears the callback. The event stays in its Clock's
+  list and, with nothing to dispatch, never completes, so the Clock steps it every frame. The game
+  destroys timers that way: the play time timer at every battle load (a new one each time), a
+  fainting Pokémon's cry animation, and others. Desktop: 1 active timer after loading, 6, 9, 14 after
+  three battles. js/bootstrap.js now takes a destroyed event out of its Clock's list (at the Clock's
+  next preUpdate); a re-added one runs again (tests/phaser). After the same three battles: 1-2.
+- Icons: the starter select screen stays set up (hidden) for the whole run, and its helper's two
+  endless tweens kept setting the y of its ~90 icons (every 200 ms, and every frame of a jump). The
+  helper's loops (gamefix.c, since 0.86 for destroyed icons) now go to js/core.js: an icon that isn't
+  drawn (it or one of its containers has visible false) is skipped and remembered with the hidden
+  object; on the game's prerender event, a helper whose hidden object is shown again sets those icons
+  from the current state, which is what the loop would have left (it runs whenever that state
+  changes). A drawn icon always has the game's y (checked on the desktop's starter select: 33 drawn,
+  0 different; tests/smoke covers the hidden case).
+(The offline build of 2026-10-16 has no `jumpOffset=0` in PokemonIconAnimHelper, so its jumping icons
+get NaN there; the live game has the field. Not this runtime's.)
+

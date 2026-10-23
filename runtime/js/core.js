@@ -126,6 +126,41 @@
   Object.defineProperty(g, "__pkrZero128", { value: new Array(128).fill(0) });
   // The shiny colour arrays gamefix.c keeps, per variant colour cache entry.
   Object.defineProperty(g, "__pkrMemo", { value: new WeakMap() });
+  // PokemonIconAnimHelper's two loops (gamefix.c "party icons of destroyed slots dropped"): every
+  // 200 ms and every frame of a jump they set the y of all the helper's icons, and the starter
+  // select screen's helper keeps ~90 icons, still moved all run long while the screen is hidden
+  // (log145: 6-10% of a battle frame's JS). An icon Phaser won't draw (itself or a container it is
+  // in has visible false) is skipped and remembered with the hidden object; just before a frame is
+  // drawn (the game's prerender event), a helper whose hidden object is shown again sets its icons
+  // as the loop would have, from the same state (the loops run whenever that state changes). So a
+  // drawn icon always has the y the game's code gives it. Destroyed icons are dropped (0.86).
+  {
+    const pending = new Set();
+    let hooked = false;
+    const hider = (o) => { for (let c = o; c; c = c.parentContainer) if (c.visible === false) return c; return null; };
+    const sync = (h, defer) => {
+      let roots = null;
+      for (const [icon, d] of h.icons) {
+        if (!icon.scene) { h.icons.delete(icon); continue; }
+        const r = defer && hider(icon);
+        if (r) { (roots || (roots = new Set())).add(r); continue; }
+        icon.y = d.restY + h.getCurrentOffset(d.mode);
+      }
+      h._pkrRoots = roots;
+      if (roots) pending.add(h); else pending.delete(h);
+    };
+    const flush = () => {
+      for (const h of pending) {
+        for (const r of h._pkrRoots) if (r.visible !== false || !r.scene) { sync(h, true); break; }
+      }
+    };
+    Object.defineProperty(g, "__pkrIcons", { value: { sync, flush } }); // tests/smoke
+    Object.defineProperty(g, "__pkrIconSync", { value: (h) => {
+      const game = rt.renderer && rt.renderer.game;
+      if (!hooked && game && game.events) game.events.on("prerender", flush), (hooked = true);
+      sync(h, hooked);
+    } });
+  }
 
   rt.frameHooks = [];
   rt.onFrame = function (nowAbs) {

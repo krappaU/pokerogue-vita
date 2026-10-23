@@ -229,6 +229,26 @@ async function run() {
     }
     report("input: gamepad updates skipped while the pad is unchanged give Phaser's state and events", !detail, detail);
   }
+  // js/bootstrap.js: a destroyed timer event leaves its Clock's list; live and re-added ones keep running.
+  {
+    const clock = game.scene.getScene("test").time;
+    let live = 0, readded = 0;
+    const keep = clock.addEvent({ delay: 5, loop: true, callback: () => live++ });
+    const gone = clock.addEvent({ delay: 5, loop: true, callback: () => {} });
+    const once = clock.addEvent({ delay: 100000, callback: () => {} });
+    const again = clock.addEvent({ delay: 5, loop: true, callback: () => {} });
+    await nextFrames(game, 3);
+    gone.destroy(), once.destroy(), again.destroy();
+    clock.addEvent(again.reset({ delay: 5, loop: true, callback: () => readded++ }));
+    await nextFrames(game, 5);
+    const active = clock._active;
+    const detail = !rt.timerSwap ? "not installed"
+      : active.includes(gone) || active.includes(once) ? "destroyed events still in the clock's list"
+      : !active.includes(keep) || !active.includes(again) ? "a live or re-added event left the list"
+      : !(live > 3 && readded > 1) ? "events stopped running (" + live + ", " + readded + ")" : "";
+    keep.remove(), again.remove();
+    report("bootstrap: destroyed timer events leave the clock; live and re-added ones run", !detail, detail);
+  }
   // js/input.js: DOMElement.preRender leaves out the display = "none" write when already "none".
   {
     const [orig, fast] = rt.domPreRenderSwap || [];

@@ -39,11 +39,13 @@
 // (includes, some), so filterStarters now runs the original (as pkrFilterStarters) with getVals
 // remembering each result for that run, and puts getVals back afterwards.
 //
-// party icons of destroyed slots dropped: PokemonIconAnimHelper (party screen) keeps every icon
+// icon loops: destroyed icons dropped, hidden ones left: PokemonIconAnimHelper (party screen) keeps every icon
 // added to it, and the party screen destroys its slots (clearPartySlots) without taking their icons
 // out, so each opening adds the party's icons again; two endless tweens set the y of all of them
 // (every 200 ms, and every frame of a jump). In a long session that was hundreds of destroyed sprites
-// per frame. The two loops now drop an icon whose sprite was destroyed (no scene) instead of moving it.
+// per frame. The two loops now go to js/core.js's __pkrIconSync, which drops an icon whose sprite
+// was destroyed (no scene) and leaves one that isn't drawn (hidden) until it is shown again (0.94:
+// the starter select screen's ~90 icons were moved all run long behind the battle).
 //
 // arena tints per frame: FieldSpritePipeline.onBind (every field and Pokémon sprite) works out the
 // arena's day, dusk, night, override and terrain colours (five new arrays, `isOutside` three times)
@@ -115,9 +117,9 @@ static const fix FIXES[] = {
      "if(pkrS&&pkrS.f===pkrF&&pkrS.s===this.currentShader&&pkrS.m===@3&&pkrS.v===@4&&pkrS.y===@5)return;"
      "this.__pkrS={f:pkrF,s:this.currentShader,m:@3,v:@4,y:@5};this.set1f(`time`,@5)",
      NULL, "terrainColorRatio", 0},
-    {"party icons of destroyed slots dropped",
+    {"icon loops: destroyed icons dropped, hidden ones left",
      "for(let[@1,@2]of this.icons)@1.y=@2.restY+this.getCurrentOffset(@2.mode)",
-     "for(let[@1,@2]of this.icons)@1.scene?@1.y=@2.restY+this.getCurrentOffset(@2.mode):this.icons.delete(@1)",
+     "globalThis.__pkrIconSync(this)",
      NULL, "updateJumpIcons", 2},
     {"starter slots from one starter list",
      "for(let @1=0;@1<81;@1++){let @2=calcStarterContainerPosition(@1),@3=new StarterContainer(@4.getAllStarters()[@1])",

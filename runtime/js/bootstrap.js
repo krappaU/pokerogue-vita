@@ -79,6 +79,32 @@
         this.processing = false;
       };
     }
+    // Phaser 3.90's TimerEvent.destroy() only clears the callback: the event stays in its Clock's
+    // list, and with nothing left to dispatch it never completes, so the Clock steps it every frame
+    // for the rest of the session. PokeRogue destroys timers that way (the play time timer at every
+    // battle load, a fainting Pokémon's cry animation, ...): in log145 the Clock's update was 1.5%
+    // of a battle frame's JS early on and 11.7% after 25 minutes. A destroyed event is now taken out
+    // of its Clock's list (what Clock.removeEvent does) at the Clock's next preUpdate. Destroyed, it
+    // has no callback, so the game sees no difference; re-adding it (addEvent with the event itself,
+    // or reset) makes it live again. PKR_TIMER_CLEANUP=0 in localStorage turns this off.
+    const TE = P.Time && P.Time.TimerEvent, CK = P.Time && P.Time.Clock && P.Time.Clock.prototype;
+    if (TE && CK && typeof CK.preUpdate === "function" && g.localStorage.getItem("PKR_TIMER_CLEANUP") !== "0") {
+      const TEP = TE.prototype, destroy = TEP.destroy, reset = TEP.reset, addEvent = CK.addEvent, preUpdate = CK.preUpdate;
+      let destroyed = 0;
+      TEP.destroy = function () { this._pkrDead = true; destroyed++; return destroy.apply(this, arguments); };
+      TEP.reset = function () { this._pkrDead = false; return reset.apply(this, arguments); };
+      CK.addEvent = function (config) { if (config instanceof TE) config._pkrDead = false; return addEvent.apply(this, arguments); };
+      CK.preUpdate = function () {
+        const r = preUpdate.apply(this, arguments);
+        if (this._pkrSeen !== destroyed) {
+          this._pkrSeen = destroyed;
+          const a = this._active;
+          for (let i = a.length - 1; i >= 0; i--) if (a[i]._pkrDead) a.splice(i, 1);
+        }
+        return r;
+      };
+      rt.timerSwap = { destroy, preUpdate }; // tests/phaser
+    }
     // The game's stat-change animation (playStatChangeAnimation) adds a TileSprite of its full size
     // (936x1896 at the Vita's scale), fades it out and never destroys it: each one keeps a texture
     // and the CanvasTexture's pixel copy (7 MB each) for the rest of the session, and a long one ran
