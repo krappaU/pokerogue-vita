@@ -1111,3 +1111,24 @@ left as the next threshold / 1.5, but since 0.93 the threshold is sometimes set 
 reserve, so it fired early. main.c now keeps what each collection left (its own, and QuickJS's, whose
 threshold is 1.5x that), and the save-time collection also needs at least 8 MB of growth since.
 
+
+### The party screen and its texts (log150, 0.96, 2026-10-23; runtime 0.98)
+The party screen is built anew each time it opens and destroyed when it closes: six slots with ~6
+texts each (36 for a full party), plus sprites, icons and containers. On the Vita that was a ~330 ms
+frame, 15 times in 13 minutes (log150). Desktop, Temple battle, six Pokémon, per opening: 36 GL
+textures made, 62 canvas uploads, 36 textures deleted at close. Two changes in js/fastpath.js 4:
+- Measuring a new text no longer makes its GPU texture. Phaser's updateText ends by uploading the
+  canvas; the measuring pass (drawing switched off) therefore made a texture from the blank canvas,
+  and the draw uploaded again. Now a text gets its texture when it is first drawn, and texts that
+  are never shown (the party screen's hidden HP labels, much of the game's prebuilt UI) get none.
+  Desktop, in a battle: 1,218 live GL textures before, ~510 after.
+- A destroyed text's texture is kept under the inputs of its last draw (text, style, padding,
+  spacing, font generation; up to 4 MB, at most 256 KB each), and a new text drawn with the same
+  inputs takes it instead of drawing its canvas and uploading it. Gradients, patterns and wrap
+  callbacks are never kept. tests/phaser checks the reuse and that Phaser's own drawing of the same
+  inputs gives the same pixels; screenshots of the party screen are identical.
+Desktop, per opening after the first: 0 textures made (36), 2 uploads (62), 24 texts drawn from a
+kept texture; the opening frame 13.7 and 10.3 ms of update (19.4, 12.8 before), render 3.1-3.7 ms
+(5.0). What is left is the game making its objects (texts ~0.13 ms each on the desktop). Other
+screens built again with the same words (the shop's items, menus) take kept textures too: a
+100 s fight loop reused 88 of 1,156 drawn texts.

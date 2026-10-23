@@ -8,7 +8,8 @@
 //    alpha and scroll factor straight to the sprite batcher.
 // 3. UpdateList.sceneUpdate: visit only sprites whose animation is playing (see below). Always on:
 //    Phaser registers the function when each scene starts, so it can't be switched later.
-// 4. Text.updateText: measure on every change, draw and upload only when rendered (see below).
+// 4. Text.updateText: measure on every change, draw and upload only when rendered (see below);
+//    a destroyed text's GPU texture serves a new text drawn with the same inputs.
 // 5. NineSlice.renderWebGL: the vertex loop in native code.
 // 6. CanvasPool.create/remove: constant-time instead of scanning the whole pool. 6b: a new Text's
 //    canvas gets no GPU texture that its constructor would delete straight away.
@@ -285,21 +286,107 @@
     return stub;
   }
   const stubs = new WeakMap(); // native canvas object -> its measuring stand-in
-  const textStats = { updates: 0, measures: 0, draws: 0 };
+  const textStats = { updates: 0, measures: 0, draws: 0, reused: 0 };
   g.__rt.textStats = () => Object.assign({}, textStats);
-  function measureNow(t) {
+  // useTex: the GPU texture the text gets (a reused one, see textCache), else it keeps its own.
+  function measureNow(t, useTex) {
     textStats.measures++;
     t._pkrMeasureDirty = false;
     const ctx = t.context;
-    const real = ctx._n, tex = t.frame && t.frame.source && t.frame.source.glTexture;
+    const real = ctx._n, tex = useTex || (t.frame && t.frame.source && t.frame.source.glTexture) || null;
     const r = t.renderer, origC2T = r.canvasToTexture;
     let stub = stubs.get(real);
     if (!stub) stubs.set(real, (stub = measureStub(real)));
     ctx._n = stub;
-    // The upload at the end of updateText: keep the current texture (a new text gets one now).
-    if (tex) r.canvasToTexture = () => tex;
-    try { origUpdateText.call(t); } finally { ctx._n = real; if (tex) delete r.canvasToTexture; }
+    // The upload at the end of updateText: keep the current texture. A new text gets none until it
+    // is drawn (Phaser would make one here and fill it with the blank canvas; the draw uploads
+    // again, and texts that are never shown would hold one for nothing).
+    r.canvasToTexture = () => tex;
+    try { origUpdateText.call(t); } finally { ctx._n = real; delete r.canvasToTexture; }
     if (r.canvasToTexture !== origC2T) r.canvasToTexture = origC2T;
+  }
+  // Texts drawn again: PokeRogue builds its screens anew each time they open (the party screen:
+  // ~40 texts, then destroyed when it closes), mostly with the same words. A destroyed text's GPU
+  // texture is kept under the inputs of its last draw (text, style, padding, spacing); a new text
+  // drawn with the same inputs takes it instead of drawing its canvas and uploading it. Phaser's
+  // drawing is deterministic in those inputs, so the pixels are the same. A text whose colour is a
+  // gradient or pattern, or whose wrapping is a callback, is never kept, nor one over
+  // TEXT_CACHE_ONE (the message window's lines, ~1 MB each, rarely repeat). Least recently kept go
+  // first past TEXT_CACHE_BYTES. Texts are drawn at 6x (a Pokémon's name: 221x69, 61 KB).
+  const TEXT_CACHE_BYTES = 4 << 20, TEXT_CACHE_ONE = 256 << 10;
+  const textCache = new Map(); // signature -> [texture wrappers]
+  let textCacheBytes = 0;
+  const texBytes = (tex) => (tex.width | 0) * (tex.height | 0) * 4;
+  function textSignature(t) {
+    const s = t.style, p = t.padding, m = s.metrics;
+    if (typeof t._text !== "string" || s.wordWrapCallback || typeof s.color !== "string" || typeof s.stroke !== "string" ||
+        typeof s.shadowColor !== "string" || (s.backgroundColor !== null && typeof s.backgroundColor !== "string") || !m || !p ||
+        !(t.splitRegExp instanceof RegExp)) return null;
+    return [t._text, s._font, s.color, s.stroke, s.strokeThickness, s.backgroundColor, s.shadowOffsetX, s.shadowOffsetY,
+      s.shadowColor, s.shadowBlur, s.shadowStroke, s.shadowFill, s.align, s.maxLines, s.fixedWidth, s.fixedHeight,
+      s.resolution, s.rtl, s.wordWrapWidth, s.wordWrapUseAdvanced, m.ascent, m.descent, m.fontSize, p.left, p.right, p.top,
+      p.bottom, t.lineSpacing, t.letterSpacing, t.autoRound, t.splitRegExp.source, g.__rt.fontGeneration | 0].join("\u0001");
+  }
+  function textCacheTake(sig) {
+    const list = textCache.get(sig);
+    if (!list) return null;
+    const tex = list.pop();
+    if (!list.length) textCache.delete(sig);
+    textCacheBytes -= texBytes(tex);
+    return tex;
+  }
+  function textCachePut(sig, tex, renderer) {
+    const bytes = texBytes(tex);
+    if (!bytes || bytes > TEXT_CACHE_ONE) return false;
+    const list = textCache.get(sig);
+    if (list) { textCache.delete(sig); list.push(tex); textCache.set(sig, list); } else textCache.set(sig, [tex]);
+    textCacheBytes += bytes;
+    for (const [k, l] of textCache) {
+      if (textCacheBytes <= TEXT_CACHE_BYTES) break;
+      while (l.length && textCacheBytes > TEXT_CACHE_BYTES) {
+        const old = l.shift();
+        textCacheBytes -= texBytes(old);
+        renderer.deleteTexture(old);
+      }
+      if (!l.length) textCache.delete(k);
+    }
+    return true;
+  }
+  g.__rt.textCache = {
+    stats: () => ({ entries: textCache.size, bytes: textCacheBytes }),
+    clear() {
+      const r = g.__rt.renderer;
+      for (const l of textCache.values()) for (const tex of l) if (r) r.deleteTexture(tex);
+      textCache.clear();
+      textCacheBytes = 0;
+    },
+  };
+  // The draw a render does when the text changed: Phaser's updateText, or a kept texture.
+  function drawText(t) {
+    textStats.draws++;
+    const src = t.frame && t.frame.source;
+    const sig = src && g.__rt.textReuse !== false ? textSignature(t) : null;
+    if (sig && !src.glTexture) {
+      const tex = textCacheTake(sig);
+      if (tex) {
+        measureNow(t, tex);
+        textStats.reused++;
+        // Same inputs give the same size; anything else draws into it after all.
+        if (t.canvas.width === tex.width && t.canvas.height === tex.height) { t._pkrSig = sig; return; }
+        textStats.reused--;
+      }
+    }
+    origUpdateText.call(t);
+    t._pkrSig = sig;
+  }
+  const origTextPreDestroy = TP.preDestroy;
+  if (typeof origTextPreDestroy === "function") {
+    TP.preDestroy = function () {
+      const src = this.frame && this.frame.source, tex = src && src.glTexture;
+      // _pkrSig: the inputs the texture was last drawn with (cleared when Phaser's own updateText ran).
+      if (enabled && tex && this._pkrSig && this.renderer && textCachePut(this._pkrSig, tex, this.renderer)) src.glTexture = null;
+      return origTextPreDestroy.call(this);
+    };
   }
   // Measuring is deferred too: the game typically changes a new text four times in a row
   // (constructor, setPadding, setShadow, setLineSpacing) and reads its size at most once.
@@ -326,6 +413,7 @@
     const ctx = this.context;
     if (!enabled || !this.renderer || !this.renderer.gl || !ctx || !ctx._n) {
       this._pkrMeasureDirty = false;
+      this._pkrSig = null;
       return origUpdateText.call(this);
     }
     textStats.updates++;
@@ -338,8 +426,7 @@
     if (src._pkrTextDirty) {
       src._pkrTextDirty = false;
       src._pkrMeasureDirty = false;
-      textStats.draws++;
-      origUpdateText.call(src);
+      drawText(src);
     }
     return origTextRender.apply(this, arguments);
   }

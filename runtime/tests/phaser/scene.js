@@ -244,6 +244,37 @@ async function run() {
       !nullAfter ? "glTexture not null after the constructor" : !drawn ? "no texture after drawing" : "";
     report("fastpath: a new text makes no texture until drawn", !detail, detail);
   }
+  // js/fastpath.js 4: measuring a new text makes no texture either, and a destroyed text's texture
+  // goes to a new text drawn with the same inputs (not to one with other words), whose pixels
+  // Phaser's own drawing gives the same.
+  {
+    const sc = game.scene.getScene("test"), gl = game.renderer.gl, mk = gl.createTexture;
+    const style = { fontFamily: "sans-serif", fontSize: "24px", color: "#ffffff" };
+    const make = (y, s) => sc.add.text(10, y, s, style).setShadow(2, 2, "#333333").setPadding(1);
+    const pixels = (t) => Array.from(t.context.getImageData(0, 0, t.canvas.width, t.canvas.height).data).join();
+    let made = 0, a;
+    gl.createTexture = function () { made++; return mk.apply(this, arguments); };
+    try { a = make(40, "Kept 1/2"); void a.width; } finally { gl.createTexture = mk; }
+    const measured = a.width > 1 && !made && a.frame.source.glTexture === null;
+    await nextFrames(game, 3);
+    const texA = a.frame.source.glTexture, size = a.width + "x" + a.height, pixA = pixels(a);
+    const reused0 = rt.textStats().reused;
+    a.destroy();
+    const b = make(40, "Kept 1/2"), c = make(80, "Kept 2/2");
+    await nextFrames(game, 3);
+    rt.textReuse = false;
+    const d = make(120, "Kept 1/2");
+    await nextFrames(game, 3);
+    rt.textReuse = true;
+    const detail = !rt.textCache ? "not installed" : !measured ? "measuring made a texture (" + made + ")"
+      : !texA ? "no texture after drawing" : b.frame.source.glTexture !== texA ? "the kept texture wasn't reused"
+      : c.frame.source.glTexture === texA || !c.frame.source.glTexture ? "a text with other words got it"
+      : rt.textStats().reused !== reused0 + 1 ? "reuse count " + (rt.textStats().reused - reused0)
+      : b.width + "x" + b.height !== size ? "size " + b.width + "x" + b.height + " vs " + size
+      : pixels(d) !== pixA ? "Phaser's drawing of the same inputs differs" : "";
+    b.destroy(), c.destroy(), d.destroy();
+    report("fastpath: measuring makes no texture; a destroyed text's texture serves the same text", !detail, detail);
+  }
   // js/bootstrap.js: a destroyed timer event leaves its Clock's list; live and re-added ones keep running.
   {
     const clock = game.scene.getScene("test").time;
