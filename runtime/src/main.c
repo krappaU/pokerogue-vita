@@ -706,23 +706,35 @@ static size_t gc_next_threshold(size_t js) {
     return js + room > least ? js + room : least;
 }
 
+// What the last collection left of the JS heap (0: none yet). The next threshold isn't always 1.5x
+// that (gc_next_threshold may set it lower), so it is kept rather than worked out from the threshold.
+static size_t gc_left;
+// How far the JS heap is from what the last collection left to the next collection (0..1).
+static double gc_progress(JSRuntime *rt) {
+    double threshold = (double)JS_GetGCThreshold(rt), left = gc_left ? (double)gc_left : threshold / 1.5;
+    return threshold > left ? ((double)JS_GetMallocSize(rt) - left) / (threshold - left) : 1;
+}
+// Collects now and sets the next threshold. Returns the JS heap before; *ms the time it took.
+static size_t gc_collect(JSRuntime *rt, double *ms) {
+    size_t before = JS_GetMallocSize(rt);
+    double t0 = host_now_ms();
+    JS_RunGC(rt);
+    *ms = host_now_ms() - t0;
+    gc_left = JS_GetMallocSize(rt);
+    JS_SetGCThreshold(rt, gc_next_threshold(gc_left));
+    return before;
+}
+
 static void gc_during_loading(void) {
     static double done_t0;
     if (!g_ctx_for_mem || done_t0 == phase_t0) return;
     done_t0 = phase_t0;
     JSRuntime *rt = JS_GetRuntime(g_ctx_for_mem);
-    JSMemoryUsage m;
-    JS_ComputeMemoryUsage(rt, &m);
-    double threshold = (double)JS_GetGCThreshold(rt), after_last = threshold / 1.5;
-    if (m.malloc_size < after_last + (threshold - after_last) / 3) return;
-    double t0 = host_now_ms();
-    JS_RunGC(rt);
-    double ms = host_now_ms() - t0;
-    size_t before = m.malloc_size;
-    JS_ComputeMemoryUsage(rt, &m);
-    JS_SetGCThreshold(rt, gc_next_threshold(m.malloc_size));
+    if (gc_progress(rt) < 1.0 / 3) return;
+    double ms;
+    size_t before = gc_collect(rt, &ms);
     host_log("[gc] collected under the loading screen: %.0f ms, JS heap %.1f -> %.1f MB", ms, before / 1048576.0,
-             m.malloc_size / 1048576.0);
+             gc_left / 1048576.0);
 }
 
 static void busy_poll(void) {
@@ -762,17 +774,14 @@ static void gc_at_save(void) {
     if (!gc_save_requested || !g_ctx_for_mem) return;
     gc_save_requested = false;
     JSRuntime *rt = JS_GetRuntime(g_ctx_for_mem);
-    double threshold = (double)JS_GetGCThreshold(rt), after_last = threshold / 1.5, now = (double)JS_GetMallocSize(rt);
-    if (now < after_last + (threshold - after_last) * 2 / 3) return;
+    // two thirds of the way, and enough garbage possible to be worth the pause
+    if (gc_progress(rt) < 2.0 / 3 || JS_GetMallocSize(rt) < gc_left + ((size_t)8 << 20)) return;
     overlay_busy_draw("Loading...");
     plat_swap();
     gl_restore_state();
-    double t0 = host_now_ms();
-    JS_RunGC(rt);
-    double ms = host_now_ms() - t0;
-    size_t left = JS_GetMallocSize(rt);
-    JS_SetGCThreshold(rt, gc_next_threshold(left));
-    host_log("[gc] collected after the game saved: %.0f ms, JS heap %.1f -> %.1f MB", ms, now / 1048576.0, left / 1048576.0);
+    double ms;
+    size_t before = gc_collect(rt, &ms);
+    host_log("[gc] collected after the game saved: %.0f ms, JS heap %.1f -> %.1f MB", ms, before / 1048576.0, gc_left / 1048576.0);
 }
 
 // Between frames: the heap is nearly full (less than half of HEAP_RESERVE free). Collect now, with
@@ -788,15 +797,11 @@ static void gc_when_heap_low(void) {
     plat_swap();
     gl_restore_state();
     JSRuntime *rt = JS_GetRuntime(g_ctx_for_mem);
-    double t0 = host_now_ms();
-    JS_RunGC(rt);
-    double ms = host_now_ms() - t0;
-    JSMemoryUsage m;
-    JS_ComputeMemoryUsage(rt, &m);
-    JS_SetGCThreshold(rt, gc_next_threshold(m.malloc_size));
+    double ms;
+    gc_collect(rt, &ms);
     used_after = heap_used();
     host_log("[gc] heap nearly full (%.0f of %.0f MB in use): collected in %.0f ms, %.0f MB in use now (JS %.1f MB)",
-             used / 1048576.0, HEAP_SIZE / 1048576.0, ms, used_after / 1048576.0, m.malloc_size / 1048576.0);
+             used / 1048576.0, HEAP_SIZE / 1048576.0, ms, used_after / 1048576.0, gc_left / 1048576.0);
 }
 
 // Shader variants not built during loading (gl_precompile): between frames, at most one slow build
@@ -1297,7 +1302,8 @@ int main(int argc, char **argv) {
             if (all > perf_gc_max) perf_gc_max = all;
             // QuickJS collected and set the next threshold to 1.5x what was left: keep the heap's reserve
             JSRuntime *rt = JS_GetRuntime(ctx);
-            JS_SetGCThreshold(rt, gc_next_threshold(JS_GetGCThreshold(rt) / 3 * 2));
+            gc_left = JS_GetGCThreshold(rt) / 3 * 2; // QuickJS's own rule: 1.5x what it left
+            JS_SetGCThreshold(rt, gc_next_threshold(gc_left));
         }
         perf_add(js_ms);
         module_list_flush();

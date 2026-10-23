@@ -1099,3 +1099,15 @@ when the JS heap is two thirds of the way to its next collection, the next frame
 behind the loading screen. QuickJS patch 0006 adds JS_GetMallocSize for that check (the heap's
 size without walking it). Desktop: a save per wave reaches it.
 
+### 0.96 on the console: the lock, and a collection at a save (log150, 0.96, 2026-10-23; runtime 0.97)
+Construction Site battles: JS 23-35 ms per frame at the median and GPU 22-37 ms, so many frames
+don't fit 33 ms. With the 30 fps lock on, frames that fit come every 33.3 ms (a 20 s stretch at a
+flat 30.1 fps); a frame that doesn't takes 50 ms, and the lock removes only the frames above 30. The
+dips the owner saw are mostly slow frames: 79 over 250 ms in 13 minutes, 15 of them the party screen
+being built (populatePartySlots, ~330 ms each; half of it making text objects), others the game's
+turn logic (speed sorting, messages), text drawing and texture uploads.
+The collection after a save ran once: 1.5 s that freed 1.6 MB. It estimated what the last collection
+left as the next threshold / 1.5, but since 0.93 the threshold is sometimes set lower to keep the heap's
+reserve, so it fired early. main.c now keeps what each collection left (its own, and QuickJS's, whose
+threshold is 1.5x that), and the save-time collection also needs at least 8 MB of growth since.
+
