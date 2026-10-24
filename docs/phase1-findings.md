@@ -1132,3 +1132,13 @@ kept texture; the opening frame 13.7 and 10.3 ms of update (19.4, 12.8 before), 
 (5.0). What is left is the game making its objects (texts ~0.13 ms each on the desktop). Other
 screens built again with the same words (the shop's items, menus) take kept textures too: a
 100 s fight loop reused 88 of 1,156 drawn texts.
+
+### 0.98 on the console (log154, 0.98, 2026-10-24)
+17 minutes online (Town, Construction Site, Power Plant), 30 fps lock off, sampling off (so only
+frames over 1 s are reported one by one). The owner found it smooth. Live GPU textures at the end:
+677 (log150: 1,272) for about the same memory. Windows of 20 s whose slowest frame was 150-249 ms:
+27 (log150: 4 in a shorter session), with no more in 250-399 than before. That fits party-screen
+openings dropping from ~330 ms to about 200 ms, though without samples this log can't name the frames.
+One collection after a save took 1.5 s and freed 1.5 MB: the heap had grown 19 MB since the last
+collection, all of it kept data, so the 8 MB-growth rule let it through. QuickJS would have collected
+at 66 MB a little later anyway.
