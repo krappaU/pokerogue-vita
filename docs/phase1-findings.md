@@ -1142,3 +1142,7 @@ openings dropping from ~330 ms to about 200 ms, though without samples this log 
 One collection after a save took 1.5 s and freed 1.5 MB: the heap had grown 19 MB since the last
 collection, all of it kept data, so the 8 MB-growth rule let it through. QuickJS would have collected
 at 66 MB a little later anyway.
+
+### The 1.0 release (log154, 0.98, 2026-10-25)
+The owner found 0.98 stable on the console (log154 above) and asked for 1.0. runtime/VERSION 1.0
+(package version 01.00), the same code as 0.98; notes in docs/releases/v1.0.md.

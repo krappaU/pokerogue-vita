@@ -5,9 +5,10 @@ It runs the **live pokerogue.net game**, which means automatic updates, online a
 saves, much like the online mode of [Admiral-Billy's PokeRogue App](https://github.com/Admiral-Billy/Pokerogue-App)
 on desktop and Android. It can also play an offline build of the game from the memory card.
 
-> **Status: released (0.93).** Online play (login, cloud saves) and offline play work on a real
+> **Status: released (1.0).** Online play (login, cloud saves) and offline play work on a real
 > Vita, with sound, gamepad controls, the touchscreen and save import/export. Battles run at about
-> 25-45 fps depending on the map and how far into a run, and some moments still pause briefly.
+> 25-45 fps depending on the map and how far into a run (or an even 30 with the 30 fps lock), and
+> some moments still pause briefly.
 > Download the latest build from [Releases](https://github.com/krappaU/pokerogue-vita/releases).
 
 ## What works
