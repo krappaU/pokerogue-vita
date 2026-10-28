@@ -1090,6 +1090,19 @@ static JSValue n_pick_poll(JSContext *ctx, JSValueConst this_val, int argc, JSVa
     return ret;
 }
 
+// choose(title, options): a choice over the game, options one per line (dialogs.c)
+static JSValue n_choose(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    const char *title = JS_ToCString(ctx, argv[0]), *opts = JS_ToCString(ctx, argv[1]);
+    if (title && opts) dialog_choice_open(title, opts);
+    JS_FreeCString(ctx, title), JS_FreeCString(ctx, opts);
+    return JS_UNDEFINED;
+}
+
+// choicePoll() -> the option chosen (once), or -1
+static JSValue n_choice_poll(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    return JS_NewInt32(ctx, dialog_choice_poll());
+}
+
 // relaunch(): location.reload, done by restarting the app after this frame (main.c)
 static JSValue n_relaunch(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     g_relaunch = true;
@@ -1122,6 +1135,8 @@ static const JSCFunctionListEntry native_funcs[] = {
     JS_CFUNC_DEF("notice", 1, n_notice),
     JS_CFUNC_DEF("pickFile", 3, n_pick_file),
     JS_CFUNC_DEF("pickPoll", 0, n_pick_poll),
+    JS_CFUNC_DEF("choose", 2, n_choose),
+    JS_CFUNC_DEF("choicePoll", 0, n_choice_poll),
     JS_CFUNC_DEF("relaunch", 0, n_relaunch),
     JS_CFUNC_DEF("showMessage", 1, n_show_message),
     JS_CFUNC_DEF("memoryUsage", 0, n_memory_usage),

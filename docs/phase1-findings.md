@@ -1146,3 +1146,19 @@ at 66 MB a little later anyway.
 ### The 1.0 release (log154, 0.98, 2026-10-25)
 The owner found 0.98 stable on the console (log154 above) and asked for 1.0. runtime/VERSION 1.0
 (package version 01.00), the same code as 0.98; notes in docs/releases/v1.0.md.
+
+### Wi-Fi lost at the end of a wave (log163, 1.0, 2026-10-28; runtime 1.1)
+Online, the game saves at the start of every wave (gameData.saveAll): it writes the save to
+localStorage, then asks the server to check it (GET savedata/system/verify) before the wave
+continues. The Wi-Fi had dropped: DNS failed three times (the first try and our two GET retries),
+fetch rejected as in a browser, and PokeRogue's verify() doesn't catch that ("unhandled
+rejection"), so the promise the wave waits on never settled. The game kept running at 50 fps with
+nothing to do, and it stayed stuck after the Wi-Fi came back, because nothing asked again.
+A save request (any /savedata/ URL) that gets no response at all no longer rejects. It waits, and a
+choice over the game (src/dialogs.c, like the import file picker but with no cancel) offers
+**Retry** (sends it again, with any others waiting) or **Back to the title screen** (location.reload:
+the app restarts into the same mode, and the run continues from its last save on the server).
+Error responses (HTTP 4xx/5xx) reach the game as before; the game's other requests (title stats,
+rankings) keep failing as in a browser, since the game handles those. tests/smoke checks that such
+a request waits behind the dialog until aborted. Desktop: DNS failure -> dialog; Retry -> sent again
+(failed again -> dialog again); Back to the title screen -> restart into the game.

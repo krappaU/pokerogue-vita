@@ -421,6 +421,27 @@ async function run() {
     await within(3000, new Promise((res) => { src.onended = res; }), "onended");
   });
 
+  // ------------------------------------------------------------ connection lost (last: it leaves its dialog open)
+  await check("net: a save request without a connection waits behind the retry dialog", async () => {
+    const ctrl = new AbortController();
+    let settled = "";
+    const p = fetch("http://127.0.0.1:1/savedata/system/verify", { method: "POST", body: "{}", signal: ctrl.signal })
+      .then(() => (settled = "resolved"), (e) => (settled = "rejected: " + e));
+    for (let i = 0; i < 100 && !__rt.netLostWaiting() && !settled; i++) await sleep(100);
+    if (!__rt.netLostWaiting() && !settled) {
+      // Vita3K's network may not refuse the connection in time; the logic is the same JS everywhere.
+      ctrl.abort();
+      console.log("[test] note: no connection error within 10 s, retry dialog not checked");
+      return;
+    }
+    if (!__rt.netLostWaiting()) return "the request " + settled;
+    await sleep(300);
+    if (settled) return "the request " + settled + " while waiting";
+    ctrl.abort();
+    await within(2000, p, "abort");
+    if (!/^rejected/.test(settled)) return "abort: " + settled;
+  });
+
   const failed = results.filter((r) => !r).length;
   console.log("[test] DONE passed=" + (results.length - failed) + " failed=" + failed);
 }

@@ -130,6 +130,32 @@
     if (m && m[1] !== lastArena) N.log("[arena] " + (lastArena = m[1]));
   }
 
+  // The game's save requests (/savedata/...) when the connection is lost (no response at all): a
+  // browser's fetch rejects, and PokeRogue doesn't catch every such failure (a failed
+  // savedata/system/verify at the start of a wave left the game waiting for good, log163). Here
+  // the request waits instead, and a dialog over the game offers to send it again (with any
+  // others waiting) or to go back to the title screen: the app restarts into the game, whose run
+  // continues from its last save, as after reloading the page in a browser.
+  const SAVE_REQUEST = /^https?:\/\/[^/]+\/savedata\//;
+  const lostWaiting = [];
+  function connectionLost(url, err, resend) {
+    lostWaiting.push(resend);
+    if (lostWaiting.length > 1) return; // the dialog is open already
+    N.log("[net] connection lost: " + url + " (" + err + ")");
+    N.choose("No connection to the PokeRogue server (" + err + "). The game is waiting to save. " +
+      "Check Wi-Fi, then retry; or go back to the title screen (the run continues from its last save).",
+      "Retry\nBack to the title screen");
+    const hook = () => {
+      const r = N.choicePoll();
+      if (r < 0) return;
+      rt.frameHooks.splice(rt.frameHooks.indexOf(hook), 1);
+      if (r === 0) for (const f of lostWaiting.splice(0)) f();
+      else g.location.reload();
+    };
+    rt.frameHooks.push(hook);
+  }
+  rt.netLostWaiting = () => lostWaiting.length; // tests/smoke
+
   // Low-level request: resolves {status, statusText, headers, body: ArrayBuffer, url}.
   function request(method, url, headers, body, signal) {
     noteArena(url);
@@ -152,6 +178,10 @@
             attempt++;
             N.log("[net] retry " + attempt + "/" + retries + ": " + url);
             g.setTimeout(() => { if (!done) send(); }, 500 * attempt);
+            return;
+          }
+          if (err && N.choose && SAVE_REQUEST.test(url)) {
+            connectionLost(url, err, () => { if (!done) { attempt = 0; send(); } });
             return;
           }
           done = true;

@@ -4,7 +4,9 @@
 //    to scan with a phone, with the address below;
 //  - notices (where an exported save was written);
 //  - a file picker for the game's "import data" (<input type=file>), listing a folder of the
-//    memory card.
+//    memory card;
+//  - a choice between a few options (the network's "connection lost: retry / back to the title"),
+//    which, unlike the picker, can't be cancelled.
 // While one is open the game gets no gamepad input. Cross / circle / START close a QR code or a
 // notice; in the picker the D-pad moves, cross picks, circle cancels. Touch and the desktop's
 // Enter / Escape / arrow keys work too.
@@ -37,6 +39,9 @@ static char pick_title[256], pick_dir[512];
 static char *pick_names[PICK_MAX];
 static int pick_n, pick_sel, pick_top, pick_result; // result: 0 open/none, 1 chosen, -1 cancelled
 static char pick_choice[512];
+static bool choice; // the picker lists options (dialog_choice_open), not files
+static int choice_result = -1; // option chosen, reported once
+static int list_top_y; // image y of the picker's first row (for touches)
 
 bool link_active(void) { return mode != D_NONE; }
 bool link_mutes_pad(void) { return mode != D_NONE || mute_until_release; }
@@ -128,10 +133,11 @@ void dialog_notice(const char *text) {
 // ---------------------------------------------------------------- file picker
 
 static void pick_render(void) {
-    char lines[3][TEXT_COLS + 1];
-    int nt = wrap(pick_title, lines, 3);
-    int list_y = MARGIN + nt * 12 + 8;
-    if (!alloc_img(list_y + (pick_n ? PICK_ROWS : 2) * 14 + 10 + 10 + MARGIN)) return;
+    char lines[8][TEXT_COLS + 1];
+    int nt = wrap(pick_title, lines, choice ? 8 : 3);
+    int list_y = MARGIN + nt * 12 + 8, rows = choice ? pick_n : PICK_ROWS;
+    list_top_y = list_y;
+    if (!alloc_img(list_y + (pick_n ? rows : 2) * 14 + 10 + 10 + MARGIN)) return;
     for (int i = 0; i < nt; i++) overlay_blit_text(img, img_w, img_h, MARGIN, MARGIN + i * 12, lines[i], 1, c_white);
     if (!pick_n) {
         overlay_blit_text(img, img_w, img_h, MARGIN, list_y, "(no files here yet)", 1, c_grey);
@@ -146,7 +152,7 @@ static void pick_render(void) {
             overlay_blit_text(img, img_w, img_h, MARGIN, y, name, 1, i == pick_sel ? c_yellow : c_white);
         }
     }
-    hint(img_h - MARGIN - 10, pick_n ? "X: choose   O: cancel" : "O: cancel");
+    hint(img_h - MARGIN - 10, choice ? "X: choose" : pick_n ? "X: choose   O: cancel" : "O: cancel");
     dirty = true;
 }
 
@@ -170,6 +176,7 @@ static bool ext_ok(const char *name, const char *exts) {
 void dialog_pick_open(const char *title, const char *dir, const char *exts) {
     for (int i = 0; i < pick_n; i++) free(pick_names[i]);
     pick_n = pick_sel = pick_top = pick_result = 0;
+    choice = false;
     snprintf(pick_title, sizeof pick_title, "%s", title);
     snprintf(pick_dir, sizeof pick_dir, "%s", dir);
     DIR *d = opendir(dir);
@@ -193,6 +200,32 @@ void dialog_pick_open(const char *title, const char *dir, const char *exts) {
     host_log("[dialog] file picker on %s: %d files", dir, pick_n);
 }
 
+// A choice between options (one per line of opts); the first is selected.
+void dialog_choice_open(const char *title, const char *opts) {
+    for (int i = 0; i < pick_n; i++) free(pick_names[i]);
+    pick_n = pick_sel = pick_top = pick_result = 0;
+    choice = true, choice_result = -1;
+    snprintf(pick_title, sizeof pick_title, "%s", title);
+    for (const char *p = opts; *p && pick_n < PICK_ROWS;) {
+        size_t len = strcspn(p, "\n");
+        char *s = malloc(len + 1);
+        if (!s) break;
+        memcpy(s, p, len), s[len] = 0;
+        pick_names[pick_n++] = s;
+        p += len + (p[len] ? 1 : 0);
+    }
+    mode = D_PICK;
+    pick_render();
+    host_log("[dialog] %s", title);
+}
+
+// -> the option chosen (reported once), or -1 while the choice is open or none was opened.
+int dialog_choice_poll(void) {
+    int r = choice_result;
+    choice_result = -1;
+    return r;
+}
+
 // -> 0 still open (or never opened), 1 chosen (path in *path), -1 cancelled; a result is reported once.
 int dialog_pick_poll(const char **path) {
     int r = pick_result;
@@ -202,7 +235,11 @@ int dialog_pick_poll(const char **path) {
 }
 
 static void close_dialog(int pick) {
-    if (mode == D_PICK) {
+    if (mode == D_PICK && choice) {
+        if (pick <= 0) return; // a choice can't be cancelled
+        choice_result = pick_sel;
+        host_log("[dialog] chose \"%s\"", pick_names[pick_sel]);
+    } else if (mode == D_PICK) {
         pick_result = pick;
         if (pick > 0) snprintf(pick_choice, sizeof pick_choice, "%s/%s", pick_dir, pick_names[pick_sel]);
     }
@@ -231,7 +268,11 @@ bool link_event(const plat_event *ev) {
         else if (!strcmp(k, "ArrowDown")) pick_move(1);
         else if (!strcmp(k, "Enter") && pick_n) close_dialog(1);
         else if (!strcmp(k, "Escape")) close_dialog(-1);
-        else if (ev->type == PEV_POINTER_DOWN && pick_n) close_dialog(1); // a touch picks the highlighted entry
+        else if (ev->type == PEV_POINTER_DOWN && choice) {
+            // a touch on an option picks it
+            int dy = (int)ev->y - img_y - (list_top_y - 3), row = dy / 14;
+            if (ev->x >= img_x && ev->x < img_x + img_w && dy >= 0 && row < pick_n) pick_sel = row, close_dialog(1);
+        } else if (ev->type == PEV_POINTER_DOWN && pick_n) close_dialog(1); // a touch picks the highlighted entry
     } else if (ev->type == PEV_POINTER_DOWN || !strcmp(k, "Escape") || !strcmp(k, "Enter")) {
         close_dialog(0);
     }

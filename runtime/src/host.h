@@ -258,6 +258,8 @@ bool link_draw(void);
 void dialog_notice(const char *text);
 void dialog_pick_open(const char *title, const char *dir, const char *exts);
 int dialog_pick_poll(const char **path); // 0 nothing, 1 chosen, -1 cancelled (reported once)
+void dialog_choice_open(const char *title, const char *opts); // opts: one per line
+int dialog_choice_poll(void); // the option chosen (reported once), else -1
 // Restarts the app (location.reload), straight back into the online or offline game.
 void plat_relaunch(int argc, char **argv);
 extern bool g_relaunch;
