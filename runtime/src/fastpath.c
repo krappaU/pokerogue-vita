@@ -65,6 +65,10 @@ typedef struct {
     float u0, v0, u1, v1;
     uint32_t tTL, tTR, tBL, tBR;
     float tintEffect, unit;
+    // Trimmed quad: only the part [s0, s1] x [t0, t1] (fractions of the frame) has visible texels
+    // (js/fastpath.js frameTrim); the rest is transparent and drawn for nothing.
+    bool trim;
+    double s0, t0, s1, t1;
 } sprite_quad;
 
 // The sprite's corners (MultiPipeline.batchSprite's matrix math and calcMatrix.setQuad), as
@@ -134,11 +138,24 @@ static void write_sprite(float *vf, const float *cam, const float *par, const sp
     float k[8];
     sprite_corners(k, cam, par, q);
     float x0 = k[0], y0 = k[1], x1 = k[2], y1 = k[3], x2 = k[4], y2 = k[5], x3 = k[6], y3 = k[7];
+    float u0 = q->u0, v0 = q->v0, u1 = q->u1, v1 = q->v1;
+    if (q->trim) {
+        // The corners of the visible part, on the full quad (after its pixel rounding): Q(s, t) =
+        // P0 + s * (P3 - P0) + t * (P1 - P0), and the texture coordinates the same way, so every
+        // pixel it covers gets the same texel as before; the pixels left out were transparent.
+        double ax = x0, ay = y0, exx = (double)x3 - x0, exy = (double)y3 - y0, eyx = (double)x1 - x0, eyy = (double)y1 - y0;
+        double S0 = q->s0, S1 = q->s1, T0 = q->t0, T1 = q->t1, du = (double)u1 - u0, dv = (double)v1 - v0;
+        x0 = (float)(ax + S0 * exx + T0 * eyx), y0 = (float)(ay + S0 * exy + T0 * eyy);
+        x1 = (float)(ax + S0 * exx + T1 * eyx), y1 = (float)(ay + S0 * exy + T1 * eyy);
+        x2 = (float)(ax + S1 * exx + T1 * eyx), y2 = (float)(ay + S1 * exy + T1 * eyy);
+        x3 = (float)(ax + S1 * exx + T0 * eyx), y3 = (float)(ay + S1 * exy + T0 * eyy);
+        float nu0 = (float)(u0 + S0 * du), nu1 = (float)(u0 + S1 * du), nv0 = (float)(v0 + T0 * dv), nv1 = (float)(v0 + T1 * dv);
+        u0 = nu0, u1 = nu1, v0 = nv0, v1 = nv1;
+    }
 
     // batchQuad vertex layout: x, y, u, v, unit, tintEffect, tint(u32) x 6 vertices
     uint32_t *vu = (uint32_t *)vf;
     float unit = q->unit, tintEffect = q->tintEffect;
-    float u0 = q->u0, v0 = q->v0, u1 = q->u1, v1 = q->v1;
 #define VERT(i, X, Y, U, V, T) \
     vf[i * 7 + 0] = X; vf[i * 7 + 1] = Y; vf[i * 7 + 2] = U; vf[i * 7 + 3] = V; \
     vf[i * 7 + 4] = unit; vf[i * 7 + 5] = tintEffect; vu[i * 7 + 6] = T;
@@ -155,7 +172,7 @@ static void write_sprite(float *vf, const float *cam, const float *par, const sp
 //   camMatrix: Float32Array, parentMatrix: Float32Array|null, offX, offY,
 //   gx, gy, rotation, scaleX, scaleY, x, y, w, h, roundPixels,
 //   u0, v0, u1, v1, tintTL, tintTR, tintBL, tintBR, alphaTL, alphaTR, alphaBL, alphaBR,
-//   tintEffect, unit)
+//   tintEffect, unit[, s0, t0, s1, t1: trimmed quad, see sprite_quad])
 static JSValue js_batch_sprite(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     if (argc < 30) return JS_ThrowTypeError(ctx, "__nativeBatchSprite: expected 30 args");
     size_t vsize;
@@ -175,6 +192,10 @@ static JSValue js_batch_sprite(JSContext *ctx, JSValueConst this_val, int argc, 
         .tBL = tint(num(ctx, argv[22]), num(ctx, argv[26])), .tBR = tint(num(ctx, argv[23]), num(ctx, argv[27])),
         .tintEffect = num(ctx, argv[28]), .unit = num(ctx, argv[29]),
     };
+    if (argc >= 34) {
+        q.trim = true;
+        q.s0 = num(ctx, argv[30]), q.t0 = num(ctx, argv[31]), q.s1 = num(ctx, argv[32]), q.t1 = num(ctx, argv[33]);
+    }
     write_sprite((float *)vb + off, cam, par, &q);
     return JS_UNDEFINED;
 }
@@ -341,6 +362,8 @@ static struct {
     bool text_lazy;
     // js/fastpath.js part 18's BitmapText renderer, WebGLPipeline.shouldFlush, BitmapText.getTextBounds
     JSValue bitmap_text_render, wp_should_flush, bt_get_text_bounds;
+    // js/fastpath.js trimInfo(pipeline, frame): sets their _pkrTrim (trimmed quads)
+    JSValue trim_info;
 } H;
 
 enum {
@@ -364,7 +387,7 @@ enum {
     A_bufferData, A_activeTexture, A_bindTexture, A_drawArrays, A_bindBuffer, A_createBatch, A_unit, A_maxTextures,
     A_setScrollFactorC, A__pkr_width, A__pkr_height, A__pkr__displayOriginX, A__pkr__displayOriginY, A_isStroked, A_isFilled, A_isRounded, A_fillColor, A_fillAlpha, A_maskCount,
     A__text, A_charColors, A__dirty, A__bounds, A_characters, A_scaleX, A_scaleY, A_dropShadowX, A_dropShadowY,
-    A_dropShadowColor, A_dropShadowAlpha, A_getTextBounds, A_shouldFlush, A_COUNT
+    A_dropShadowColor, A_dropShadowAlpha, A_getTextBounds, A_shouldFlush, A__pkrTrim, A_COUNT
 };
 static const char *atom_names[A_COUNT] = {
     "list", "length", "localTransform", "matrix", "x", "y", "_rotation", "_scaleX", "_scaleY", "hasPostPipeline",
@@ -387,7 +410,7 @@ static const char *atom_names[A_COUNT] = {
     "bufferData", "activeTexture", "bindTexture", "drawArrays", "bindBuffer", "createBatch", "unit", "maxTextures",
     "setScrollFactor", "_pkr_width", "_pkr_height", "_pkr__displayOriginX", "_pkr__displayOriginY", "isStroked", "isFilled", "isRounded", "fillColor", "fillAlpha", "maskCount",
     "_text", "charColors", "_dirty", "_bounds", "characters", "scaleX", "scaleY", "dropShadowX", "dropShadowY",
-    "dropShadowColor", "dropShadowAlpha", "getTextBounds", "shouldFlush",
+    "dropShadowColor", "dropShadowAlpha", "getTextBounds", "shouldFlush", "_pkrTrim",
 };
 static JSAtom AT[A_COUNT];
 
@@ -611,6 +634,35 @@ static int pipe_set(JSContext *ctx, rctx *r, JSValueConst pipeline, JSValueConst
     return 0;
 }
 
+// A trimmed quad for q (see sprite_quad) when the pipeline draws transparent texels as nothing
+// (its _pkrTrim: 2 with tint effects 0 and 1, 1 with effect 0 only), the blend mode is normal, the
+// corners share one tint, and the frame has a box (its _pkrTrim: [s0, t0, s1, t1]). Both are set by
+// js/fastpath.js trimInfo on first use. 0, or -1 with an exception.
+static int set_trim(JSContext *ctx, rctx *r, JSValueConst pipeline, JSValueConst frame, sprite_quad *q) {
+    if (q->tTL != q->tTR || q->tTL != q->tBL || q->tTL != q->tBR || !JS_IsFunction(ctx, H.trim_info)) return 0;
+    if (gnum(ctx, r->renderer, A_currentBlendMode) != 0) return 0;
+    JSValue lv = G(pipeline, A__pkrTrim), fv = G(frame, A__pkrTrim);
+    if (JS_IsUndefined(lv) || JS_IsUndefined(fv)) {
+        JS_FreeValue(ctx, lv), JS_FreeValue(ctx, fv);
+        JSValueConst args[2] = {pipeline, frame};
+        JSValue rv = JS_Call(ctx, H.trim_info, JS_UNDEFINED, 2, args);
+        if (JS_IsException(rv)) return -1;
+        JS_FreeValue(ctx, rv);
+        lv = G(pipeline, A__pkrTrim), fv = G(frame, A__pkrTrim);
+    }
+    if (num(ctx, lv) > q->tintEffect && JS_IsObject(fv)) {
+        double v[4];
+        for (int i = 0; i < 4; i++) {
+            JSValue e = JS_GetPropertyUint32(ctx, fv, i);
+            v[i] = num(ctx, e);
+            JS_FreeValue(ctx, e);
+        }
+        q->trim = true, q->s0 = v[0], q->t0 = v[1], q->s1 = v[2], q->t1 = v[3];
+    }
+    JS_FreeValue(ctx, lv), JS_FreeValue(ctx, fv);
+    return 0;
+}
+
 static int batch_sprite(JSContext *ctx, rctx *r, JSValueConst pipeline, JSValueConst go, JSValueConst frame,
                         const float *par, double alpha_mul, double sfx, double sfy, bool text) {
     int rc = -1;
@@ -691,6 +743,7 @@ static int batch_sprite(JSContext *ctx, rctx *r, JSValueConst pipeline, JSValueC
         .tintEffect = gbool(ctx, go, A_tintFill) ? 1 : 0,
         .unit = num(ctx, unitv),
     };
+    if (!text && set_trim(ctx, r, pipeline, frame, &q)) goto out;
     {
         JSValue vd = G(pipeline, A_vertexData);
         size_t vsize;
@@ -1194,7 +1247,7 @@ static JSValue js_render_setup(JSContext *ctx, JSValueConst this_val, int argc, 
     HOOK(pm_post_batch, "pmPostBatch") HOOK(ct_sf_set, "containerSetScrollFactor")
     HOOK(alpha_single_setter, "alphaSingleSetter") HOOK(wp_push_batch, "wpPushBatch") HOOK(wp_create_batch, "wpCreateBatch")
     HOOK(wp_set_vertex_buffer, "wpSetVertexBuffer") HOOK(wp_on_before_flush, "wpOnBeforeFlush")
-    HOOK(wp_on_after_flush, "wpOnAfterFlush")
+    HOOK(wp_on_after_flush, "wpOnAfterFlush") HOOK(trim_info, "trimInfo")
 #undef HOOK
     JSValue tl = JS_GetPropertyStr(ctx, o, "textLazySize");
     H.text_lazy = JS_ToBool(ctx, tl) > 0;

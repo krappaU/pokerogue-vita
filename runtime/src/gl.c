@@ -579,8 +579,105 @@ static int n_evictions, n_restores;
 static double draw_ms_frame, draw_ms_total, draw_ms_max_frame; // see w_drawArrays
 static int draws_total; // draw calls since the last gl_draw_stats
 
+// Where an image texture has visible pixels, in blocks of AMAP_BLOCK x AMAP_BLOCK texels: two bits
+// per block, one set when any texel in it has alpha > 0, one when all of them have alpha 255. Made at upload (the pixels are at hand then)
+// for textures from images (whose contents don't change), so that sprites can be drawn without
+// their fully transparent parts, and opaque screen-filling images can hide what is under them
+// (gl_alpha_box, js/fastpath.js "trimmed quads" and "covered objects").
+#define AMAP_BLOCK 4
+#define AMAP_MIN 64 // smaller textures: not worth it
+typedef struct {
+    uint16_t bw, bh; // blocks
+    uint8_t *opaque; // bw * bh bits after `bits`
+    uint8_t bits[];  // bw * bh bits, row by row
+} alpha_map;
+static alpha_map *amaps[TEX_MAX];
+
+static void amap_free(GLuint id) {
+    if (id && id < TEX_MAX) free(amaps[id]), amaps[id] = NULL;
+}
+
+static void amap_make(GLuint id, const uint8_t *px, int w, int h) {
+    amap_free(id);
+    if (!id || id >= TEX_MAX || w < AMAP_MIN || h < AMAP_MIN || w > 65535 || h > 65535) return;
+    int bw = (w + AMAP_BLOCK - 1) / AMAP_BLOCK, bh = (h + AMAP_BLOCK - 1) / AMAP_BLOCK;
+    size_t nbytes = ((size_t)bw * bh + 7) / 8;
+    alpha_map *m = calloc(1, sizeof *m + 2 * nbytes);
+    if (!m) return;
+    m->bw = (uint16_t)bw, m->bh = (uint16_t)bh;
+    m->opaque = m->bits + nbytes;
+    // "opaque" starts set for every block (and is cleared by any texel under 255; the blocks past
+    // the right or bottom edge have texels that don't exist, so they never count as opaque)
+    memset(m->opaque, 0xff, nbytes);
+    for (int y = 0; y < h; y++) {
+        const uint8_t *row = px + (size_t)y * w * 4 + 3;
+        size_t base = (size_t)(y / AMAP_BLOCK) * bw;
+        for (int x = 0; x < w; x++) {
+            uint8_t a = row[(size_t)x * 4];
+            if (a == 255) {
+                size_t b = base + x / AMAP_BLOCK;
+                m->bits[b >> 3] |= (uint8_t)(1 << (b & 7));
+            } else {
+                size_t b = base + x / AMAP_BLOCK;
+                m->opaque[b >> 3] &= (uint8_t)~(1 << (b & 7));
+                if (a) m->bits[b >> 3] |= (uint8_t)(1 << (b & 7));
+            }
+        }
+    }
+    for (int bx = 0; bx < bw; bx++) // partial blocks at the edges
+        if ((bx + 1) * AMAP_BLOCK > w)
+            for (int by = 0; by < bh; by++) {
+                size_t b = (size_t)by * bw + bx;
+                m->opaque[b >> 3] &= (uint8_t)~(1 << (b & 7));
+            }
+    for (int by = 0; by < bh; by++)
+        if ((by + 1) * AMAP_BLOCK > h)
+            for (int bx = 0; bx < bw; bx++) {
+                size_t b = (size_t)by * bw + bx;
+                m->opaque[b >> 3] &= (uint8_t)~(1 << (b & 7));
+            }
+    amaps[id] = m;
+}
+
+// The texels of the rectangle (cx, cy, cw, ch) of texture `id` that can be visible, as
+// out = x0, y0, x1, y1 relative to the rectangle (x1, y1 exclusive; x0 == x1 when none): a
+// block-aligned bound grown by `margin` texels, clipped to the rectangle. *opaque: every texel of
+// the rectangle has alpha 255 (judged by whole blocks, so a rectangle not on block edges may be
+// called not opaque). 0 if the texture has no map.
+int gl_alpha_box(GLuint id, int cx, int cy, int cw, int ch, int margin, int out[4], bool *opaque) {
+    if (!id || id >= TEX_MAX || !amaps[id] || cw <= 0 || ch <= 0 || cx < 0 || cy < 0) return 0;
+    const alpha_map *m = amaps[id];
+    int bx0 = cx / AMAP_BLOCK, by0 = cy / AMAP_BLOCK;
+    int bx1 = (cx + cw - 1) / AMAP_BLOCK, by1 = (cy + ch - 1) / AMAP_BLOCK;
+    if (bx1 >= m->bw || by1 >= m->bh) return 0;
+    int fx0 = INT32_MAX, fy0 = INT32_MAX, fx1 = -1, fy1 = -1;
+    *opaque = true;
+    for (int by = by0; by <= by1; by++) {
+        size_t base = (size_t)by * m->bw;
+        for (int bx = bx0; bx <= bx1; bx++) {
+            size_t b = base + bx;
+            if (!(m->opaque[b >> 3] & (1 << (b & 7)))) *opaque = false;
+            if (!(m->bits[b >> 3] & (1 << (b & 7)))) continue;
+            if (bx < fx0) fx0 = bx;
+            if (bx > fx1) fx1 = bx;
+            if (by < fy0) fy0 = by;
+            fy1 = by;
+        }
+    }
+    if (fx1 < 0) {
+        out[0] = out[1] = out[2] = out[3] = 0;
+        return 1;
+    }
+    int x0 = fx0 * AMAP_BLOCK - margin - cx, y0 = fy0 * AMAP_BLOCK - margin - cy;
+    int x1 = (fx1 + 1) * AMAP_BLOCK + margin - cx, y1 = (fy1 + 1) * AMAP_BLOCK + margin - cy;
+    out[0] = x0 < 0 ? 0 : x0, out[1] = y0 < 0 ? 0 : y0;
+    out[2] = x1 > cw ? cw : x1, out[3] = y1 > ch ? ch : y1;
+    return 1;
+}
+
 static void tex_forget(JSContext *ctx, GLuint id) {
     if (!id || id >= TEX_MAX) return;
+    amap_free(id);
     tex_rec *t = &texrec[id];
     if (t->has_src) {
         if (!t->evicted) evictable_bytes -= (size_t)t->w * t->h * 4;
@@ -1837,6 +1934,9 @@ static JSValue tex_image_2d(JSContext *ctx, int argc, JSValueConst *argv, int *o
         if (level == 0) {
             tex_account(bound_tex_id(), (size_t)w * h * 4);
             if (target == GL_TEXTURE_2D) tex_remember(ctx, bound_tex_id(), A(5), w, h);
+            GLuint id = bound_tex_id();
+            // only images (tex_remember kept the source), in the orientation Phaser samples
+            if (target == GL_TEXTURE_2D && id && id < TEX_MAX && texrec[id].has_src && !st.flip_y) amap_make(id, px, w, h);
         }
         (void)ifmt, (void)fmt, (void)type;
         if (fr) free((void *)up);
@@ -2057,6 +2157,19 @@ static const JSCFunctionListEntry gl_funcs[] = {
 #undef GLC
 };
 
+// alphaBox(webglTexture, cutX, cutY, cutW, cutH) -> [x0, y0, x1, y1, opaque] (gl_alpha_box,
+// margin 2), or null
+FN(n_alpha_box) {
+    int r[4], c[4];
+    bool opaque;
+    for (int i = 0; i < 4; i++) c[i] = gi(ctx, A(i + 1));
+    if (!gl_alpha_box(oid(A(0)), c[0], c[1], c[2], c[3], 2, r, &opaque)) return JS_NULL;
+    JSValue a = JS_NewArray(ctx);
+    for (int i = 0; i < 4; i++) JS_SetPropertyUint32(ctx, a, i, JS_NewInt32(ctx, r[i]));
+    JS_SetPropertyUint32(ctx, a, 4, JS_NewBool(ctx, opaque));
+    return a;
+}
+
 // createWebGLPrototype() -> object with all WebGL methods and constants. The JS shim uses it as
 // WebGLRenderingContext.prototype, so instances are plain JS objects (with .canvas etc.).
 FN(n_create_gl_proto) {
@@ -2080,6 +2193,7 @@ void gl_register(JSContext *ctx, JSValue native) {
     for (int i = 0; i < TEX_MAX; i++) texrec[i].src = JS_UNDEFINED;
     JS_SetPropertyStr(ctx, native, "createWebGLPrototype", JS_NewCFunction(ctx, n_create_gl_proto, "createWebGLPrototype", 0));
     JS_SetPropertyStr(ctx, native, "textureDump", JS_NewCFunction(ctx, n_texture_dump, "textureDump", 1));
+    JS_SetPropertyStr(ctx, native, "alphaBox", JS_NewCFunction(ctx, n_alpha_box, "alphaBox", 5));
 }
 
 void gl_after_frame(void) {

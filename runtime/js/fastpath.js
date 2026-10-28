@@ -45,6 +45,37 @@
       pipeline.currentShader.vertexComponentCount === 7;
   }
 
+  // Trimmed quads: PokeRogue draws many large, mostly transparent images (the arena's ground layers:
+  // 1920x792 on screen with 4-10% visible; each egg gacha machine is three screen-wide layers, 11-33%
+  // visible), and the GPU blends every transparent pixel. Textures from images get a map of where
+  // their visible texels are (src/gl.c gl_alpha_box), and such a sprite is drawn as the part of
+  // its quad that can have them (src/fastpath.c sprite_quad.trim): the same pixels, minus ones
+  // that were left unchanged. (Where a pixel centre falls exactly on a texel edge, which needs a
+  // scale like 1.25, float rounding may pick the other texel; PokeRogue draws 3 pixels a texel.) Only for pipelines whose shader draws a transparent texel as nothing
+  // (MultiPipeline with tint effects 0 and 1; PokeRogue's FieldSprite with effect 0), in normal
+  // blending, with one tint for the four corners. localStorage PKR_TRIM=0 turns it off.
+  const TRIM_PIPELINES = { MultiPipeline: 2, FieldSprite: 1 };
+  const alphaBox = g.__native.alphaBox;
+  let trimOn = !!alphaBox;
+  try { if (g.localStorage.getItem("PKR_TRIM") === "0") trimOn = false; } catch (e) { /* keep */ }
+  // Sets pipeline._pkrTrim (0, 1, 2: see above) and frame._pkrTrim ([s0, t0, s1, t1] as fractions
+  // of the frame, or false); a frame whose texture isn't uploaded yet is asked again later.
+  function trimInfo(pipeline, frame) {
+    if (pipeline._pkrTrim === undefined) pipeline._pkrTrim = (trimOn && TRIM_PIPELINES[pipeline.name]) || 0;
+    if (frame._pkrTrim !== undefined) return;
+    const tex = frame.source && frame.source.glTexture;
+    if (!tex || !tex.webGLTexture) return;
+    let t = false;
+    const w = frame.cutWidth, h = frame.cutHeight;
+    if (trimOn && !frame.rotated && w >= 32 && h >= 32) {
+      const b = alphaBox(tex.webGLTexture, frame.cutX, frame.cutY, w, h);
+      // under 80% of the frame: worth the four extra multiplications
+      if (b && (b[2] - b[0]) * (b[3] - b[1]) < 0.8 * w * h) t = [b[0] / w, b[1] / h, b[2] / w, b[3] / h];
+    }
+    frame._pkrTrim = t;
+  }
+  g.__rt.trimInfo = trimInfo; // tests/phaser
+
   // alphaMul / sfx / sfy: multipliers inherited from the parent container.
   function batchFast(pipeline, go, camera, parent, alphaMul, sfx, sfy) {
     const frame = go.frame;
@@ -61,12 +92,25 @@
     if (pipeline.shouldFlush(6)) pipeline.flush();
     if (!pipeline.currentBatch) unit = pipeline.setTexture2D(frame.glTexture);
     const a = camera.alpha * alphaMul;
-    nbs(pipeline.vertexData, pipeline.vertexCount * 7, camera.matrix.matrix, parent ? parent.matrix : null,
-      -camera.scrollX * go.scrollFactorX * sfx, -camera.scrollY * go.scrollFactorY * sfy,
-      gx, gy, go.rotation, go.scaleX * fx, go.scaleY * fy, x, y, frame.cutWidth, frame.cutHeight,
-      camera.renderRoundPixels, frame.u0, frame.v0, frame.u1, frame.v1,
-      go.tintTopLeft, go.tintTopRight, go.tintBottomLeft, go.tintBottomRight,
-      a * go._alphaTL, a * go._alphaTR, a * go._alphaBL, a * go._alphaBR, go.tintFill, unit);
+    if (pipeline._pkrTrim === undefined || frame._pkrTrim === undefined) trimInfo(pipeline, frame);
+    const trim = frame._pkrTrim;
+    if (trim && pipeline._pkrTrim > (go.tintFill ? 1 : 0) && pipeline.renderer.currentBlendMode === 0 &&
+        go.tintTopLeft === go.tintTopRight && go.tintTopLeft === go.tintBottomLeft && go.tintTopLeft === go.tintBottomRight &&
+        go._alphaTL === go._alphaTR && go._alphaTL === go._alphaBL && go._alphaTL === go._alphaBR) {
+      nbs(pipeline.vertexData, pipeline.vertexCount * 7, camera.matrix.matrix, parent ? parent.matrix : null,
+        -camera.scrollX * go.scrollFactorX * sfx, -camera.scrollY * go.scrollFactorY * sfy,
+        gx, gy, go.rotation, go.scaleX * fx, go.scaleY * fy, x, y, frame.cutWidth, frame.cutHeight,
+        camera.renderRoundPixels, frame.u0, frame.v0, frame.u1, frame.v1,
+        go.tintTopLeft, go.tintTopRight, go.tintBottomLeft, go.tintBottomRight,
+        a * go._alphaTL, a * go._alphaTR, a * go._alphaBL, a * go._alphaBR, go.tintFill, unit, trim[0], trim[1], trim[2], trim[3]);
+    } else {
+      nbs(pipeline.vertexData, pipeline.vertexCount * 7, camera.matrix.matrix, parent ? parent.matrix : null,
+        -camera.scrollX * go.scrollFactorX * sfx, -camera.scrollY * go.scrollFactorY * sfy,
+        gx, gy, go.rotation, go.scaleX * fx, go.scaleY * fy, x, y, frame.cutWidth, frame.cutHeight,
+        camera.renderRoundPixels, frame.u0, frame.v0, frame.u1, frame.v1,
+        go.tintTopLeft, go.tintTopRight, go.tintBottomLeft, go.tintBottomRight,
+        a * go._alphaTL, a * go._alphaTR, a * go._alphaBL, a * go._alphaBR, go.tintFill, unit);
+    }
     pipeline.vertexCount += 6;
     pipeline.currentBatch.count = pipeline.vertexCount - pipeline.currentBatch.start;
     pipeline.onBatch(go);
@@ -738,7 +782,7 @@
       goWillRender: Phaser.GameObjects.GameObject.prototype.willRender, containerWillRender: Container.willRender,
       wpOnBind: WP.onBind, wpOnBatch: WP.onBatch, wpSetGameObject: WP.setGameObject,
       camAddToRenderList: Phaser.Cameras.Scene2D.BaseCamera.prototype.addToRenderList, textRender,
-      textLazySize: lazySize,
+      textLazySize: lazySize, trimInfo,
       // Recognised on objects and done in C: the setAlpha/setScrollFactor round trip of generic
       // children, and MultiPipeline.batchSprite for sprites on pipelines with their own batchQuad.
       alphaSetAlpha: Phaser.GameObjects.Components.Alpha.setAlpha,
@@ -1086,6 +1130,96 @@
       g.__rt.tweenSwap = [[TW.prototype, "update", orig, nat]];
       TW.prototype.update = nat;
     }
+  }
+
+  // 20. Covered objects: PokeRogue's menus (party, summary, starter select, egg gacha and list...)
+  //     are screen-filling opaque images over the battle, which goes on being drawn underneath (the
+  //     arena and the Pokémon with their shaders): GPU work for pixels the menu then paints over.
+  //     When a top-level child of the scene holds an image that covers the whole camera view and
+  //     hides what is under it (alpha 1 down its containers, normal blending, MultiPipeline, no
+  //     mask, post pipeline, rotation or crop, every texel of its frame at alpha 255 by src/gl.c's
+  //     map), the top-level children before that one aren't drawn. They still go in the camera's
+  //     render list (input orders the objects under the pointer by it). The image is looked for
+  //     every COVER_SEARCH frames and checked again every frame. localStorage PKR_COVER=0: off.
+  const WRP = Phaser.Renderer.WebGL.WebGLRenderer.prototype, origRender = WRP.render;
+  let coverOn = !!alphaBox && typeof origRender === "function" && origRender.length === 3;
+  try { if (g.localStorage.getItem("PKR_COVER") === "0") coverOn = false; } catch (e) { /* keep */ }
+  if (coverOn) {
+    const COVER_SEARCH = 8;
+    const coverStats = { frames: 0, skipped: 0 };
+    g.__rt.coverStats = () => Object.assign({}, coverStats);
+    const tmpA = new Phaser.GameObjects.Components.TransformMatrix(), tmpB = new Phaser.GameObjects.Components.TransformMatrix();
+    const tmpRect = new Phaser.Geom.Rectangle();
+    const frameOpaque = (frame) => {
+      if (frame._pkrOpaque !== undefined) return frame._pkrOpaque;
+      const tex = frame.source && frame.source.glTexture;
+      if (!tex || !tex.webGLTexture) return false;
+      const b = alphaBox(tex.webGLTexture, frame.cutX, frame.cutY, frame.cutWidth, frame.cutHeight);
+      return (frame._pkrOpaque = !!(b && b[4]) && !frame.rotated);
+    };
+    // o hides everything drawn before it by this camera (see above).
+    const covers = (o, camera) => {
+      const t = o.type;
+      if ((t !== "Image" && t !== "Sprite" && t !== "NineSlice") || !o.scene || !o.willRender(camera) || o.mask ||
+          o.hasPostPipeline || o.isCropped || o.blendMode !== 0 || o.tintFill || !o.pipeline || o.pipeline.name !== "MultiPipeline") return false;
+      if (o.alphaTopLeft !== undefined ? !(o._alphaTL === 1 && o._alphaTR === 1 && o._alphaBL === 1 && o._alphaBR === 1) : o.alpha !== 1) return false;
+      const f = o.frame;
+      if (!f || f.cutWidth < 64 || f.cutHeight < 64 || !frameOpaque(f)) return false;
+      for (let p = o.parentContainer; p; p = p.parentContainer)
+        if (!p.willRender(camera) || p.alpha !== 1 || (p.blendMode !== -1 && p.blendMode !== 0) || p.mask || p.hasPostPipeline) return false;
+      const m = o.getWorldTransformMatrix(tmpA, tmpB);
+      if (Math.abs(m.b) > 1e-9 || Math.abs(m.c) > 1e-9) return false;
+      const b = o.getBounds(tmpRect), v = camera.worldView;
+      // off whole pixels, pixel rounding may move it by up to one
+      const tol = Number.isInteger(b.x) && Number.isInteger(b.y) ? 0 : 1;
+      return b.x <= v.x - tol && b.y <= v.y - tol && b.x + b.width >= v.x + v.width + tol && b.y + b.height >= v.y + v.height + tol;
+    };
+    // The last cover in drawing order: the top of a reverse walk.
+    const findCover = (list, camera) => {
+      for (let i = list.length - 1; i >= 0; i--) {
+        const o = list[i];
+        if (!o.willRender(camera)) continue;
+        if (o.type === "Container" && o.list) {
+          const c = findCover(o.list, camera);
+          if (c) return c;
+        } else if (covers(o, camera)) return o;
+      }
+      return null;
+    };
+    // What Phaser's renderers add to the render list, for the children not drawn.
+    const listSkipped = (list, camera) => {
+      for (let i = 0; i < list.length; i++) {
+        const o = list[i];
+        if (!o.willRender(camera)) continue;
+        camera.addToRenderList(o);
+        if (o.type === "Container" && o.list) listSkipped(o.list, camera);
+      }
+    };
+    WRP.render = function (scene, children, camera) {
+      if (!enabled || children.length < 2 || camera.scrollX !== 0 || camera.scrollY !== 0 || camera.alpha !== 1 ||
+          camera.mask || camera.rotation !== 0) return origRender.apply(this, arguments);
+      let c = camera._pkrCover;
+      if (c && (c.scene !== scene || !covers(c, camera))) c = null;
+      if (!(camera._pkrCoverIn > 0)) {
+        camera._pkrCoverIn = COVER_SEARCH;
+        c = findCover(children, camera);
+      }
+      camera._pkrCoverIn--;
+      camera._pkrCover = c;
+      if (!c) return origRender.apply(this, arguments);
+      let top = c;
+      while (top.parentContainer) top = top.parentContainer;
+      const k = children.indexOf(top);
+      if (k <= 0) return origRender.apply(this, arguments);
+      coverStats.frames++;
+      coverStats.skipped += k;
+      for (let i = 0; i < k; i++) {
+        camera.addToRenderList(children[i]);
+        if (children[i].type === "Container" && children[i].list) listSkipped(children[i].list, camera);
+      }
+      return origRender.call(this, scene, children.slice(k), camera);
+    };
+    g.__rt.coverSwap = [WRP, "render", origRender];
   }
 
   // Which of the checked fast paths went in. Each one is skipped silently when Phaser's code no

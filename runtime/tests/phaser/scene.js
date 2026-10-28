@@ -145,6 +145,13 @@ class TestScene extends Phaser.Scene {
 }
 
 const N = globalThis.__native;
+// 128x64, transparent but for a 20x14 block at (70, 20) whose left column has alpha 128; 64x64 opaque.
+const TRIM_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAABACAYAAADS1n9/AAADpElEQVR42u3SIavyCgCH8ZeBoFhsNpvNdtppp73tbfcTrKysDC4rgzEOLJyVnTA4rKwMm81ms9m8MBgIE0E2GAwERZAJz/0QN3n5/z7Cw/Prl4iIiIiIiIiIiIiIiIiIiIiIiIjI/9g/5t9+YXqU5icH84vK/OZk/nA2MxpzSWuu6Mw1F3PD1dxyN3c8zD1PswTziGHWDMyOoXljbPao6KsNYHl+YX1SWl8crG8q64eTlXG2ljTWitZa01kbLtaWq7Xjbu15WCVP6whWjWF1DKwbQ6tnbBka4OUGsD/9wv6itL852D9UdsbJXnK2VzT2mtbe0NlbLvaOq73nbpc87CNPuwa7w7BvDOyeoW0wtkca4OUGcL78wvmmdH44OBmVs+TkrDg7axpnQ+ts6ZwdF2fP1Sm5O0ceTs3T6cC5YTg9A8dg6IwYOxMN8HIDuN9+4f5QuhkHd0nlrji5a87uhsbd0ro7OnfPxS25ukfubs3D7Xi6N3B7DNdg4I4YuhPG7lQDvNwA3o9feBmlt+Tgrai8NSdvw9nb0ng7Wm9P55VcvCNXr+budTy8G0+vB8/A8EYMvAlDb8rYm2mAlxsgyPwiWFIGKw7BmirYcAq2nIMdTbCnDUq64MglqLkGHffgxiPoeQYGBCOMYMIgmDIMZoyDuQZ4uQHCpV+EK8pwzSHcUIVbTuGOc7inCUva8EgX1lzCjmt44x72PEKDZziCcIIRThmEM4bhnHG40AAvN0C08otoTRltOERbqmjHKdpzjkqa6Egb1XRRxyW6cY167pHBIxrxjCYQTTGiGYNozjBaMI7eNMDLDRCv/SLeUMZbDvGOKt5zikvO8ZEmrmnjji6+cYl7rrHBPR7xiCc84ynEM4x4ziBeMIzfGMfvGuDlBkg2fpFsKZMdh2RPlZSckiPnpKZJOtrkRpf0XBKDazLinkx4JFOeyQySOUayYJC8MUzeGScfGuDlBki3fpHuKNM9h7SkSo+c0ppz2tGkN9q0p0sNLumIazrhnk55pDOe6RzSBUb6xiB9Z5h+ME5/a4CXGyDb+UW2p8xKDtmRKqs5ZR3n7EaT9bSZQZeNuGQTrtmUezbjkc15ZgvI3jCydwbZB8PsN+PsjwZ4uQHyvV/kJWV+5JDXVHnHKb9xznua3KDNR3T5hEs+5ZrPuOdzHvmCZ/4G+TtG/sEg/80w/8M4/0sDiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIjIf/Qv9TgOfJxyyN0AAAAASUVORK5CYII=";
+const OPAQUE_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAgElEQVR42u3YMREAIAwEwciJiIhFDq7AAdSELShTsNXNR+ZYpzerju/1+wAAAAAAAAA+Buj+wds9AAAAAAAA8DOAEgQAAAAAAADsAUoQAAAAAAAAsAcoQQAAAAAAAMAeoAQBAAAAAAAAe4ASBAAAAAAAAOwBShAAAAAAAABoB7ABq8Jx8LibvVIAAAAASUVORK5CYII=";
+const addBase64 = (scene, key, data) => new Promise((res) => {
+  scene.textures.once("addtexture-" + key, res);
+  scene.textures.addBase64(key, data);
+});
 const nextFrames = (game, n) => new Promise((res) => {
   let k = 0;
   const f = () => { if (++k >= n) { game.events.off("postrender", f); res(); } };
@@ -274,6 +281,69 @@ async function run() {
       : pixels(d) !== pixA ? "Phaser's drawing of the same inputs differs" : "";
     b.destroy(), c.destroy(), d.destroy();
     report("fastpath: measuring makes no texture; a destroyed text's texture serves the same text", !detail, detail);
+  }
+  // js/fastpath.js trimmed quads: images drawn without the transparent part of their quads (in a
+  // container: src/fastpath.c; alone: batchFast) give the same frame as the whole quads. Whole
+  // scales: where a pixel centre falls exactly on a texel edge (scale 1.25: every 5 pixels), either
+  // texel is nearest and float rounding picks one, differently for a smaller quad.
+  {
+    const sc = game.scene.getScene("test"), r = game.renderer, gl = r.gl;
+    await addBase64(sc, "trim-test", TRIM_PNG);
+    const shown = sc.children.list.filter((o) => o.visible);
+    shown.forEach((o) => o.setVisible(false));
+    const cont = sc.add.container(0, 0);
+    const a = sc.make.image({ x: 200, y: 110, key: "trim-test" }, false).setScale(3);
+    const b = sc.make.image({ x: 500, y: 300, key: "trim-test" }, false).setFlipX(true).setScale(2, 3);
+    cont.add([a, b]);
+    const top = sc.add.image(700, 100, "trim-test").setScale(2).setAlpha(0.8);
+    const frame = () => new Promise((res) => game.events.once("postrender", () => {
+      const px = new Uint8Array(gl.drawingBufferWidth * gl.drawingBufferHeight * 4);
+      gl.readPixels(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      res(px);
+    }));
+    const pipe = r.pipelines.get("MultiPipeline");
+    await nextFrames(game, 2);
+    const on = await frame();
+    const trimmed = Array.isArray(a.frame._pkrTrim) && pipe._pkrTrim === 2;
+    pipe._pkrTrim = 0;
+    await nextFrames(game, 2);
+    const off = await frame();
+    delete pipe._pkrTrim;
+    let diff = 0, lit = 0;
+    for (let i = 0; i < on.length; i += 4) { if (on[i] !== off[i] || on[i + 1] !== off[i + 1] || on[i + 2] !== off[i + 2]) diff++; if (off[i] > 60) lit++; }
+    // Vita3K doesn't fill pixels read back from GPU memory: there only the trim itself is checked.
+    const vitagl = /SGX543/.test(String(gl.getParameter(gl.RENDERER)));
+    const detail = !rt.trimInfo ? "not installed" : !trimmed ? "no trim for the frame (" + JSON.stringify(a.frame._pkrTrim) + ")"
+      : vitagl ? "" : !lit ? "nothing drawn" : diff ? diff + " pixels differ" : "";
+    cont.destroy(), top.destroy();
+    shown.forEach((o) => o.setVisible(true));
+    report("fastpath: trimmed quads draw the same pixels", !detail, detail);
+  }
+  // js/fastpath.js covered objects: an opaque image covering the camera hides the top-level
+  // children before its own; they still go in the camera's render list. Not when it isn't opaque.
+  {
+    const sc = game.scene.getScene("test"), cam = sc.cameras.main, sx = cam.scrollX, sy = cam.scrollY;
+    await addBase64(sc, "cover-test", OPAQUE_PNG);
+    cam.setScroll(0, 0); // (only an unscrolled camera is checked)
+    const below = sc.add.container(0, 0), belowImg = sc.make.image({ x: 10, y: 10, key: "trim-test" }, false);
+    below.add(belowImg);
+    const ui = sc.add.container(0, 0);
+    const cover = sc.make.image({ x: 0, y: 0, key: "cover-test" }, false).setOrigin(0).setDisplaySize(cam.worldView.width, cam.worldView.height);
+    ui.add(cover);
+    const s0 = rt.coverStats ? rt.coverStats().skipped : 0;
+    await nextFrames(game, 12);
+    const s1 = rt.coverStats ? rt.coverStats().skipped : 0;
+    const listed = cam.renderList.includes(belowImg) && cam.renderList.includes(below) && cam.renderList.includes(cover);
+    cover.setAlpha(0.99);
+    await nextFrames(game, 3);
+    const s2 = rt.coverStats ? rt.coverStats().skipped : 0;
+    await nextFrames(game, 3);
+    const s3 = rt.coverStats ? rt.coverStats().skipped : 0;
+    const detail = !rt.coverStats ? "not installed" : !(s1 > s0) ? "nothing skipped under the cover"
+      : !listed ? "skipped objects missing from the render list" : s3 !== s2 ? "skipped under a translucent cover" : "";
+    below.destroy(), ui.destroy();
+    cam.setScroll(sx, sy);
+    report("fastpath: an opaque screen-covering image hides what is under it", !detail, detail);
   }
   // js/bootstrap.js: a destroyed timer event leaves its Clock's list; live and re-added ones keep running.
   {

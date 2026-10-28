@@ -1162,3 +1162,32 @@ Error responses (HTTP 4xx/5xx) reach the game as before; the game's other reques
 rankings) keep failing as in a browser, since the game handles those. tests/smoke checks that such
 a request waits behind the dialog until aborted. Desktop: DNS failure -> dialog; Retry -> sent again
 (failed again -> dialog again); Back to the title screen -> restart into the game.
+
+### The egg gacha, and pixels drawn for nothing (logs 166-167, 1.1, 2026-10-28; runtime 1.2)
+The connection dialog worked on the console: savedata/updateall failed ("Connection reset by
+peer"), the owner chose Retry, the save went through and the wave went on.
+The egg gacha ran at ~25 fps with the GPU at 38-40 ms a frame (JS ~20 ms, a few frames of 400-490 ms;
+the owner also found it slow to react). What it draws (desktop dump): the battle scene behind it in
+full (the arena backdrop with the field shader, its two ground layers, the trainer), a screen-filling
+opaque background, then three machines of three 320x132 layers each (1920x792 on screen), of which
+11-33% has visible texels: about 9.5 screens of blended pixels a frame. Two changes, both drawing
+the same pixels:
+- Trimmed quads: image textures get a map of their visible 4x4 blocks at upload (src/gl.c
+  gl_alpha_box), and a sprite on MultiPipeline (tint effects 0-1) or PokeRogue's FieldSprite (effect
+  0), in normal blending with one tint, is drawn as the part of its quad that can have visible texels
+  (2-texel margin), in C (src/fastpath.c sprite_quad.trim) and in batchFast. Gacha layers drop to
+  11-33% of their quads; in every battle the arena's two ground layers (FieldSprite shader, 73% of the
+  screen each) drop to 4-20% (temple_a: 4%).
+- Covered objects: when a top-level child of the scene holds an opaque image covering the camera (all
+  texels at alpha 255 by the same map, alpha 1 down its containers, normal blending, no mask, post
+  pipeline, rotation or crop), the top-level children before it aren't drawn; they still go in the
+  camera's render list (input orders objects under the pointer by it). The menu backgrounds are such
+  images (party, summary, starter select, egg list and the gacha's: 100% opaque), so the battle under
+  them (arena, Pokémon with their shader, battle info) is no longer drawn. Looked for every 8 frames
+  (a walk of ~110 visible objects in a battle, 44 us on the desktop), checked again every frame.
+Desktop, screenshots with each change on and off: gacha, Temple battle (animations paused) and the
+party screen over it identical, but for the gacha's clock and the message's bobbing arrow.
+tests/phaser checks both (pixels in a frame; the skipped objects in the render list; no skip under
+a 0.99-alpha cover). Where a pixel centre falls exactly on a texel edge (a scale such as 1.25),
+float rounding may pick the other texel for a smaller quad; PokeRogue draws 3 pixels per texel.
+The gacha's slow reactions are not explained yet: the log had no samples (the profiler was off).
