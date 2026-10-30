@@ -25,6 +25,8 @@ typedef struct {
     int busy_after_ms;       // config.txt busy=<ms>: loading screen during long frames (0: never)
     bool net_trace;          // config.txt nettrace=1: log API request headers
     bool osk;                // always use the built-in keyboard (config.txt osk=1)
+    int fatal_wait;          // config.txt fatal_wait=<s>: how long a start-up error stays without a
+                             // button press (default 120; 0: not shown, as in the Vita3K boot check)
     bool fps30;              // config.txt fps30=1: a frame every other vblank (30 fps), steadier than
                              // 30-45 (start screen toggle; L + R + SQUARE in game)
     bool hud;                // debug line over the game (config.txt hud=1; SELECT while holding L+R)

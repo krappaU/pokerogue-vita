@@ -87,7 +87,7 @@ Docker image and is tested in Vita3K (does it boot?) and on the real Vita (perfo
    container walk, sprite batching, uniforms and flushes; lazily built UI; translation cache;
    native save encryption; work moved off the main thread) and the open items below.
 
-## Open items (2026-10-30, runtime 1.0.3)
+## Open items (2026-10-30, runtime 1.0.4)
 Performance:
 - Battles run at ~28-40 fps on the Vita (log171: JS 25-33 ms a frame at the median, GPU 15-20 ms), so
   JS sets the frame rate. Where it goes (12 reports, samples): Phaser's render JS 21%, tweens 20%,
@@ -98,14 +98,8 @@ Performance:
   at each wave (JSON.stringify ~300 ms), atlas loading, screen setup, and collections (1.5-2 s,
   placed under loading screens and after saves where possible).
 
-Reliability and maintenance (from [review-2026-10.md](review-2026-10.md), still open):
-- Phaser's framebuffer cleanup frees no renderbuffers: `getFramebufferAttachmentParameter` returns
-  an integer where WebGL returns the attached object (review finding 3).
-- The HTTP disk cache (`<data>/http-cache/`) is never cleaned; each game release adds chunks
-  (finding 4; the bytecode cache drops files after 14 days).
-- Without `libshacccg.suprx` the app closes back to LiveArea; the reason is only in the log
-  (finding 5).
-- A downloaded offline game replaces the installed one without a size or zip check (finding 9).
+Reliability and maintenance (from [review-2026-10.md](review-2026-10.md); findings 3, 4, 5 and 9
+done in 1.0.4: renderbuffer leak, disk cache cleaning, missing-compiler message, download check):
 - Unpinned build inputs: `vitasdk/vitasdk:latest` (finding 8; Vita3K is pinned since 2026-10-28,
   with a weekly scheduled check for newer builds).
 - Cg reserved-word renaming doesn't rename uniform/attribute lookups (finding 7; latent).

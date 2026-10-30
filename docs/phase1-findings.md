@@ -1217,3 +1217,28 @@ pipelines 16% (FieldSprite's onBind alone 6% of samples), input and frame events
 search of a battle's ~190 objects takes 0.055 ms, so most of that is the sampler's bias toward JS loops.
 1.0.3: searched every 30 frames instead of 8, and what can't change between searches (type, pipeline,
 frame and its opacity) is judged once per object and frame.
+
+### Four of the review's findings (review-2026-10.md 3, 4, 5, 9; runtime 1.0.4)
+- Renderbuffer leak (3): Phaser's WebGLFramebufferWrapper.destroy deletes what
+  getFramebufferAttachmentParameter(..., OBJECT_NAME) returns; the native call answered a number, so
+  every destroyed render target left its depth/stencil renderbuffer behind (and deleted its texture
+  only through the texture's own wrapper). js/webgl.js now records each framebuffer's attachments and
+  answers with the objects (or null). Deleted GL objects are dead in gl.c (id 0, as in WebGL), so the
+  texture's second delete can't hit a texture that got its name meanwhile, and is*() answers false for
+  them (vitaGL's glIsTexture(0) says yes). tests/phaser checks that a destroyed framebuffer frees both.
+- Disk cache cleaning (4): `<data>/http-cache/` kept every file forever, and each game release adds
+  newly named chunks. A cached file read again gets its modification time set to now (at most once a
+  week per file: utime, no data written; not the unversioned fonts, whose age decides refetching).
+  Once a week (`http-cache/cleaned` marks the last pass) the cache thread deletes files unused for 60
+  days, one of the 256 folders at a time while idle, from two minutes after launch, paced like the
+  old cache's removal. Desktop: a 90-day-old file and a 2-day-old .tmp deleted, a fresh one kept; an
+  online start marked all 808 files it read.
+- Missing shader compiler (5): the app closed back to LiveArea with the reason only in the log. It now
+  shows the reason and how to install libshacccg.suprx, drawn into a display buffer with the 8x8 font
+  (vitaGL can't start without the compiler), until a button press or 120 s (config.txt fatal_wait;
+  0: not shown). Vita3K 4201 crashes on its own side presenting a display buffer without libgxm (main
+  RAM or video RAM alike), so its boot check sets fatal_wait=0; on the console it is still to be seen.
+- Download check (9): a downloaded offline game replaced the installed one unchecked (a resume answered
+  416 counts as complete). Its size must now be the release's and it must open as a zip with files;
+  otherwise it is deleted, the installed game stays, and a message says to try again. Not run end to
+  end here (this session can't reach GitHub's API for that repository).

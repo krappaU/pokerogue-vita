@@ -319,6 +319,28 @@ async function run() {
     shown.forEach((o) => o.setVisible(true));
     report("fastpath: trimmed quads draw the same pixels", !detail, detail);
   }
+  // js/webgl.js framebuffer attachments: Phaser's WebGLFramebufferWrapper.destroy deletes the
+  // renderbuffer and texture getFramebufferAttachmentParameter names (review-2026-10.md finding 3).
+  {
+    const r = game.renderer, gl = r.gl, W = Phaser.Renderer.WebGL.Wrappers;
+    let detail = !W || !W.WebGLFramebufferWrapper ? "no WebGLFramebufferWrapper" : "";
+    if (!detail) {
+      const mk = gl.createRenderbuffer, made = [];
+      gl.createRenderbuffer = function () { const rb = mk.apply(this, arguments); made.push(rb); return rb; };
+      let tex, fb;
+      try {
+        tex = r.createTexture2D(0, gl.NEAREST, gl.NEAREST, gl.CLAMP_TO_EDGE, gl.CLAMP_TO_EDGE, gl.RGBA, null, 64, 64);
+        fb = new W.WebGLFramebufferWrapper(gl, 64, 64, tex, true);
+      } finally { gl.createRenderbuffer = mk; }
+      const rb = made[0], glTex = tex.webGLTexture;
+      const before = !!rb && gl.isRenderbuffer(rb) && gl.isTexture(glTex);
+      fb.destroy();
+      detail = !before ? "no renderbuffer made (" + made.length + ")" : gl.isRenderbuffer(rb) ? "renderbuffer left after destroy"
+        : gl.isTexture(glTex) ? "texture left after destroy" : "";
+      tex.destroy(); // deleted already: a second delete does nothing
+    }
+    report("webgl: a destroyed framebuffer frees its renderbuffer and texture", !detail, detail);
+  }
   // js/fastpath.js covered objects: an opaque image covering the camera hides the top-level
   // children before its own; they still go in the camera's render list. Not when it isn't opaque.
   {

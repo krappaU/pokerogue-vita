@@ -10,6 +10,8 @@
 #include <psp2/audioout.h>
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/ctrl.h>
+#include <psp2/display.h>
+#include <psp2/kernel/sysmem.h>
 #include <psp2/io/devctl.h>
 #include <psp2/io/stat.h>
 #include <psp2/kernel/processmgr.h>
@@ -55,6 +57,47 @@ extern char vgl_shader_dump_path[256]; // vitaGL, patches/vitagl-0002
 // The rear touchpad's middle (panel coordinates; sceTouchGetPanelInfo), for L2/R2 (plat_gamepads).
 static int back_mid_x = 960, back_mid_y = 498;
 
+// A message on the screen before vitaGL is up (it can't start without the shader compiler): drawn
+// straight into a display buffer with the 8x8 font, until a button is pressed or config.txt's
+// fatal_wait seconds pass (fatal_wait=0: not shown). Without it the app closed back to LiveArea with
+// the reason only in the log (review-2026-10.md, finding 5). Vita3K (build 4201) crashes on its own
+// side presenting a display buffer without libgxm, so the emulator boot check sets fatal_wait=0.
+static void show_fatal(const char *text) {
+    if (g_cfg.fatal_wait == 0) return;
+    const int W = 960, H = 544;
+    const size_t size = ((size_t)W * H * 4 + 0x3ffff) & ~(size_t)0x3ffff; // CDRAM: 256 KB units
+    SceUID block = sceKernelAllocMemBlock("pkr_fatal", SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, size, NULL);
+    void *base = NULL;
+    if (block < 0 || sceKernelGetMemBlockBase(block, &base) < 0 || !base) return;
+    uint8_t *px = base;
+    static const uint8_t bg[4] = {24, 24, 34, 255}, fg[4] = {255, 255, 255, 255}, dim[4] = {170, 170, 190, 255};
+    for (size_t i = 0; i < (size_t)W * H; i++) memcpy(px + i * 4, bg, 4);
+    int y = 120;
+    for (const char *p = text; *p;) {
+        char line[64];
+        size_t n = strcspn(p, "\n");
+        snprintf(line, sizeof line, "%.*s", (int)(n < 60 ? n : 60), p);
+        overlay_blit_text(px, W, H, 40, y, line, 2, y == 120 ? fg : dim);
+        y += 24;
+        p += n + (p[n] ? 1 : 0);
+    }
+    SceDisplayFrameBuf fb = {.size = sizeof fb, .base = base, .pitch = W, .pixelformat = SCE_DISPLAY_PIXELFORMAT_A8B8G8R8,
+                             .width = W, .height = H};
+    sceDisplaySetFrameBuf(&fb, SCE_DISPLAY_SETBUF_NEXTFRAME);
+    host_log_flush();
+    int wait = g_cfg.fatal_wait > 0 ? g_cfg.fatal_wait : 120;
+    SceCtrlData pad;
+    bool released = false;
+    for (int t = 0; t < wait * 60; t++) {
+        sceDisplayWaitVblankStart();
+        memset(&pad, 0, sizeof pad);
+        sceCtrlPeekBufferPositive(0, &pad, 1);
+        if (!pad.buttons) released = true;
+        else if (released) break; // a press that began after the message appeared
+    }
+    sceKernelFreeMemBlock(block);
+}
+
 bool plat_init(int w, int h) {
     scePowerSetArmClockFrequency(444);
     scePowerSetBusClockFrequency(222);
@@ -67,6 +110,13 @@ bool plat_init(int w, int h) {
     if (!shacccg) {
         host_log("libshacccg.suprx not found in ur0:data/ or ur0:data/external/. "
                  "Install it (e.g. with PIB-Configuration-Tool) to compile shaders.");
+        show_fatal("PokeRogue can't start: Sony's shader compiler is missing.\n\n"
+                   "The app needs libshacccg.suprx in ur0:data/\n"
+                   "(or ur0:data/external/). It comes from your own\n"
+                   "console's files and can't be included with the app.\n"
+                   "Install it with ShaRKBR33D (or PIB-Configuration-Tool),\n"
+                   "then start PokeRogue again.\n\n"
+                   "Press any button to exit.");
         return false;
     }
 #ifdef PKR_DEBUG

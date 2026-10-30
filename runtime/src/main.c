@@ -64,6 +64,7 @@ host_config g_cfg = {
     .win_h = 544,
     .exit_after_frames = 0,
     .busy_after_ms = 2500,
+    .fatal_wait = -1, // 120 s
     .max_textures = 4, // Phaser's shader picks a sprite's texture with an if per unit: 16 cost GPU time
 #ifdef PKR_PROFILE_BUILD
     // profiling build (CMake PKR_PROFILE_BUILD): sample from the start, ten times as often, by time
@@ -1027,6 +1028,8 @@ static void load_config_file(void) {
 #endif
         } else if (!strcmp(k, "fps30")) {
             g_cfg.fps30 = atoi(v) != 0;
+        } else if (!strcmp(k, "fatal_wait")) {
+            g_cfg.fatal_wait = atoi(v);
         } else if (!strcmp(k, "osk")) {
             g_cfg.osk = atoi(v) != 0;
         } else if (!strcmp(k, "local") && v[0]) {

@@ -99,6 +99,14 @@ static JSValue new_obj(JSContext *ctx, GLuint id, int kind) {
 }
 
 static void obj_finalizer(JSRuntime *rt, JSValue v) { free(JS_GetOpaque(v, obj_class)); }
+
+// After delete*: the object is dead, as in WebGL (later calls with it do nothing), so a second delete
+// can't hit a new object that got the same name meanwhile (Phaser deletes a render target's texture
+// both through its framebuffer and through the texture's own wrapper).
+static void obj_dead(JSValueConst v) {
+    globj *o = JS_GetOpaque(v, obj_class);
+    if (o) o->id = 0;
+}
 static void tex_account(GLuint id, size_t bytes);
 static void uloc_finalizer(JSRuntime *rt, JSValue v) { free(JS_GetOpaque(v, uloc_class)); }
 
@@ -383,6 +391,7 @@ FN(w_deleteBuffer) {
             b->id = (GLuint)-1;
         }
         glDeleteBuffers(1, &id);
+        obj_dead(A(0));
     }
     return JS_UNDEFINED;
 }
@@ -393,6 +402,7 @@ FN(w_deleteTexture) {
         tex_forget(ctx, id);
         if (id < 65536) tex_scaled[id] = 0;
         glDeleteTextures(1, &id);
+        obj_dead(A(0));
     }
     return JS_UNDEFINED;
 }
@@ -401,10 +411,15 @@ FN(w_deleteFramebuffer) {
     if (id) {
         if (id < 65536) fb_scaled[id] = 0;
         glDeleteFramebuffers(1, &id);
+        obj_dead(A(0));
     }
     return JS_UNDEFINED;
 }
-FN(w_deleteRenderbuffer) { GLuint id = oid(A(0)); if (id) glDeleteRenderbuffers(1, &id); return JS_UNDEFINED; }
+FN(w_deleteRenderbuffer) {
+    GLuint id = oid(A(0));
+    if (id) glDeleteRenderbuffers(1, &id), obj_dead(A(0));
+    return JS_UNDEFINED;
+}
 static void family_free(GLuint prog);
 FN(w_deleteProgram) {
     GLuint id = oid(A(0));
@@ -413,12 +428,13 @@ FN(w_deleteProgram) {
 }
 FN(w_deleteShader) { GLuint id = oid(A(0)); if (id) glDeleteShader(id); return JS_UNDEFINED; }
 
-FN(w_isBuffer) { return JS_NewBool(ctx, glIsBuffer(oid(A(0)))); }
-FN(w_isTexture) { return JS_NewBool(ctx, glIsTexture(oid(A(0)))); }
-FN(w_isFramebuffer) { return JS_NewBool(ctx, glIsFramebuffer(oid(A(0)))); }
-FN(w_isRenderbuffer) { return JS_NewBool(ctx, glIsRenderbuffer(oid(A(0)))); }
-FN(w_isProgram) { return JS_NewBool(ctx, glIsProgram(oid(A(0)))); }
-FN(w_isShader) { return JS_NewBool(ctx, glIsShader(oid(A(0)))); }
+// A deleted object (id 0, see obj_dead) or null is no object, as in WebGL (vitaGL says yes for 0).
+FN(w_isBuffer) { GLuint id = oid(A(0)); return JS_NewBool(ctx, id && glIsBuffer(id)); }
+FN(w_isTexture) { GLuint id = oid(A(0)); return JS_NewBool(ctx, id && glIsTexture(id)); }
+FN(w_isFramebuffer) { GLuint id = oid(A(0)); return JS_NewBool(ctx, id && glIsFramebuffer(id)); }
+FN(w_isRenderbuffer) { GLuint id = oid(A(0)); return JS_NewBool(ctx, id && glIsRenderbuffer(id)); }
+FN(w_isProgram) { GLuint id = oid(A(0)); return JS_NewBool(ctx, id && glIsProgram(id)); }
+FN(w_isShader) { GLuint id = oid(A(0)); return JS_NewBool(ctx, id && glIsShader(id)); }
 
 FN(w_bindBuffer) {
     int t = gi(ctx, A(0));

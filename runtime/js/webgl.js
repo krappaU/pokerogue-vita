@@ -280,6 +280,47 @@
     },
   });
 
+  // Framebuffer attachments as WebGL reports them: getFramebufferAttachmentParameter(...,
+  // FRAMEBUFFER_ATTACHMENT_OBJECT_NAME) gives the attached WebGLTexture or WebGLRenderbuffer, or null.
+  // The native call answers the GL's number (vitaGL: a pointer for the colour attachment), and
+  // Phaser's WebGLFramebufferWrapper.destroy deletes what it gets, so a number deleted nothing: every
+  // destroyed render target left its depth/stencil renderbuffer behind (review-2026-10.md, finding 3).
+  // Here the attachments are remembered per framebuffer as they are made.
+  const FB = proto.FRAMEBUFFER, OBJECT_NAME = proto.FRAMEBUFFER_ATTACHMENT_OBJECT_NAME;
+  const OBJECT_TYPE = proto.FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE;
+  const attached = new WeakMap(); // framebuffer -> {attachment: [object, TEXTURE | RENDERBUFFER]}
+  let boundFb = null;
+  const nativeBindFb = proto.bindFramebuffer, nativeFbTex = proto.framebufferTexture2D;
+  const nativeFbRb = proto.framebufferRenderbuffer, nativeFbParam = proto.getFramebufferAttachmentParameter;
+  const attach = (att, obj, type) => {
+    if (!boundFb) return;
+    let rec = attached.get(boundFb);
+    if (!rec) attached.set(boundFb, (rec = {}));
+    if (obj) rec[att] = [obj, type];
+    else delete rec[att];
+  };
+  Object.assign(proto, {
+    bindFramebuffer(target, fb) {
+      if (target === FB) boundFb = fb || null;
+      return nativeBindFb.call(this, target, fb);
+    },
+    framebufferTexture2D(target, att, textarget, tex, level) {
+      if (target === FB) attach(att, tex, proto.TEXTURE);
+      return nativeFbTex.call(this, target, att, textarget, tex, level);
+    },
+    framebufferRenderbuffer(target, att, rbtarget, rb) {
+      if (target === FB) attach(att, rb, proto.RENDERBUFFER);
+      return nativeFbRb.call(this, target, att, rbtarget, rb);
+    },
+    getFramebufferAttachmentParameter(target, att, pname) {
+      if (target !== FB || (pname !== OBJECT_NAME && pname !== OBJECT_TYPE)) return nativeFbParam.call(this, target, att, pname);
+      const rec = boundFb && attached.get(boundFb), a = rec && rec[att];
+      if (pname === OBJECT_NAME) return a ? a[0] : null;
+      return a ? a[1] : proto.NONE;
+    },
+  });
+  rt.fbAttachments = (fb) => attached.get(fb) || null; // tests/phaser
+
   let mainCanvas = null;
   const lose = { loseContext() {}, restoreContext() {} };
   // Extensions Phaser can use when present; none are needed for PokeRogue.

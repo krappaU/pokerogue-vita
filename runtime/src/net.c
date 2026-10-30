@@ -22,6 +22,7 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <utime.h>
 
 #include <curl/curl.h>
 #include "miniz.h"
@@ -260,6 +261,13 @@ static bool is_cacheable(const char *method, const char *url) {
            strstr(path, "?v=");
 }
 
+// Cleaning (cache_clean_step): each game release adds newly named chunks and assets, and nothing
+// asked for the old ones again, so they would stay on the memory card for good. A cached file read
+// again is marked as used (its modification time set to now, at most once a week per file: a
+// metadata change, no data written); once a week a pass deletes what wasn't used for two months.
+#define CACHE_TOUCH_AGE (7 * 24 * 3600)
+#define CACHE_MAX_AGE (60 * 24 * 3600)
+
 // Cached files without a version in the URL or name (the fonts) are refetched after a month, in
 // case the site replaces one in place.
 static bool cache_unversioned(const char *url) {
@@ -303,11 +311,14 @@ static char *cache_read_raw(const char *url, size_t *len) {
     }
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
+    struct stat fs;
+    // (not the unversioned files: their age says when to fetch them again)
+    bool touch = !cache_unversioned(url) && fstat(fileno(f), &fs) == 0 && time(NULL) - fs.st_mtime > CACHE_TOUCH_AGE;
     fseek(f, 0, SEEK_END);
     long n = ftell(f);
     fseek(f, 0, SEEK_SET);
-    char *d = malloc(n + 1);
-    if (fread(d, 1, n, f) != (size_t)n) {
+    char *d = n >= 0 ? malloc(n + 1) : NULL;
+    if (!d || fread(d, 1, n, f) != (size_t)n) {
         free(d);
         d = NULL;
     } else {
@@ -315,6 +326,7 @@ static char *cache_read_raw(const char *url, size_t *len) {
         *len = n;
     }
     fclose(f);
+    if (d && touch) utime(path, NULL);
     return d;
 }
 
@@ -804,16 +816,67 @@ static void legacy_step(void) {
     legacy_next = host_now_ms() + (took * 4 > 100 ? took * 4 : 100);
 }
 
+// The weekly pass over the cache (see CACHE_MAX_AGE), paced like legacy_step: one of the 256
+// folders at a time while the cache thread is idle, from two minutes after launch, each step
+// followed by a pause four times as long. <data>/http-cache/cleaned marks the last complete pass.
+static int clean_dir = -1; // folder of the next step, -1 when no pass is running
+static double clean_next;
+static int clean_files, clean_deleted;
+static double clean_mb, clean_ms;
+
+static void cache_clean_start(void) {
+    char mark[600];
+    snprintf(mark, sizeof mark, "%s/" CACHE_DIR "/cleaned", g_cfg.data_dir);
+    struct stat st;
+    if (stat(mark, &st) == 0 && time(NULL) - st.st_mtime < 7 * 24 * 3600) return;
+    clean_dir = 0;
+    clean_next = host_now_ms() + 120000;
+}
+
+static void cache_clean_step(void) {
+    double t0 = host_now_ms();
+    if (t0 < clean_next) return;
+    char dir[600], path[700];
+    snprintf(dir, sizeof dir, "%s/" CACHE_DIR "/%02x", g_cfg.data_dir, clean_dir);
+    DIR *d = opendir(dir);
+    time_t now = time(NULL);
+    struct dirent *e;
+    while (d && (e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+        struct stat st;
+        if (stat(path, &st) != 0) continue;
+        clean_files++;
+        // a .tmp is a write that never finished
+        bool tmp = strstr(e->d_name, ".tmp") != NULL;
+        if (now - st.st_mtime > (tmp ? 24 * 3600 : CACHE_MAX_AGE) && remove(path) == 0)
+            clean_deleted++, clean_mb += st.st_size / 1048576.0;
+    }
+    if (d) closedir(d);
+    double took = host_now_ms() - t0;
+    clean_ms += took;
+    clean_next = host_now_ms() + (took * 4 > 100 ? took * 4 : 100);
+    if (++clean_dir < 256) return;
+    clean_dir = -1;
+    snprintf(path, sizeof path, "%s/" CACHE_DIR "/cleaned", g_cfg.data_dir);
+    FILE *f = fopen(path, "w");
+    if (f) fclose(f);
+    host_log("[net] disk cache cleaned: %d of %d files deleted (%.1f MB) as unused for %d days, in %.0f ms",
+             clean_deleted, clean_files, clean_mb, CACHE_MAX_AGE / (24 * 3600), clean_ms);
+}
+
 static void *cache_thread(void *arg) {
     (void)arg;
     plat_thread_setup("pkr_cache", 1, -5); // below the network thread, above image decoding
     snprintf(legacy_dir, sizeof legacy_dir, "%s/" LEGACY_CACHE_DIR, g_cfg.data_dir);
     legacy = opendir(legacy_dir);
     legacy_next = host_now_ms() + 60000;
+    cache_clean_start();
     for (;;) {
         pthread_mutex_lock(&cache_lock);
-        if (!cache_q && legacy) { // idle: wake when the next old file may go
-            double wait = legacy_next - host_now_ms();
+        bool idle_work = legacy || clean_dir >= 0;
+        if (!cache_q && idle_work) { // idle: wake when the next old file may go
+            double wait = (legacy ? legacy_next : clean_next) - host_now_ms();
             if (wait < 1) wait = 1;
             struct timespec ts;
             clock_gettime(CLOCK_REALTIME, &ts);
@@ -822,7 +885,7 @@ static void *cache_thread(void *arg) {
             ts.tv_nsec = (long)(ns % 1000000000LL);
             pthread_cond_timedwait(&cache_cond, &cache_lock, &ts);
         }
-        while (!cache_q && !legacy) pthread_cond_wait(&cache_cond, &cache_lock);
+        while (!cache_q && !legacy && clean_dir < 0) pthread_cond_wait(&cache_cond, &cache_lock);
         req *r = cache_q;
         if (r) {
             cache_q = r->qnext;
@@ -830,7 +893,8 @@ static void *cache_thread(void *arg) {
         }
         pthread_mutex_unlock(&cache_lock);
         if (r) cache_job(r);
-        else legacy_step();
+        else if (legacy) legacy_step();
+        else cache_clean_step();
     }
     return NULL;
 }

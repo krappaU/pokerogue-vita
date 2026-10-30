@@ -14,6 +14,7 @@
 #include <time.h>
 
 #include "host.h"
+#include "miniz.h"
 
 #define RELEASE_API "https://api.github.com/repos/Admiral-Billy/pokerogue/releases/latest"
 #define ASSET_NAME "game.zip"
@@ -296,7 +297,27 @@ bool offline_install(void) {
         }
         return false;
     }
-    // Done: the game is played straight from the zip (no unpacking). An older version goes now.
+    // Done: check it before it replaces anything. A download that stopped early, was cut off or
+    // came back damaged (a server answering 416 to the resume of a wrong part counts as complete)
+    // would otherwise replace a working game with one that doesn't open: its size must be the
+    // release's, and it must open as a zip (that reads only the zip's directory at its end).
+    struct stat dl;
+    bool size_ok = stat(zip_path, &dl) == 0 && (size <= 0 || dl.st_size == size);
+    mz_zip_archive z;
+    memset(&z, 0, sizeof z);
+    bool zip_ok = size_ok && mz_zip_reader_init_file(&z, zip_path, 0);
+    unsigned files = zip_ok ? mz_zip_reader_get_num_files(&z) : 0;
+    if (zip_ok) mz_zip_reader_end(&z);
+    if (!size_ok || !zip_ok || !files) {
+        host_log("[offline] downloaded file rejected: %lld bytes (release: %lld), %s", (long long)(size_ok ? dl.st_size : -1),
+                 size, !size_ok ? "wrong size" : !zip_ok ? "not a zip" : "empty zip");
+        remove(zip_path);
+        ui_message_wait("The downloaded file is damaged (wrong size or not a zip)\n"
+                        "and was deleted. The installed game, if any, is kept.\n\nTry the download again.");
+        return false;
+    }
+    host_log("[offline] download checked: %lld bytes, %u files", (long long)dl.st_size, files);
+    // The game is played straight from the zip (no unpacking). An older version goes now.
     remove(game_zip);
     if (rename(zip_path, game_zip) != 0) {
         ui_message_wait("Couldn't rename the downloaded file.");

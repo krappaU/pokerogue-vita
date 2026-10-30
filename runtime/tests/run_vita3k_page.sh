@@ -35,7 +35,9 @@ if [ -f .cache/private/libshacccg.suprx ]; then
 else
   MODE=boot
   echo "(no .cache/private/libshacccg.suprx: checking the boot only)"
-  echo 'log=1' > "$DATA/config.txt"
+  # fatal_wait=0: no missing-compiler message (Vita3K crashes on its side showing a display buffer
+  # without libgxm; on the console the message waits for a button)
+  printf 'log=1\nfatal_wait=0\n' > "$DATA/config.txt"
 fi
 # log=1: the .vpk under test is the player build, which writes no log otherwise.
 LOG=$DATA/log.txt
