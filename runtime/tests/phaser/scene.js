@@ -331,7 +331,7 @@ async function run() {
     const cover = sc.make.image({ x: 0, y: 0, key: "cover-test" }, false).setOrigin(0).setDisplaySize(cam.worldView.width, cam.worldView.height);
     ui.add(cover);
     const s0 = rt.coverStats ? rt.coverStats().skipped : 0;
-    await nextFrames(game, 12);
+    await nextFrames(game, 35); // (looked for every 30 frames)
     const s1 = rt.coverStats ? rt.coverStats().skipped : 0;
     const listed = cam.renderList.includes(belowImg) && cam.renderList.includes(below) && cam.renderList.includes(cover);
     cover.setAlpha(0.99);

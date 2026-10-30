@@ -1207,3 +1207,13 @@ Releases are major.minor; the dev builds between them are major.minor.N on top o
 and the next release collects them. The dev builds published as "1.1" (the connection dialog) and
 "1.2" (trimmed quads, covered objects) are 1.0.1 and 1.0.2; this entry's build is 1.0.2 by name. The
 next release is 1.1. The LiveArea version has two numbers only, so 1.0.N shows 01.00 there.
+
+### 1.0.2's full session (log171, 1.0.2 dev "1.2", 2026-10-30; runtime 1.0.3)
+The whole session behind log170 (17 minutes, online: Town, Metropolis, Graveyard, egg gacha). No errors
+or hangs. Battles 28-40 fps: JS 25-33 ms a frame at the median, GPU 15-20 ms, so JS sets the rate.
+The profiler's 12 battle reports, averaged: Phaser's render JS 21%, tweens 20%, PokeRogue's sprite
+pipelines 16% (FieldSprite's onBind alone 6% of samples), input and frame events 8%. The cover search
+(js/fastpath.js part 20) took 5% of the samples (findCover 3.1%, covers 2.3%), though on the desktop a
+search of a battle's ~190 objects takes 0.055 ms, so most of that is the sampler's bias toward JS loops.
+1.0.3: searched every 30 frames instead of 8, and what can't change between searches (type, pipeline,
+frame and its opacity) is judged once per object and frame.

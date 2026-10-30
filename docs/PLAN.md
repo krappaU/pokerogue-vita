@@ -87,37 +87,37 @@ Docker image and is tested in Vita3K (does it boot?) and on the real Vita (perfo
    container walk, sprite batching, uniforms and flushes; lazily built UI; translation cache;
    native save encryption; work moved off the main thread) and the open items below.
 
-## Open items (2026-10-16)
-Performance (the main remaining work):
-- Battles run at ~10-20 fps on the Vita; the game's own sprite pipelines (per-sprite uniforms and
-  flushes, colour arrays rebuilt with `splice(...spread)`) are now the largest cost. Planned: a
-  native Phaser renderer behind Phaser's API ([native-renderer.md](native-renderer.md): steps 1-3d
-  on `main` since 0.49, next the render walk and updates), engine-level speedups in QuickJS (fast
-  paths for `splice`/spread: done), and checking whether a JIT is possible.
-  What is native today and what still runs in Phaser's JS: [render-coverage.md](render-coverage.md).
-- Loads: startup ~17 s with a warm cache (over a minute after each game update while its code is
-  compiled), wave and trainer-battle transitions of several seconds, hitches when evicted textures
-  are re-uploaded. The `[perf]` line now names slow main-loop steps; check the next logs.
+## Open items (2026-10-30, runtime 1.0.3)
+Performance:
+- Battles run at ~28-40 fps on the Vita (log171: JS 25-33 ms a frame at the median, GPU 15-20 ms), so
+  JS sets the frame rate. Where it goes (12 reports, samples): Phaser's render JS 21%, tweens 20%,
+  PokeRogue's sprite pipelines 16%, input and frame events 8%, the rest updates and game logic.
+  Next steps in [native-renderer.md](native-renderer.md) (the render walk and updates in C).
+  What is native today: [render-coverage.md](render-coverage.md).
+- Pauses that remain are the game's own work: a move animation's first use (300-575 ms), the save
+  at each wave (JSON.stringify ~300 ms), atlas loading, screen setup, and collections (1.5-2 s,
+  placed under loading screens and after saves where possible).
 
-Reliability:
-- Downloads occasionally stall for ~16-20 s and fail with 0 bytes (one per session in the last logs,
-  down from batches before 0.39). A failed asset GET is now repeated twice in `net.js`; before that, one
-  lost download left a wave-60 load stuck for good (0.42 log, 2026-10-17). Check the next logs for
-  `[net] retry` lines.
-- Memory over long sessions: watch heap and GPU pools in `[mem]` lines (0.41 evicts harder under
-  pressure).
-- No fallback to the last working game version if a new release breaks the shim (risk 4 above).
-- Cloudflare served stale copies of pokerogue.net to requests with an `Origin` header (fixed by
-  matching browser headers); watch for similar cache variants.
+Reliability and maintenance (from [review-2026-10.md](review-2026-10.md), still open):
+- Phaser's framebuffer cleanup frees no renderbuffers: `getFramebufferAttachmentParameter` returns
+  an integer where WebGL returns the attached object (review finding 3).
+- The HTTP disk cache (`<data>/http-cache/`) is never cleaned; each game release adds chunks
+  (finding 4; the bytecode cache drops files after 14 days).
+- Without `libshacccg.suprx` the app closes back to LiveArea; the reason is only in the log
+  (finding 5).
+- A downloaded offline game replaces the installed one without a size or zip check (finding 9).
+- Unpinned build inputs: `vitasdk/vitasdk:latest` (finding 8; Vita3K is pinned since 2026-10-28,
+  with a weekly scheduled check for newer builds).
+- Cg reserved-word renaming doesn't rename uniform/attribute lookups (finding 7; latent).
+- No fallback to the last working game version if a new PokeRogue release breaks the shim (risk 4
+  above); no scheduled check that runs the offline game to the title screen.
 
 Features and checks:
-- Untested on the console yet: save import/export and the restart after an import (0.41),
-  texture eviction under pressure (0.41), the input-repeat fix and QR links (0.40).
-- Login uses the built-in keyboard; the system keyboard is no longer used (0.59). Discord/Google
-  sign-in can't work (a QR code explains it).
-- Most game settings are untested. The rear touchpad's upper half is L2/R2 (off while a text field
-  is shown); the game's "submit" button (touchpad click) is unmapped.
+- Untested on the console: save import/export and the restart after an import (0.41), QR links (0.40).
+- Login uses the built-in keyboard; Discord/Google sign-in can't work (a QR code explains it).
+- Most game settings are untested; the game's "submit" button (touchpad click) is unmapped.
 - Video elements show a stand-in frame (no video decoding).
+
 ## Requirements on the Vita
 - HENkaku or Ensō, with unsafe homebrew enabled; VitaShell to install builds (over FTP or USB)
 - `libshacccg.suprx` in `ur0:data/` (or `ur0:data/external/`), which vitaGL needs to compile shaders.

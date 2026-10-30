@@ -1140,12 +1140,15 @@
   //     mask, post pipeline, rotation or crop, every texel of its frame at alpha 255 by src/gl.c's
   //     map), the top-level children before that one aren't drawn. They still go in the camera's
   //     render list (input orders the objects under the pointer by it). The image is looked for
-  //     every COVER_SEARCH frames and checked again every frame. localStorage PKR_COVER=0: off.
+  //     every COVER_SEARCH frames (a menu's first frames are drawn in full) and checked again every
+  //     frame; what can't change between searches (type, pipeline, frame) is judged once per object
+  //     and frame (log171: at every 8 frames the search was ~5% of a battle's JS samples).
+  //     localStorage PKR_COVER=0: off.
   const WRP = Phaser.Renderer.WebGL.WebGLRenderer.prototype, origRender = WRP.render;
   let coverOn = !!alphaBox && typeof origRender === "function" && origRender.length === 3;
   try { if (g.localStorage.getItem("PKR_COVER") === "0") coverOn = false; } catch (e) { /* keep */ }
   if (coverOn) {
-    const COVER_SEARCH = 8;
+    const COVER_SEARCH = 30;
     const coverStats = { frames: 0, skipped: 0 };
     g.__rt.coverStats = () => Object.assign({}, coverStats);
     const tmpA = new Phaser.GameObjects.Components.TransformMatrix(), tmpB = new Phaser.GameObjects.Components.TransformMatrix();
@@ -1157,14 +1160,24 @@
       const b = alphaBox(tex.webGLTexture, frame.cutX, frame.cutY, frame.cutWidth, frame.cutHeight);
       return (frame._pkrOpaque = !!(b && b[4]) && !frame.rotated);
     };
+    // What doesn't change while an object keeps its frame and pipeline: kept on it (_pkrCov*).
+    const coverKind = (o) => {
+      const f = o.frame, p = o.pipeline;
+      if (o._pkrCovF === f && o._pkrCovP === p) return o._pkrCovOk;
+      const t = o.type;
+      const ok = (t === "Image" || t === "Sprite" || t === "NineSlice") && !!p && p.name === "MultiPipeline" && !!f &&
+        f.cutWidth >= 64 && f.cutHeight >= 64 && frameOpaque(f);
+      // a frame whose texture isn't uploaded yet gets judged again
+      if (ok || (f && f._pkrOpaque !== undefined) || t !== "Image" && t !== "Sprite" && t !== "NineSlice") {
+        o._pkrCovF = f, o._pkrCovP = p, o._pkrCovOk = ok;
+      }
+      return ok;
+    };
     // o hides everything drawn before it by this camera (see above).
     const covers = (o, camera) => {
-      const t = o.type;
-      if ((t !== "Image" && t !== "Sprite" && t !== "NineSlice") || !o.scene || !o.willRender(camera) || o.mask ||
-          o.hasPostPipeline || o.isCropped || o.blendMode !== 0 || o.tintFill || !o.pipeline || o.pipeline.name !== "MultiPipeline") return false;
+      if (!coverKind(o) || !o.scene || !o.willRender(camera) || o.mask || o.hasPostPipeline || o.isCropped ||
+          o.blendMode !== 0 || o.tintFill) return false;
       if (o.alphaTopLeft !== undefined ? !(o._alphaTL === 1 && o._alphaTR === 1 && o._alphaBL === 1 && o._alphaBR === 1) : o.alpha !== 1) return false;
-      const f = o.frame;
-      if (!f || f.cutWidth < 64 || f.cutHeight < 64 || !frameOpaque(f)) return false;
       for (let p = o.parentContainer; p; p = p.parentContainer)
         if (!p.willRender(camera) || p.alpha !== 1 || (p.blendMode !== -1 && p.blendMode !== 0) || p.mask || p.hasPostPipeline) return false;
       const m = o.getWorldTransformMatrix(tmpA, tmpB);
@@ -1220,6 +1233,7 @@
       return origRender.call(this, scene, children.slice(k), camera);
     };
     g.__rt.coverSwap = [WRP, "render", origRender];
+    g.__rt.coverFind = (list, camera) => findCover(list, camera); // scripts/probe_*
   }
 
   // Which of the checked fast paths went in. Each one is skipped silently when Phaser's code no
