@@ -1191,3 +1191,13 @@ tests/phaser checks both (pixels in a frame; the skipped objects in the render l
 a 0.99-alpha cover). Where a pixel centre falls exactly on a texel edge (a scale such as 1.25),
 float rounding may pick the other texel for a smaller quad; PokeRogue draws 3 pixels per texel.
 The gacha's slow reactions are not explained yet: the log had no samples (the profiler was off).
+
+### 1.2 on the console (log170, 1.2, 2026-10-30)
+Online, 9 minutes (Town, Metropolis, Graveyard, then the egg gacha), profiler on. The owner: the egg gacha
+went from slow to react to "super responsive". GPU per frame in battles is now 14-19 ms (Metropolis,
+Graveyard; logs 150 and 154 had 22-38 ms on other maps), so JS (25-33 ms at the median) is what sets the
+frame rate now. The egg gacha at the end: 50-60 fps, GPU 10-18 ms, JS 10-19 ms (log167: ~25 fps, GPU
+38-40 ms). Party screen openings reported as slow frames (over 250 ms): 4, at 252-289 ms (log150: 13
+in 13 minutes, 298-333 ms); the rest stayed under the report's threshold. Slow frames left are the
+game's own work: a move animation's first use (populateMoveAnim, 300-575 ms), wave saves (saveAll's
+JSON.stringify, ~300 ms), loading sprite atlases (Phaser's JSONArray parsing), screen setup.
