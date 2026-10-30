@@ -129,8 +129,12 @@ Without `devserver=`, a dev build sends no logs.
   lines in the log break memory use down; `eval __native.textureDump(100)` lists big textures.
 
 ## Versions
-`runtime/VERSION` holds the version ("0.18"). Bump it for every build handed out for testing. It
-sets the .vpk name (`build-vita/pokerogue-0.18.vpk`) and the LiveArea version (00.18), and the
+`runtime/VERSION` holds the version. Releases are `major.minor` (1.0, 1.1...); the builds handed out
+for testing in between are `major.minor.N` on top of the last release (after 1.0: 1.0.1, 1.0.2...),
+and the next release (1.1) collects them. Bump it for every build handed out for testing (owner's
+scheme since 2026-10-30; the dev builds published as "1.1" and "1.2" were 1.0.1 and 1.0.2). It
+sets the .vpk name (`build-vita/pokerogue-1.0.2.vpk`) and the LiveArea version (major.minor: 01.00; it
+has no third number), and the
 app shows it with the git commit (`scripts/build_id.sh`; "-modified" means uncommitted changes) in
 the first log line and in the corner of the startup and error screens. Commit before building a
 test build so the commit id identifies the code.
@@ -143,8 +147,9 @@ profiler, the debug line, the watchdog thread, `<data>/debug.js` and config.txt'
 A player build writes no log and its JS `console.*` does nothing, unless `log=1` is in config.txt
 (for a bug report). `-DPKR_DEBUG=OFF` builds the player variant on the desktop for testing.
 
-**Releases for players:** write the notes as `docs/releases/v<version>-beta.md`, commit, and push a
-tag `v<version>-beta` on that commit (`runtime/VERSION` must match), or run the "Release" workflow
+**Releases for players:** set `runtime/VERSION` to the release's version (1.1), write the notes as
+`docs/releases/v<version>.md`, commit, and push a tag `v<version>` on that commit (`runtime/VERSION`
+must match), or run the "Release" workflow
 by hand with that tag name (and optionally a commit of main; default the newest), which tags the
 commit itself (cloud sessions can't push tags). CI runs on main are never cancelled by a newer
 push, so a release can wait for an older commit's run. `.github/workflows/release.yml` waits for the commit's CI run to pass and publishes its

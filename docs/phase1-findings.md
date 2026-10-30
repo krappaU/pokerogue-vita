@@ -1201,3 +1201,9 @@ frame rate now. The egg gacha at the end: 50-60 fps, GPU 10-18 ms, JS 10-19 ms (
 in 13 minutes, 298-333 ms); the rest stayed under the report's threshold. Slow frames left are the
 game's own work: a move animation's first use (populateMoveAnim, 300-575 ms), wave saves (saveAll's
 JSON.stringify, ~300 ms), loading sprite atlases (Phaser's JSONArray parsing), screen setup.
+
+### Versions (owner's scheme, 2026-10-30; runtime 1.0.2)
+Releases are major.minor; the dev builds between them are major.minor.N on top of the last release,
+and the next release collects them. The dev builds published as "1.1" (the connection dialog) and
+"1.2" (trimmed quads, covered objects) are 1.0.1 and 1.0.2; this entry's build is 1.0.2 by name. The
+next release is 1.1. The LiveArea version has two numbers only, so 1.0.N shows 01.00 there.

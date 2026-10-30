@@ -29,7 +29,8 @@ target_include_directories(plutovg PUBLIC third_party/plutovg/include)
 target_compile_definitions(plutovg PUBLIC PLUTOVG_BUILD_STATIC PRIVATE PLUTOVG_DISABLE_FONT_FACE_CACHE_LOAD)
 target_compile_options(plutovg PRIVATE -w)
 
-# Version: runtime/VERSION ("0.18"); the build scripts pass the git commit as PKR_COMMIT.
+# Version: runtime/VERSION, "1.1" for a release, "1.0.2" for a dev build after release 1.0 (see
+# docs/development.md "Versions"); the build scripts pass the git commit as PKR_COMMIT.
 file(STRINGS VERSION PKR_VERSION LIMIT_COUNT 1)
 set(PKR_TITLE_ID PKRV00001)
 # Dev build (scripts/build_vita.sh with PKR_DEV=1): adds src/devtools.c,
@@ -38,11 +39,12 @@ option(PKR_DEV "dev build: test builds from the dev-build release, log upload to
 if(NOT PKR_COMMIT)
   set(PKR_COMMIT unknown)
 endif()
-string(REGEX MATCH "^([0-9]+)\\.([0-9]+)$" _v "${PKR_VERSION}")
+string(REGEX MATCH "^([0-9]+)\\.([0-9]+)(\\.[0-9]+)?$" _v "${PKR_VERSION}")
 if(NOT _v)
-  message(FATAL_ERROR "VERSION must look like 0.18, got '${PKR_VERSION}'")
+  message(FATAL_ERROR "VERSION must look like 1.1 or 1.0.2, got '${PKR_VERSION}'")
 endif()
-# LiveArea/package version: two digits each, "00.18".
+# LiveArea/package version: two digits each, "01.01". It has no third number: dev builds 1.0.N show
+# their release's 01.00 there (the app's own screens and log show the whole version).
 math(EXPR _major "${CMAKE_MATCH_1}")
 math(EXPR _minor "${CMAKE_MATCH_2}")
 if(_major LESS 10)

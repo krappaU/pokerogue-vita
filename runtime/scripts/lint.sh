@@ -19,7 +19,7 @@ shellcheck -S warning "${sh[@]}" || fail "shellcheck warnings (see above)"
 for f in $(git ls-files runtime tools archive | grep -vE '\.(md|png|json|patch|xml|txt|pem)$|/VERSION$'); do
   head -3 "$f" | grep -q 'SPDX-License-Identifier: AGPL-3.0-only' || fail "no SPDX-License-Identifier in $f"
 done
-grep -qE '^[0-9]+\.[0-9]+$' runtime/VERSION || fail "runtime/VERSION must look like 0.41"
+grep -qE '^[0-9]+\.[0-9]+(\.[0-9]+)?$' runtime/VERSION || fail "runtime/VERSION must look like 1.1 or 1.0.2"
 # libshacccg.suprx is Sony's; each user installs their own (CLAUDE.md). Never in the repository.
 [ -z "$(git ls-files -- '*.suprx' '*.skprx')" ] || fail "Sony modules are committed: $(git ls-files -- '*.suprx' '*.skprx')"
 
