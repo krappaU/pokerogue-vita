@@ -1242,3 +1242,13 @@ frame and its opacity) is judged once per object and frame.
   416 counts as complete). Its size must now be the release's and it must open as a zip with files;
   otherwise it is deleted, the installed game stays, and a message says to try again. Not run end to
   end here (this session can't reach GitHub's API for that repository).
+
+### A session across sleep mode (logs 173-174, 1.0.2 dev "1.2", 2026-10-31)
+Online, the app put to sleep at the title (t=200 s; the app's clock stops while the Vita sleeps) and
+played on after waking, all in the Graveyard; profiler off. The owner felt it got slower. JS per frame
+follows what is on screen, not the time played: grouped by draw calls per frame (t=260-565 s), 13-18
+calls: 22-27 ms at the median; 19-24: 30-37 ms; 26-32: 41-48 ms (more sprites: double and trainer
+battles). Windows late in the session with 16-18 calls (t=460-476 s) ran at 22-24 ms, as fast as the
+first battles after waking. Memory as usual for a run (JS after collections 44 -> 64 MB, GPU textures
+55-64 MB, canvases 735 -> 843), no network errors after waking. So no slowdown over time; what costs
+is per sprite (each Pokémon sprite is drawn with its own pipeline bind and flush).
