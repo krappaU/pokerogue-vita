@@ -822,7 +822,7 @@ static void legacy_step(void) {
 static int clean_dir = -1; // folder of the next step, -1 when no pass is running
 static double clean_next;
 static int clean_files, clean_deleted;
-static double clean_mb, clean_ms;
+static double clean_mb, clean_kept_mb, clean_ms;
 
 static void cache_clean_start(void) {
     char mark[600];
@@ -851,6 +851,8 @@ static void cache_clean_step(void) {
         bool tmp = strstr(e->d_name, ".tmp") != NULL;
         if (now - st.st_mtime > (tmp ? 24 * 3600 : CACHE_MAX_AGE) && remove(path) == 0)
             clean_deleted++, clean_mb += st.st_size / 1048576.0;
+        else
+            clean_kept_mb += st.st_size / 1048576.0;
     }
     if (d) closedir(d);
     double took = host_now_ms() - t0;
@@ -861,8 +863,8 @@ static void cache_clean_step(void) {
     snprintf(path, sizeof path, "%s/" CACHE_DIR "/cleaned", g_cfg.data_dir);
     FILE *f = fopen(path, "w");
     if (f) fclose(f);
-    host_log("[net] disk cache cleaned: %d of %d files deleted (%.1f MB) as unused for %d days, in %.0f ms",
-             clean_deleted, clean_files, clean_mb, CACHE_MAX_AGE / (24 * 3600), clean_ms);
+    host_log("[net] disk cache cleaned: %d of %d files deleted (%.1f MB) as unused for %d days, %.0f MB kept, in %.0f ms",
+             clean_deleted, clean_files, clean_mb, CACHE_MAX_AGE / (24 * 3600), clean_kept_mb, clean_ms);
 }
 
 static void *cache_thread(void *arg) {

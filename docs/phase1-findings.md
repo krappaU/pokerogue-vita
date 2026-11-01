@@ -1252,3 +1252,23 @@ battles). Windows late in the session with 16-18 calls (t=460-476 s) ran at 22-2
 first battles after waking. Memory as usual for a run (JS after collections 44 -> 64 MB, GPU textures
 55-64 MB, canvases 735 -> 843), no network errors after waking. So no slowdown over time; what costs
 is per sprite (each Pokémon sprite is drawn with its own pipeline bind and flush).
+
+### 1.0.4 on the console (logs 175-184, 2026-10-31 to 11-01; runtime 1.0.5)
+Seven online sessions on 1.0.4 (three with the profiler: logs 177/178, 180, 181), Town, Graveyard and
+Abyss. No errors, no connection losses, collections as before (one after a wave save, 1.6 s).
+- The cover search is gone from the profiles (log171: findCover + covers 5.4% of battle samples; logs
+  178 and 181: under the top 20).
+- The disk cache's first weekly pass ran: 3,160 files, none unused for 60 days (the cache is weeks old),
+  9.6 s of work spread over idle time.
+- Battles: JS at the median 22-34 ms depending on what is on screen, as in logs 171 and 174 (by draw
+  calls a frame: 13-18 calls 21-27 ms, 19-22 calls 27-34 ms, 23 or more 31-38 ms). The Abyss sessions
+  (181, 182) were the slowest at 19-22 calls (32-34 ms against 27 in log171's Graveyard and Metropolis);
+  no sign of a change from 1.0.3-1.0.4's code (log178, also 1.0.4: 22 ms at 13-18 calls).
+- The profiles put 6-8.5% of battle samples in FieldSpritePipeline.onBind, 2% in Arena.isOutside and
+  2-3% in Array.map, though the "arena uniforms once per frame" and "arena tints per frame" rules
+  applied (the [gamefix] line), so those run once a frame. They are the first JS after a pipeline
+  flush (a GL draw in C): the sampler takes its sample at the next interrupt check, so native time
+  just before tends to land on them. Read per-function shares near native work with care.
+- Logs 182-184 stop without a last line (182 in a battle, 183 and 184 at the title). Quitting with
+  START + SELECT wrote nothing, so such an end couldn't be told from closing the app in LiveArea or
+  a crash. 1.0.5 logs "[app] quit (START + SELECT)", and the cache pass also logs the size it keeps.

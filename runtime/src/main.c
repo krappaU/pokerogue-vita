@@ -1231,6 +1231,8 @@ int main(int argc, char **argv) {
         plat_event ev;
         while (plat_poll_event(&ev)) {
             if (ev.type == PEV_QUIT) {
+                // (a log without this line ended otherwise: closed from LiveArea, or a crash)
+                if (!quit) host_log("[app] quit (START + SELECT)");
                 quit = true;
                 continue;
             }
