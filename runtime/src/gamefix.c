@@ -25,7 +25,16 @@
 // frame, on the same shader, with the same sprite values (ignoreTimeTint, terrainColorRatio, time)
 // as the pipeline's previous bind now returns before them: each would have found its uniform
 // already holding that value (Phaser compares) and done nothing. (0.89, log140: ~3% of a Temple
-// battle frame's JS in that method's own code.)
+// battle frame's JS in that method's own code.) A bind that does set them flushes the sprites
+// batched so far first (1.0.6), which is what the next rule needs.
+//
+// arena sprites drawn together: FieldSpritePipeline.onBatch flushes after every sprite, so that the
+// next sprite's uniforms can't reach it: the arena's backdrop, its ground layers and the trainers
+// were a draw call each (5 in a Temple battle, 4 of them with the same uniforms). The field pipeline
+// now leaves its sprites batched; a bind with other values flushes them first (above), and so does
+// Phaser when another pipeline takes over or the frame ends. Only the "FieldSprite" pipeline itself:
+// PokeRogue's Pokémon pipeline extends it, sets per-sprite uniforms after super.onBind and calls this
+// onBatch, so it keeps a flush per sprite. Without the rule above (no __pkrS) it flushes as before.
 //
 // starter slots from one starter list: the starter select screen's setup (after every game reset:
 // a new run rebuilds the UI) creates its 81 slots with `getAllStarters()[i]`, and each call goes
@@ -115,7 +124,11 @@ static const fix FIXES[] = {
      "@5=@6.currentBattle?.waveIndex?(@6.currentBattle.waveIndex+@6.waveCycleOffset)%40/40:@7(),"
      "pkrS=this.__pkrS,pkrF=this.game.loop.frame;"
      "if(pkrS&&pkrS.f===pkrF&&pkrS.s===this.currentShader&&pkrS.m===@3&&pkrS.v===@4&&pkrS.y===@5)return;"
-     "this.__pkrS={f:pkrF,s:this.currentShader,m:@3,v:@4,y:@5};this.set1f(`time`,@5)",
+     "this.flush();this.__pkrS={f:pkrF,s:this.currentShader,m:@3,v:@4,y:@5};this.set1f(`time`,@5)",
+     NULL, "terrainColorRatio", 0},
+    {"arena sprites drawn together",
+     ".set1f(`terrainColorRatio`,@1)}onBatch(@2){@2&&this.flush()}",
+     ".set1f(`terrainColorRatio`,@1)}onBatch(@2){@2&&!(this.__pkrS&&this.name===`FieldSprite`)&&this.flush()}",
      NULL, "terrainColorRatio", 0},
     {"icon loops: destroyed icons dropped, hidden ones left",
      "for(let[@1,@2]of this.icons)@1.y=@2.restY+this.getCurrentOffset(@2.mode)",

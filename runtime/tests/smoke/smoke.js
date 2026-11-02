@@ -155,7 +155,7 @@ async function run() {
   await check("gamefix: the sprite pipeline's palette code gives the same colours rewritten", async () => {
     const fixed = await import("./assets/sprite-Pk7rTst1.js"); // a chunk: src/gamefix.c rewrites it
     const text = await (await fetch("./assets/sprite-Pk7rTst1.js")).text();
-    const plain = new Function(text.replace(/export function/g, "function") + "\nreturn { bindColors, batchColors, fieldBind, updateJumpIcons };")();
+    const plain = new Function(text.replace(/export (function|class)/g, "$1") + "\nreturn { bindColors, batchColors, FieldPipe, updateJumpIcons };")();
     class Pokemon {
       constructor(shiny, variant, key) { this.shiny = shiny, this.variant = variant, this.key = key; }
       getSprite() { return { texture: { key: this.key } }; }
@@ -187,7 +187,7 @@ async function run() {
       get terrainType() { return terrain; } } };
     const over = () => [0, 0, 0], terrainColor = (t) => [[0, 0, 0], [232, 136, 200], [248, 248, 120]][t], now = () => 0.3;
     const fieldBinds = (fn, game) => {
-      const states = [], u = {}, p = { game, currentShader: {} };
+      const states = [], u = {}, p = { game, currentShader: {}, flush() {} };
       let n = 0;
       for (const k of ["set1f", "setBoolean", "set3fv"]) p[k] = (name, v) => (n++, (u[name] = String(v)), p);
       const sprite = { pipelineData: { terrainColorRatio: 0.5 } }, other = { pipelineData: { ignoreTimeTint: true } };
@@ -198,12 +198,30 @@ async function run() {
       outside = 1, terrain = 2;
       return { states: states.join(" | "), n };
     };
-    const ff = fieldBinds(fixed.fieldBind, { loop: { frame: 5 } }), fp = fieldBinds(plain.fieldBind, { loop: { frame: 5 } });
+    const ff = fieldBinds(fixed.FieldPipe.prototype.onBind, { loop: { frame: 5 } }), fp = fieldBinds(plain.FieldPipe.prototype.onBind, { loop: { frame: 5 } });
     eq(ff.states, fp.states, "field onBind");
     if (!(ff.n < fp.n)) return "field onBind: repeated binds not skipped (" + ff.n + " uniform calls, " + fp.n + " plain)";
     arenaCalls = 0;
-    fieldBinds(fixed.fieldBind, { loop: { frame: 9 } });
+    fieldBinds(fixed.FieldPipe.prototype.onBind, { loop: { frame: 9 } });
     if (arenaCalls !== 2) return "arena tints not kept per frame (" + arenaCalls + " isOutside calls for 6 binds in 2 frames)";
+    // Batching: each sprite is drawn with the uniforms it was bound with (the state at the flush
+    // that draws it), in fewer draws; the Pokémon pipeline ("Sprite", a subclass) still draws each.
+    const draws = (Pipe, name) => {
+      const u = {}, p = Object.assign(Object.create(Pipe.prototype), { name, game: { loop: { frame: 20 } }, currentShader: {} });
+      let pending = [], n = 0;
+      const drawn = [];
+      p.flush = () => { if (pending.length) n++; for (const id of pending) drawn.push(id + ":" + JSON.stringify(u)); pending = []; };
+      for (const k of ["set1f", "setBoolean", "set3fv"]) p[k] = (k2, v) => ((u[k2] = String(v)), p);
+      const objs = [{ pipelineData: { terrainColorRatio: 0.7 } }, { pipelineData: { terrainColorRatio: 1 } }, { pipelineData: { terrainColorRatio: 1 } },
+        { pipelineData: { terrainColorRatio: 1 } }, { pipelineData: { ignoreTimeTint: true } }, { pipelineData: { terrainColorRatio: 1 } }];
+      objs.forEach((o, i) => { p.onBind(o, B, over, terrainColor, now); pending.push(i); p.onBatch(o); });
+      p.flush(); // (another pipeline, or the frame's end)
+      return { drawn: drawn.join(" "), n };
+    };
+    const df = draws(fixed.FieldPipe, "FieldSprite"), dp = draws(plain.FieldPipe, "FieldSprite");
+    eq(df.drawn, dp.drawn, "field sprites drawn with their uniforms");
+    if (!(df.n < dp.n)) return "field sprites not drawn together (" + df.n + " draws, " + dp.n + " plain)";
+    if (draws(fixed.FieldPipe, "Sprite").n !== dp.n) return "the Pokémon pipeline lost its flush per sprite";
     // PokemonIconAnimHelper's loop: live icons move the same; destroyed ones (no scene) are dropped.
     const helper = () => {
       const live = { scene: {}, y: 0 }, dead = { scene: undefined, y: 0 }, live2 = { scene: {}, y: 0 };

@@ -1272,3 +1272,21 @@ Abyss. No errors, no connection losses, collections as before (one after a wave 
 - Logs 182-184 stop without a last line (182 in a battle, 183 and 184 at the title). Quitting with
   START + SELECT wrote nothing, so such an end couldn't be told from closing the app in LiveArea or
   a crash. 1.0.5 logs "[app] quit (START + SELECT)", and the cache pass also logs the size it keeps.
+
+### PokeRogue's sprite pipelines (desktop, Temple battle, game of 2026-11-01; runtime 1.0.6)
+Timed directly (wall clock; the sampler puts native time before a function on that function):
+render ~1.1 ms a frame on the desktop. The Pokémon pipeline's onBind is 9 us a sprite in a loop
+(5 of them its ~13 uniform calls, 4 the game's JS; the field part via super.onBind 0.5 us);
+hiding the three Pokémon sprites (front, back, substitute) saves 0.15-0.2 ms a frame, 50-70 us a
+sprite with its pipeline switches, onBatch, batchQuad and its own draw. Those are spread out; no
+one piece is large, and each sprite needs its own uniforms and draw.
+The field pipeline drew each arena sprite separately: FieldSpritePipeline.onBatch flushes after
+every sprite. In a Temple battle that is 5 draws a frame (backdrop, four ground layers), and the
+four layers have the same uniforms (terrainColorRatio 1). Rule "arena sprites drawn together"
+(src/gamefix.c): the field pipeline leaves its sprites batched, and a bind that sets other values
+flushes first (added to "arena uniforms once per frame"); Phaser flushes on a pipeline switch and
+at the frame's end. Not for the Pokémon pipeline, which extends the field pipeline and calls the
+same onBatch. Temple: 5 -> 2 field draws a frame, screenshots identical (animations paused,
+batching switched off and on by the pipeline's name), render 1.17 -> 1.13 ms on the desktop.
+tests/smoke checks that each sprite is drawn with the uniforms it was bound with, in fewer draws,
+and that the Pokémon pipeline keeps its draw per sprite.
