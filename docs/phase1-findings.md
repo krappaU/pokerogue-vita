@@ -1290,3 +1290,16 @@ same onBatch. Temple: 5 -> 2 field draws a frame, screenshots identical (animati
 batching switched off and on by the pipeline's name), render 1.17 -> 1.13 ms on the desktop.
 tests/smoke checks that each sprite is drawn with the uniforms it was bound with, in fewer draws,
 and that the Pokémon pipeline keeps its draw per sprite.
+
+### Later waves (log187, 1.0.6, 2026-11-02)
+Online, two runs into later waves (Abyss, then Cave), profiler off. JS at the median by draw calls a
+frame: Abyss 13-18 calls 30 ms, 19-24 36.7, 25-32 41.9, 33 or more 45.3 (10 windows at 38-44 calls,
+19-20 fps); Cave 13-18 calls 23.1 ms, 19-24 31.7. GPU 14.5-24 ms. The hitch between waves with the
+loading screen was the collection after a wave save: 2.2 s, JS heap 84.7 -> 74.8 MB (the other one,
+in the Abyss, 1.5 s for 2 MB). The heap grows with the run (JS after collections up to 75 MB, heap in
+use up to 183 MB), so collections take longer late in a run; placing them after saves keeps them out
+of battles. Each run's end took one ~6 s frame (back to the title: the game rebuilds its screens).
+The Abyss is ~7 ms slower than the Cave at the same draw calls, but on the desktop an Abyss battle
+(the saved Temple run with its arena set to the Abyss) draws the same objects as the Temple (backdrop,
+four ground layers, the Pokémon) at the same cost (render 1.2 ms against 1.1): the difference is in
+the run (later waves), not the arena's drawing. Needs a profiled log to say more.
