@@ -284,7 +284,9 @@ void link_frame(const plat_gamepad *pad) {
     static bool prev[18];
     static double repeat_at;
     bool now[18], any = false;
-    for (int i = 0; i < 18; i++) any |= now[i] = pad && pad->buttons[i] > 0.5f;
+    // (6 and 7, L2 / R2, are the rear touchpad's upper half: fingers resting there kept the game's
+    // controls muted after a dialog closed. They don't close dialogs, so they don't count.)
+    for (int i = 0; i < 18; i++) now[i] = pad && pad->buttons[i] > 0.5f, any |= now[i] && i != 6 && i != 7;
     float ay = pad ? pad->axes[1] : 0;
     bool up = now[12] || ay < -0.6f, down = now[13] || ay > 0.6f;
     any |= up || down || (pad && (pad->axes[0] < -0.6f || pad->axes[0] > 0.6f));

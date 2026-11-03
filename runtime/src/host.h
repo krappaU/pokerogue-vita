@@ -259,6 +259,7 @@ bool link_event(const plat_event *ev); // true if consumed
 void link_frame(const plat_gamepad *pad);
 bool link_draw(void);
 void dialog_notice(const char *text);
+void host_notice(const char *text, int ms); // a short line over the game for ms; takes no input
 void dialog_pick_open(const char *title, const char *dir, const char *exts);
 int dialog_pick_poll(const char **path); // 0 nothing, 1 chosen, -1 cancelled (reported once)
 void dialog_choice_open(const char *title, const char *opts); // opts: one per line

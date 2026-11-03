@@ -634,11 +634,12 @@ static void draw_hud(JSContext *ctx, double js_ms) {
 // L + R + TRIANGLE (debug builds) or "variants" on the control channel: shader variants off/on,
 // with a notice for a few seconds.
 static double notice_until;
-static const char *notice_text;
-static void notice(const char *text) {
-    notice_text = text;
-    notice_until = host_now_ms() + 3000;
+static char notice_text[200];
+void host_notice(const char *text, int ms) {
+    snprintf(notice_text, sizeof notice_text, "%s", text);
+    notice_until = host_now_ms() + ms;
 }
+static void notice(const char *text) { host_notice(text, 3000); }
 static __attribute__((unused)) void toggle_variants(void) {
     notice(gl_toggle_variants() ? "Shader variants on" : "Shader variants off (original shaders)");
 }

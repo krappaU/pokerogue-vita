@@ -275,7 +275,9 @@ int plat_gamepads(plat_gamepad *out, int max) {
         0, 0, SCE_CTRL_SELECT, SCE_CTRL_START, SCE_CTRL_L3, SCE_CTRL_R3,
         SCE_CTRL_UP, SCE_CTRL_DOWN, SCE_CTRL_LEFT, SCE_CTRL_RIGHT, SCE_CTRL_PSBUTTON,
     };
-    if ((b & HUD_COMBO) == HUD_COMBO) b &= ~(SCE_CTRL_SELECT | SCE_CTRL_SQUARE); // the combos' buttons then
+    // With L + R held the combos' buttons are the runtime's: START (send the log) reached the game too
+    // until 1.0.9 and opened its menu.
+    if ((b & HUD_COMBO) == HUD_COMBO) b &= ~(SCE_CTRL_SELECT | SCE_CTRL_SQUARE | SCE_CTRL_START | SCE_CTRL_TRIANGLE);
     for (int i = 0; i < 17; i++) p->buttons[i] = (b & map[i]) ? 1.0f : 0.0f;
     // L2 and R2 (the game: cycle gender / ability in starter select): a touch on the upper half of
     // the rear touchpad, left or right side. The lower half, where fingers rest while holding the

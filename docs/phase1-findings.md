@@ -1336,3 +1336,25 @@ whole every frame to fill the camera's render list (listSkipped, 4.7% of the par
 Only the input plugin reads that list (sortGameObjects orders the objects under a pointer by it), so
 now only the skipped interactive objects (the input plugin's list) go in, in drawing order; the
 phaser test checks their order against what is drawn.
+
+### A slow network: the egg gacha, log sends and wave starts (log194-196, 1.0.8, 2026-11-03)
+Played on busy 2.4 GHz hotel Wi-Fi. What the user saw, and what the log shows:
+- The egg gacha "hung" after a ticket: the pull waits for the game's system save
+  (`savedata/system/update`, the whole system data), and that request stayed pending ~50 s (t=190 to
+  241 s). The frames were fine (38 ms max); the game itself waits, as it does in a browser. The log
+  uploads in the same minutes ran at ~10 KB/s (51 KB in ~5 s), so the save's upload is the likely time.
+- Slow wave starts were downloads the game waits for: a special battle's music has to load before
+  the wave starts (battle_legendary_ub.mp3, 2 MB, before wave 141; the Delibird-y encounter's
+  2.5 MB before wave 144). sea.mp3 (2.9 MB) took ~80 s, about 37 KB/s. 8.6 MB came over the network
+  in waves 136-145.
+- After a log send the game felt unresponsive. The result was a dialog, which takes the controls
+  until closed, and it came only when the upload finished (5 s here). The release check after a
+  dialog closes also counted the rear touchpad's upper half (L2/R2), so fingers resting there could
+  keep the game's controls muted. And START of L + R + START reached the game.
+Changes (1.0.9): the log send shows a line over the game ("Sending the log...", then the result for
+4 s) and leaves the controls to the game (the benchmark's end keeps its dialog); with L + R held,
+START and TRIANGLE (the combos' buttons) no longer reach the game; the rear touchpad doesn't hold a
+dialog's input mute. And `[net] slow:` lines for any request over 5 s: the method, the URL without
+its query, upload size and speed, time to the first byte, download speed, whether the connection
+was new (connect and TLS times) or reused, and the HTTP version, so the next log says where such
+waits go (the upload, the server, or the download).

@@ -8,7 +8,8 @@
 //   - Logs, when config.txt names a log server (devserver=<url>, devkey=<secret>;
 //     tools/devserver/devserver.py): at start, the previous run's log (log-prev.txt, kept so a
 //     crash's log survives the restart) is uploaded in the background; L + R + START in game
-//     uploads the current one. The console makes every connection, so the server can be anywhere.
+//     uploads the current one (a line over the game tells how it went; the game keeps the
+//     controls). The console makes every connection, so the server can be anywhere.
 
 #include <dirent.h>
 #include <errno.h>
@@ -72,10 +73,11 @@ static char *read_file(const char *path, size_t *len) {
 static pthread_mutex_t up_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool up_busy;
 static char up_result[300]; // shown by dev_frame on the main thread, then cleared
+static bool up_result_dialog; // in a dialog (the benchmark's end) rather than a line over the game
 
 typedef struct {
     char path[600];
-    char kind[8]; // "prev" (the previous run's log) or "now"
+    char kind[8]; // "prev" (the previous run's log), "now" or "bench"
     bool notify;
 } upload_job;
 
@@ -105,7 +107,7 @@ static void *upload_thread(void *arg) {
     }
     free(body);
     pthread_mutex_lock(&up_lock);
-    if (j->notify) snprintf(up_result, sizeof up_result, "%s", msg);
+    if (j->notify) snprintf(up_result, sizeof up_result, "%s", msg), up_result_dialog = !strcmp(j->kind, "bench");
     up_busy = false;
     pthread_mutex_unlock(&up_lock);
     free(j);
@@ -118,7 +120,7 @@ static void upload_start(const char *path, const char *kind, bool notify) {
     up_busy = true;
     pthread_mutex_unlock(&up_lock);
     if (busy) {
-        if (notify) dialog_notice("A log is being sent already.");
+        if (notify) host_notice("A log is being sent already.", 3000);
         return;
     }
     upload_job *j = calloc(1, sizeof *j);
@@ -150,12 +152,15 @@ void dev_start(const char *prev_log) {
 
 void dev_send_log(void) {
     if (!g_cfg.dev_server) {
-        dialog_notice("No log server is set up (devserver= in config.txt).");
+        host_notice("No log server is set up (devserver= in config.txt).", 4000);
         return;
     }
     char path[600];
     snprintf(path, sizeof path, "%s/log.txt", g_cfg.data_dir);
     host_log("[dev] sending the log");
+    // A line over the game, not a dialog: a dialog takes the controls until it's closed, and on a
+    // slow network the result came seconds after the press (log196: 5 s for 51 KB).
+    host_notice("Sending the log...", 120000);
     upload_start(path, "now", true);
 }
 
@@ -173,10 +178,13 @@ void dev_send_bench_log(void) {
 
 void dev_frame(void) {
     char msg[300] = "";
+    bool dialog = false;
     pthread_mutex_lock(&up_lock);
-    if (up_result[0]) snprintf(msg, sizeof msg, "%s", up_result), up_result[0] = 0;
+    if (up_result[0]) snprintf(msg, sizeof msg, "%s", up_result), up_result[0] = 0, dialog = up_result_dialog;
     pthread_mutex_unlock(&up_lock);
-    if (msg[0]) dialog_notice(msg);
+    if (!msg[0]) return;
+    if (dialog) dialog_notice(msg);
+    else host_notice(msg, 4000), host_log("[dev] shown: %s", msg);
 }
 
 // ---------------------------------------------------------------- test builds
