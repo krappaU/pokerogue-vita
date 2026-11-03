@@ -87,7 +87,7 @@ Docker image and is tested in Vita3K (does it boot?) and on the real Vita (perfo
    container walk, sprite batching, uniforms and flushes; lazily built UI; translation cache;
    native save encryption; work moved off the main thread) and the open items below.
 
-## Open items (2026-10-30, runtime 1.0.4)
+## Open items (2026-11-03, runtime 1.0.10)
 Performance:
 - Battles run at ~28-40 fps on the Vita (log171: JS 25-33 ms a frame at the median, GPU 15-20 ms), so
   JS sets the frame rate. Where it goes (12 reports, samples): Phaser's render JS 21%, tweens 20%,
@@ -97,6 +97,28 @@ Performance:
 - Pauses that remain are the game's own work: a move animation's first use (300-575 ms), the save
   at each wave (JSON.stringify ~300 ms), atlas loading, screen setup, and collections (1.5-2 s,
   placed under loading screens and after saves where possible).
+- Next candidates, ranked (2026-11-03, runtime 1.0.10; log203: a late run, waves 163-175, 216 s of
+  frames over 250 ms in ~45 minutes):
+  1. Loading the system save: GameData.parseSystemData is a JSON.parse whose reviver runs for every
+     key (~21,000 in a 220 KB save), 650-900 ms each time it runs (title, Continue, each battle
+     retry, the egg gacha): 6.7 s in log203. The reviver changes only gameStats, eggs, ribbons and
+     the *Attr keys (BigInt); on the desktop the plain parse is a quarter of the time (3.0 of 11.6
+     ms). A native walk that calls the game's reviver only for those keys (a gamefix rule on its
+     exact text) should save ~0.6 s per load. (The BigInt replacer of the saves' JSON.stringify
+     costs only ~10%: not worth it.)
+  2. Back to the title and into the run again (each "retry battle", Continue): one 5-6.4 s frame
+     rebuilding the screens, then 1.1 and 2 s frames; ~80 s over 8 resets in log203. Its profile is
+     cut off (the slow-frame sampler keeps 1024 samples: 5.3 s "stack not stored"), so first a longer
+     sample buffer for such frames, then a desktop profile with fixtures/run-wave163.json
+     (scene.reset(true) from the control channel).
+  3. The reward shop opening, ~1 s each wave (13 frames, 12 s: its option texts, TM compatibility,
+     the item pool's thresholds).
+  4. Battle frames: 27 fps on average, JS 40 ms, 17 draw calls a frame: still the main lever
+     (native-renderer.md). The item screens: ~45 ms of JS a frame while open, with nothing changing.
+  5. Collections grow with the run: 1.4-2.6 s late in it (JS heap 95 MB before one), already placed
+     after saves and under loading screens.
+  Network, not ours to fix: the save after each wave uploads 255-265 KB (game and session data);
+  on busy Wi-Fi 17-74 s (5-31 KB/s). Smaller uploads would need the server to accept compression.
 
 Reliability and maintenance (from [review-2026-10.md](review-2026-10.md); findings 3, 4, 5 and 9
 done in 1.0.4: renderbuffer leak, disk cache cleaning, missing-compiler message, download check):
