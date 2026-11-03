@@ -1382,3 +1382,27 @@ Measured again on the desktop with a real late run (the owner's save, wave 163, 
 runtime/.cache/saves/, not committed): scrolling the item transfer list (Mega Darkrai's items), the
 game's updateOptions took 24.2 ms a rebuild with rex's own drawing and 9.3 ms with 4b (the labels'
 drawing moves to the next frame, where scrolling mostly reuses their textures).
+
+### Battle retries and the system save (log203, 1.0.10; runtime 1.0.11, 2026-11-03)
+The owner often retries battles (back to the title, Continue): each one was a 5-6.4 s frame, then
+1.1 and 2 s frames (log203: ~80 s over 8 resets), and the system save's parse took 650-900 ms at each
+load (6.7 s in log203). Two changes, and a better report for such frames:
+- The slow-frame report keeps 4096 samples (1024 cut a 6.4 s frame at ~3 s) and adds a line "by
+  function": the time each function was on the stack, under 85% of the frame. Frames that build a
+  screen spread over many stacks and showed nothing before.
+- With it, on the desktop with fixtures/run-wave163.json: the reset frame was 300 ms, 187 of them
+  UI.setup (every screen handler's setup again). js/lazy_ui.js now also defers the five settings
+  screens (96 ms of it), achievements, game stats, the egg gacha, challenges and the Pokedex scan
+  (~135 ms, ~45% of the frame). A reset destroys every handler (UI.freeUIData) and
+  GameChallengesUiHandler's destroy() reads what its setup() made: a never-built handler is now
+  destroyed without its own destroy() (UiHandler's is empty). After the change the reset frame is
+  under the 250 ms report threshold on the desktop; with lazy UI off it is 915 ms. Settings,
+  achievements, stats and the egg gacha look the same either way (screenshots: only the play time,
+  the gacha's clock and the title's animation differ). tests/phaser checks the deferral.
+- gamefix "system save parsed with fewer calls": parseSystemData's reviver ran for ~21,000 members;
+  it now runs only for gameStats, eggs and ribbons, and the *Attr members get the reviver's
+  BigInt(value ?? 0) in C (src/js_host.c parseRevived; the rule matches the reviver's exact text).
+  Desktop, a 218 KB save: 11.7 ms with the reviver, 6.5 ms now (plain JSON.parse 3.1). A JS walk
+  instead was slower than the engine's reviver (16.5 ms). Smoke test: the same data (classes, BigInts,
+  a member revived to undefined deleted) and the same error for a fractional *Attr.
+The Vita's numbers need a log with a retry.

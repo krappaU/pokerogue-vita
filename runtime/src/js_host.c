@@ -206,7 +206,7 @@ static char *module_normalize(JSContext *ctx, const char *base, const char *name
 #define BYTECODE_SALT "pkr-bytecode-3" // -3: Phaser's chunk with its source (see bytecode_write_flags)
 // gamefix.c's rewrites are in the compiled code: a new set of them (or gamefix=0) must not find code
 // compiled with another. Bump with every change to its FIXES.
-#define GAMEFIX_SALT "gamefix-9"
+#define GAMEFIX_SALT "gamefix-10"
 #define BYTECODE_EXT ".qbc3"
 
 // Phaser's chunk keeps its source: js/fastpath.js installs each native fast path only after
@@ -1126,6 +1126,157 @@ static JSValue n_set_perf_tag(JSContext *ctx, JSValueConst this_val, int argc, J
     return JS_UNDEFINED;
 }
 
+// parseRevived(text, reviver, names, suffix, bigintExcept) -> JSON.parse(text, reviver) without the
+// root's call, for a reviver that can only change members named in `names` or ending in `suffix` and
+// returns every other value unchanged (js/core.js __pkrParseSome, gamefix.c "system save parsed
+// with fewer calls"). The standard's walk (members first, in key order; undefined deletes the
+// member), with the reviver called only for those members: in a late system save ~1 in 20 of
+// ~21,000. With bigintExcept (an array of names), a member ending in `suffix` and not in it gets
+// BigInt(value ?? 0) here instead of a call (the reviver's own rule for them, which gamefix.c
+// checks by its text); one in bigintExcept keeps its value.
+typedef struct {
+    JSValueConst reviver;
+    JSAtom names[8];
+    int n_names;
+    const char *suffix;
+    size_t suffix_len;
+    JSAtom except[8];
+    int n_except; // -1: no BigInt rule, suffix members go to the reviver
+    JSValue bigint; // the global BigInt, for what isn't a whole number
+    JSAtom seen[512]; // per key, what happens to it (keys repeat: ~60 different ones)
+    uint8_t runs[512];
+} revive_ctx;
+
+enum { REV_NONE, REV_CALL, REV_BIGINT };
+
+static int revive_key(JSContext *ctx, revive_ctx *rc, JSAtom a) {
+    unsigned h = (a * 2654435761u) & 511;
+    for (unsigned i = 0; i < 512; i++, h = (h + 1) & 511) {
+        if (rc->seen[h] == a) return rc->runs[h];
+        if (rc->seen[h] == JS_ATOM_NULL) break;
+    }
+    int r = REV_NONE;
+    for (int i = 0; i < rc->n_names && !r; i++)
+        if (rc->names[i] == a) r = REV_CALL;
+    if (!r) {
+        size_t len;
+        const char *k = JS_AtomToCStringLen(ctx, &len, a);
+        if (k && len >= rc->suffix_len && !memcmp(k + len - rc->suffix_len, rc->suffix, rc->suffix_len)) {
+            r = rc->n_except < 0 ? REV_CALL : REV_BIGINT;
+            for (int i = 0; i < rc->n_except; i++)
+                if (rc->except[i] == a) r = REV_NONE;
+        }
+        JS_FreeCString(ctx, k);
+    }
+    if (rc->seen[h] == JS_ATOM_NULL) rc->seen[h] = a, rc->runs[h] = (uint8_t)r; // (a full table only stops caching)
+    return r;
+}
+
+// BigInt(v ?? 0); v is a JSON value (null, boolean, number, string, object or array)
+static JSValue revive_bigint(JSContext *ctx, revive_ctx *rc, JSValueConst v) {
+    if (JS_IsNull(v) || JS_IsUndefined(v)) return JS_NewBigInt64(ctx, 0);
+    if (JS_IsNumber(v)) {
+        double d;
+        JS_ToFloat64(ctx, &d, v);
+        if (d > -9.2e18 && d < 9.2e18 && d == (double)(int64_t)d) return JS_NewBigInt64(ctx, (int64_t)d); // (NaN fails the range)
+    }
+    return JS_Call(ctx, rc->bigint, JS_UNDEFINED, 1, &v); // anything else: BigInt's own answer (or error)
+}
+
+static int revive_walk(JSContext *ctx, revive_ctx *rc, JSValueConst val, int depth) {
+    if (!JS_IsObject(val)) return 0;
+    if (depth > 512) {
+        JS_ThrowRangeError(ctx, "parseRevived: too deep");
+        return -1;
+    }
+    if (JS_IsArray(val)) { // (index keys never match: the reviver's keys are names)
+        int64_t n;
+        if (JS_GetLength(ctx, val, &n) < 0) return -1;
+        for (int64_t i = 0; i < n; i++) {
+            JSValue v = JS_GetPropertyInt64(ctx, val, i);
+            int r = JS_IsException(v) ? -1 : revive_walk(ctx, rc, v, depth + 1);
+            JS_FreeValue(ctx, v);
+            if (r < 0) return -1;
+        }
+        return 0;
+    }
+    JSPropertyEnum *tab;
+    uint32_t len;
+    // (every object walked comes from JSON.parse: all its members are enumerable)
+    if (JS_GetOwnPropertyNames(ctx, &tab, &len, val, JS_GPN_STRING_MASK) < 0) return -1;
+    int ret = 0;
+    for (uint32_t i = 0; i < len && ret == 0; i++) {
+        JSAtom a = tab[i].atom;
+        JSValue v = JS_GetProperty(ctx, val, a);
+        if (JS_IsException(v) || revive_walk(ctx, rc, v, depth + 1) < 0) {
+            JS_FreeValue(ctx, v);
+            ret = -1;
+            break;
+        }
+        int what = revive_key(ctx, rc, a);
+        if (what == REV_NONE) {
+            JS_FreeValue(ctx, v);
+            continue;
+        }
+        JSValue r;
+        if (what == REV_BIGINT) {
+            r = revive_bigint(ctx, rc, v);
+        } else {
+            JSValue args[2] = {JS_AtomToString(ctx, a), v};
+            r = JS_Call(ctx, rc->reviver, val, 2, args);
+            JS_FreeValue(ctx, args[0]);
+        }
+        JS_FreeValue(ctx, v);
+        if (JS_IsException(r)) ret = -1;
+        else if (JS_IsUndefined(r)) ret = JS_DeleteProperty(ctx, val, a, 0) < 0 ? -1 : 0;
+        else ret = JS_DefinePropertyValue(ctx, val, a, r, JS_PROP_C_W_E) < 0 ? -1 : 0;
+    }
+    JS_FreePropertyEnum(ctx, tab, len);
+    return ret;
+}
+
+static JSValue n_parse_revived(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    if (argc < 4 || !JS_IsFunction(ctx, argv[1])) return JS_ThrowTypeError(ctx, "parseRevived(text, reviver, names, suffix[, bigintExcept])");
+    revive_ctx rc = {.reviver = argv[1], .n_except = -1, .bigint = JS_UNDEFINED};
+    int64_t nn = 0, ne = 0;
+    bool except = argc > 4 && JS_IsArray(argv[4]);
+    if (JS_GetLength(ctx, argv[2], &nn) < 0 || (except && JS_GetLength(ctx, argv[4], &ne) < 0)) return JS_EXCEPTION;
+    if (nn > 8 || ne > 8) return JS_ThrowRangeError(ctx, "parseRevived: at most 8 names");
+    for (int64_t i = 0; i < nn; i++) {
+        JSValue s = JS_GetPropertyInt64(ctx, argv[2], i);
+        rc.names[rc.n_names++] = JS_ValueToAtom(ctx, s);
+        JS_FreeValue(ctx, s);
+    }
+    if (except) {
+        rc.n_except = 0;
+        for (int64_t i = 0; i < ne; i++) {
+            JSValue s = JS_GetPropertyInt64(ctx, argv[4], i);
+            rc.except[rc.n_except++] = JS_ValueToAtom(ctx, s);
+            JS_FreeValue(ctx, s);
+        }
+        JSValue glob = JS_GetGlobalObject(ctx);
+        rc.bigint = JS_GetPropertyStr(ctx, glob, "BigInt");
+        JS_FreeValue(ctx, glob);
+    }
+    JSValue out = JS_EXCEPTION;
+    size_t tlen;
+    const char *text = JS_ToCStringLen(ctx, &tlen, argv[0]);
+    rc.suffix = JS_ToCStringLen(ctx, &rc.suffix_len, argv[3]);
+    if (text && rc.suffix) {
+        out = JS_ParseJSON(ctx, text, tlen, "<json>");
+        if (!JS_IsException(out) && revive_walk(ctx, &rc, out, 0) < 0) {
+            JS_FreeValue(ctx, out);
+            out = JS_EXCEPTION;
+        }
+    }
+    JS_FreeCString(ctx, text);
+    JS_FreeCString(ctx, rc.suffix);
+    for (int i = 0; i < rc.n_names; i++) JS_FreeAtom(ctx, rc.names[i]);
+    for (int i = 0; i < rc.n_except; i++) JS_FreeAtom(ctx, rc.except[i]);
+    JS_FreeValue(ctx, rc.bigint);
+    return out;
+}
+
 // relaunch(): location.reload, done by restarting the app after this frame (main.c)
 static JSValue n_relaunch(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     g_relaunch = true;
@@ -1162,6 +1313,7 @@ static const JSCFunctionListEntry native_funcs[] = {
     JS_CFUNC_DEF("choicePoll", 0, n_choice_poll),
     JS_CFUNC_DEF("relaunch", 0, n_relaunch),
     JS_CFUNC_DEF("setPerfTag", 1, n_set_perf_tag),
+    JS_CFUNC_DEF("parseRevived", 5, n_parse_revived),
     JS_CFUNC_DEF("showMessage", 1, n_show_message),
     JS_CFUNC_DEF("memoryUsage", 0, n_memory_usage),
     JS_CFUNC_DEF("imeOpen", 4, n_ime_open),

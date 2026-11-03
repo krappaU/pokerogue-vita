@@ -21,8 +21,14 @@
   const P = g.Phaser;
   if (!P) return;
   try { if (g.localStorage.getItem("PKR_LAZY_UI") === "0") return; } catch (e) { /* storage unavailable: keep going */ }
+  // (1.0.11: the settings screens, achievements, game stats, the egg gacha, challenges and the
+  // Pokedex scan too: ~70% of the rest of UI.setup, ~45% of a battle retry's 5-6 s frame, log203.
+  // The input controller's calls to the gamepad and keyboard screens are method calls: they build
+  // that screen then.)
   const DEFER = new Set(["StarterSelectUiHandler", "PokedexUiHandler", "PokedexPageUiHandler", "TestDialogueUiHandler",
-                         "EggSummaryUiHandler"]);
+                         "EggSummaryUiHandler", "SettingsGamepadUiHandler", "SettingsKeyboardUiHandler",
+                         "SettingsDisplayUiHandler", "SettingsAudioUiHandler", "GeneralSettingsUiHandler", "AchvsUiHandler",
+                         "EggGachaUiHandler", "GameStatsUiHandler", "GameChallengesUiHandler", "PokedexScanUiHandler"]);
   const KEEP = new Set(["constructor", "setup", "destroy"]);
   const COALESCE = new Set(["StarterSelectUiHandler", "PokedexUiHandler"]);
   let deferredCount = 0, builtCount = 0, heldBack = 0;
@@ -70,14 +76,15 @@
         if (d && typeof d.value === "function") names.add(k);
       }
     }
-    let state = 0; // 0: setup not reached yet, 1: deferred, 2: built
+    let state = 0; // 0: setup not reached yet, 1: deferred, 2: built, 3: destroyed unbuilt
     let uiAnchor = null, dlAnchor = null, dl = null;
     function unwrap() {
       for (const k of names) delete h[k];
       delete h.setup;
+      delete h.destroy;
     }
     function ensure() {
-      if (state === 2) return;
+      if (state >= 2) return;
       unwrap();
       if (state === 0) { state = 2; return; } // used before the UI's setup reached it: as before
       state = 2;
@@ -87,6 +94,14 @@
       restoreOrder(ui.list, uiBefore, uiAnchor);
       if (dl) restoreOrder(dl.list, dlBefore, dlAnchor);
     }
+    // A reset destroys every handler (UI.freeUIData). One never built has nothing to tear down: its
+    // destroy() undoes what setup() made (UiHandler's own is empty), and some read those objects
+    // (GameChallengesUiHandler: descriptionText).
+    h.destroy = function () {
+      if (state === 1) { state = 3; for (const k of names) delete h[k]; delete h.setup; delete h.destroy; return; }
+      delete h.destroy;
+      return h.destroy.apply(this, arguments);
+    };
     h.setup = function () {
       uiAnchor = ui.list.length ? ui.list[ui.list.length - 1] : null;
       dl = ui.scene && ui.scene.sys && ui.scene.sys.displayList;

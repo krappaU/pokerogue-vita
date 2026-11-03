@@ -114,7 +114,7 @@ static const char *count_stack(const char *key) {
 // gap before the next sample, which is charged to that sample's stack (usually the caller's).
 #define SLOW_FRAME_MS 250
 #define SLOW_REPORTS 20 // per 30 s report, to bound the log
-#define FRAME_SAMPLES 1024
+#define FRAME_SAMPLES 4096 // a 6 s frame at ~1.5 ms a sample (1024 cut log203's resets at 3 s)
 static struct { const char *key; double ms; } fsamp[FRAME_SAMPLES];
 static int n_fsamp, n_slow;
 
@@ -168,18 +168,64 @@ static const char *stack_tail(const char *key, int n) {
     return p;
 }
 
+// The same frame by function: the time with each function on the stack, for the functions under
+// 85% of it (the frame's own trunk: step, render... is left out). A frame whose time spreads over
+// many stacks (a screen being built) shows nothing above, and this is where it went.
+#define SLOW_FNS 1024
+static void slow_by_function(double sampled) {
+    if (sampled < 1) return;
+    static struct { const char *name; int len; double ms; int last; } fn[SLOW_FNS];
+    static int idx[2 * SLOW_FNS];
+    memset(idx, -1, sizeof idx);
+    int nf = 0;
+    for (int i = 0; i < n_fsamp; i++) {
+        const char *key = fsamp[i].key;
+        if (!key) continue;
+        for (const char *p = key; *p;) {
+            const char *e = strchr(p, ';');
+            int len = e ? (int)(e - p) : (int)strlen(p);
+            unsigned h = 2166136261u;
+            for (int k = 0; k < len; k++) h = (h ^ (unsigned char)p[k]) * 16777619u;
+            h %= 2 * SLOW_FNS;
+            while (idx[h] >= 0 && !(fn[idx[h]].len == len && !memcmp(fn[idx[h]].name, p, len))) h = (h + 1) % (2 * SLOW_FNS);
+            if (idx[h] < 0 && nf < SLOW_FNS) {
+                idx[h] = nf;
+                fn[nf].name = p, fn[nf].len = len, fn[nf].ms = 0, fn[nf].last = -1;
+                nf++;
+            }
+            if (idx[h] >= 0 && fn[idx[h]].last != i) fn[idx[h]].ms += fsamp[i].ms, fn[idx[h]].last = i; // once per sample
+            p = e ? e + 1 : p + len;
+        }
+    }
+    char line[600];
+    int n = 0, used = 0;
+    for (int r = 0; r < 8; r++) {
+        int best = -1;
+        for (int k = 0; k < nf; k++)
+            if (fn[k].ms < sampled * 0.85 && fn[k].ms >= 20 && (best < 0 || fn[k].ms > fn[best].ms)) best = k;
+        if (best < 0) break;
+        used += snprintf(line + used, sizeof line - used, "%s%.0f %.*s", n++ ? ", " : "", fn[best].ms,
+                         fn[best].len > 60 ? 60 : fn[best].len, fn[best].name);
+        fn[best].ms = -1;
+        if (used >= (int)sizeof line - 1) break;
+    }
+    if (n) host_log("[slow]   by function (ms with it on the stack): %s", line);
+}
+
 // A frame whose JS ran for SLOW_FRAME_MS or more: where its time went, by stack.
 static void slow_report(double js_ms) {
     if (n_slow++ >= SLOW_REPORTS) return;
     static struct { const char *key; double ms; } agg[FRAME_SAMPLES];
+    static int slot[2 * FRAME_SAMPLES]; // stack (an interned key) -> its agg entry
+    memset(slot, -1, sizeof slot);
     int na = 0;
     double sampled = 0;
     for (int i = 0; i < n_fsamp; i++) {
         sampled += fsamp[i].ms;
-        int k = 0;
-        while (k < na && agg[k].key != fsamp[i].key) k++;
-        if (k == na) agg[na].key = fsamp[i].key, agg[na++].ms = 0;
-        agg[k].ms += fsamp[i].ms;
+        unsigned h = (unsigned)(((uintptr_t)fsamp[i].key >> 3) * 2654435761u) % (2 * FRAME_SAMPLES);
+        while (slot[h] >= 0 && agg[slot[h]].key != fsamp[i].key) h = (h + 1) % (2 * FRAME_SAMPLES);
+        if (slot[h] < 0) slot[h] = na, agg[na].key = fsamp[i].key, agg[na++].ms = 0;
+        agg[slot[h]].ms += fsamp[i].ms;
     }
     host_log("[slow] frame with %.0f ms of JS: %d samples over %.0f ms; the most time in:", js_ms, n_fsamp, sampled);
     for (int r = 0; r < 3 && na; r++) {
@@ -190,6 +236,7 @@ static void slow_report(double js_ms) {
         host_log("[slow]   %4.0f ms  %.300s", agg[best].ms, agg[best].key ? stack_tail(agg[best].key, 8) : "(stack not stored)");
         agg[best] = agg[--na];
     }
+    slow_by_function(sampled);
 }
 
 // ---------------------------------------------------------------- report

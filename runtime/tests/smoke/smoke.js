@@ -299,6 +299,38 @@ async function run() {
     if (ff.calls !== 9) return "starter filters: getVals called " + ff.calls + " times for 3 filterings (plain " + fp.calls + ")";
     if (ff.own) return "starter filters: getVals not put back";
   });
+  await check("gamefix: the system save parsed with fewer calls gives the same data", async () => {
+    const fixed = await import("./assets/system-Pk7rTst4.js"); // a chunk: src/gamefix.c rewrites it
+    const text = await (await fetch("./assets/system-Pk7rTst4.js")).text();
+    const plain = new Function(text.replace(/export (function|class)/g, "$1") + "\nreturn { makeGameData };")();
+    class GameStats { constructor(s) { this.s = s; } }
+    class Egg { constructor(e) { this.e = e; } }
+    const Ribbons = { fromJSON: (r) => (r === "gone" ? undefined : { ribbons: r }) };
+    const N = globalThis.__native, orig = N.parseRevived;
+    let native = 0;
+    N.parseRevived = function () { native++; return orig.apply(this, arguments); };
+    // a system save's shapes: dex and starter entries with *Attr members (numbers, strings, null),
+    // the three that stay numbers, eggs (or null), stats, ribbons deep down (one revived to nothing)
+    const dexData = {}, starterData = {};
+    for (let i = 1; i <= 400; i++) {
+      dexData[i] = { seenAttr: i * 977, caughtAttr: i % 7 ? String(2 ** 40 + i) : null, natureAttr: i, seenCount: i % 5, ivs: [1, 2, 3, i % 32, 5, 6] };
+      starterData[i] = { moveset: null, eggMoves: i % 16, candyCount: i, abilityAttr: 3, passiveAttr: 1, valueReduction: 0, ribbons: i % 50 ? 0 : "gone", classicWinCount: 0 };
+    }
+    const save = JSON.stringify({ trainerId: 1, secretId: 2, dexData, starterData, gameStats: { battles: 5, nested: { xAttr: 2 } },
+      eggs: [{ id: 1, tierAttr: 3 }, { id: 2 }], voucherCounts: { 0: 1 }, unlocks: { 0: true }, achvUnlocks: {}, timestamp: 1 });
+    const ser = (x) => JSON.stringify(x, (k, v) => (typeof v === "bigint" ? "big:" + v : v && typeof v === "object" && !Array.isArray(v) && v.constructor !== Object ? { [v.constructor.name]: Object.assign({}, v) } : v));
+    let f, p;
+    try {
+      f = ser(fixed.makeGameData(GameStats, Egg, Ribbons).parseSystemData(save));
+      p = ser(plain.makeGameData(GameStats, Egg, Ribbons).parseSystemData(save));
+    } finally { N.parseRevived = orig; }
+    eq(f, p, "system data");
+    if (!native) return "the rewritten code didn't use parseRevived";
+    // and the error a bad *Attr value gives
+    const bad = JSON.stringify({ dexData: { 1: { seenAttr: 1.5 } } });
+    const err = (mk) => { try { mk.makeGameData(GameStats, Egg, Ribbons).parseSystemData(bad); return "none"; } catch (e) { return e.name; } };
+    eq(err(fixed), err(plain), "error");
+  });
   await check("gamefix: the item transfer list rebuilds only when a quantity changes", async () => {
     const fixed = await import("./assets/party-Pk7rTst3.js"); // a chunk: src/gamefix.c rewrites it
     const text = await (await fetch("./assets/party-Pk7rTst3.js")).text();

@@ -99,6 +99,9 @@ Performance:
   placed under loading screens and after saves where possible).
 - Next candidates, ranked (2026-11-03, runtime 1.0.10; log203: a late run, waves 163-175, 216 s of
   frames over 250 ms in ~45 minutes):
+  (1.0.11 did a first part of 1 and 2: the reviver runs for ~1 in 20 members, and the settings,
+  achievements, stats, egg gacha, challenges and Pokedex scan screens are built on first use;
+  Vita numbers pending.)
   1. Loading the system save: GameData.parseSystemData is a JSON.parse whose reviver runs for every
      key (~21,000 in a 220 KB save), 650-900 ms each time it runs (title, Continue, each battle
      retry, the egg gacha): 6.7 s in log203. The reviver changes only gameStats, eggs, ribbons and

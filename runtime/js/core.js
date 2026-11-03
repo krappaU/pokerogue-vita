@@ -126,6 +126,17 @@
   Object.defineProperty(g, "__pkrZero128", { value: new Array(128).fill(0) });
   // The shiny colour arrays gamefix.c keeps, per variant colour cache entry.
   Object.defineProperty(g, "__pkrMemo", { value: new WeakMap() });
+  // JSON.parse(text, reviver) for a reviver that can only change the values of keys in `names` or
+  // ending in `suffix`, and returns every other value as it is (gamefix.c "system save parsed with
+  // fewer calls"). The same walk as the standard's (each value's members first, in key order; a
+  // reviver result of undefined deletes the member), but the reviver only runs for those keys
+  // instead of all ~21,000 of a late system save (650-900 ms on the Vita, log203).
+  // bigintExcept: see parseRevived.
+  Object.defineProperty(g, "__pkrParseSome", { value: (text, reviver, names, suffix, bigintExcept) => {
+    // members: src/js_host.c parseRevived; then the root, as the standard does last
+    const holder = { "": N.parseRevived(String(text), reviver, names, suffix, bigintExcept) };
+    return reviver.call(holder, "", holder[""]);
+  } });
   // PokemonIconAnimHelper's two loops (gamefix.c "party icons of destroyed slots dropped"): every
   // 200 ms and every frame of a jump they set the y of all the helper's icons, and the starter
   // select screen's helper keeps ~90 icons, still moved all run long while the screen is hidden

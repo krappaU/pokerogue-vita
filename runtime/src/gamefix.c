@@ -43,6 +43,15 @@
 // happens only when that quantity actually changes (it was lowered with left/right); otherwise the
 // window it would build is the one already there. Scrolling still rebuilds (setOptionsCursor).
 //
+// system save parsed with fewer calls: GameData.parseSystemData reads the system save (dex, starters,
+// eggs, stats; 220-250 KB late in a run) with JSON.parse and a reviver that the engine calls for every
+// one of its ~21,000 members: 650-900 ms on the Vita, at the title, each Continue or battle retry and
+// the egg gacha (log203: 6.7 s). The reviver only changes gameStats, eggs, ribbons (made into the
+// game's objects) and the *Attr members but three (BigInt(value ?? 0)); for every other member it
+// returns the value as it is. js/core.js __pkrParseSome parses natively and walks the result the same
+// way (src/js_host.c parseRevived), calling the reviver only for the first three and doing its BigInt
+// rule itself (which this exact text fixes): 6.5 instead of 11.7 ms on the desktop.
+//
 // starter slots from one starter list: the starter select screen's setup (after every game reset:
 // a new run rebuilds the UI) creates its 81 slots with `getAllStarters()[i]`, and each call goes
 // through all ~1300 species to list the starters again: 4.7 s of an 11 s frame on the Vita (0.89,
@@ -145,6 +154,15 @@ static const fix FIXES[] = {
      "return this.partyUiMode===@4.MODIFIER_TRANSFER&&@3!==4e3&&this.transferQuantities[@3]!==this.transferQuantitiesMax[@3]&&"
      "(this.transferQuantities[@3]=this.transferQuantitiesMax[@3],this.updateOptions()),@2=this.moveOptionCursor(@1),@2}",
      NULL, "processModifierTransferModeUpDownInput", 0},
+    {"system save parsed with fewer calls",
+     "JSON.parse(@7,(@1,@2)=>{if(@1===`gameStats`)return new @3(@2);if(@1===`eggs`){let @1=[];@2===null&&(@2=[]);"
+     "for(let @4 of @2)@1.push(new @5(@4));return @1}return @1===`ribbons`?@6.fromJSON(@2):@1.endsWith(`Attr`)&&"
+     "![`natureAttr`,`abilityAttr`,`passiveAttr`].includes(@1)?BigInt(@2??0):@2})",
+     "globalThis.__pkrParseSome(@7,(@1,@2)=>{if(@1===`gameStats`)return new @3(@2);if(@1===`eggs`){let @1=[];@2===null&&(@2=[]);"
+     "for(let @4 of @2)@1.push(new @5(@4));return @1}return @1===`ribbons`?@6.fromJSON(@2):@1.endsWith(`Attr`)&&"
+     "![`natureAttr`,`abilityAttr`,`passiveAttr`].includes(@1)?BigInt(@2??0):@2},"
+     "[`gameStats`,`eggs`,`ribbons`],`Attr`,[`natureAttr`,`abilityAttr`,`passiveAttr`])",
+     NULL, "parseSystemData", 0},
     {"icon loops: destroyed icons dropped, hidden ones left",
      "for(let[@1,@2]of this.icons)@1.y=@2.restY+this.getCurrentOffset(@2.mode)",
      "globalThis.__pkrIconSync(this)",

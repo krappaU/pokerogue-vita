@@ -350,6 +350,41 @@ async function run() {
     rt.fastpath.set(true);
     report("fastpath: rex BBCodeText drawn once, when rendered, the same as rex's own drawing", !detail, detail);
   }
+  // js/lazy_ui.js: handlers PokeRogue's UI sets up at each reset are built on first use instead. A
+  // never-built one is destroyed without its destroy() (which reads what setup() made); a used one is
+  // built then, its objects in the order they would have had; a built one's destroy() runs.
+  {
+    const sc = game.scene.getScene("test");
+    let detail = rt.lazyUiStats ? "" : "not installed";
+    if (!detail) {
+      const mk = () => {
+        const ui = sc.add.container(0, 0), log = [];
+        class Base { constructor(n) { this.n = n; } setup() { this.box = sc.make.image({ key: "atlas" }, false).setName(this.n); ui.add(this.box); } show() { log.push("show " + this.n); return this.box.name; } destroy() { log.push("destroy " + this.box.name); } }
+        // (the names matter: lazy_ui defers by class name)
+        const C = { GameChallengesUiHandler: class GameChallengesUiHandler extends Base {}, AchvsUiHandler: class AchvsUiHandler extends Base {},
+          PartyUiHandler: class PartyUiHandler extends Base {} };
+        ui.handlers = [new C.PartyUiHandler("party"), new C.GameChallengesUiHandler("challenges"), new C.AchvsUiHandler("achvs")];
+        return { ui, log };
+      };
+      const order = (ui) => ui.list.map((o) => o.name).join(",");
+      // reference: the same calls with the handlers set up as the game does, all at once
+      const ref = mk();
+      for (const h of ref.ui.handlers) h.setup();
+      const s0 = rt.lazyUiStats();
+      const a = mk();
+      a.ui.setName("ui-test"); // what UI.setup does first: lazy_ui looks at the handlers then
+      for (const h of a.ui.handlers) h.setup();
+      const deferred = rt.lazyUiStats().deferred - s0.deferred;
+      const shown = a.ui.handlers[2].show();
+      let threw = "";
+      try { a.ui.handlers[1].destroy(); a.ui.handlers[2].destroy(); a.ui.handlers[0].destroy(); } catch (e) { threw = String(e); }
+      detail = deferred !== 2 ? deferred + " handlers deferred (want 2)" : shown !== "achvs" ? "show gave " + shown
+        : threw ? "destroy threw: " + threw : a.log.join(";") !== "show achvs;destroy achvs;destroy party" ? "calls: " + a.log.join(";")
+        : order(a.ui) !== "party,achvs" ? "order " + order(a.ui) + " (reference " + order(ref.ui) + ")" : "";
+      a.ui.destroy(), ref.ui.destroy();
+    }
+    report("lazy_ui: deferred handlers built on use, destroyed unbuilt without their destroy()", !detail, detail);
+  }
   // js/fastpath.js trimmed quads: images drawn without the transparent part of their quads (in a
   // container: src/fastpath.c; alone: batchFast) give the same frame as the whole quads. Whole
   // scales: where a pixel centre falls exactly on a texel edge (scale 1.25: every 5 pixels), either
