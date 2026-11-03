@@ -36,6 +36,13 @@
 // PokeRogue's Pokémon pipeline extends it, sets per-sprite uniforms after super.onBind and calls this
 // onBatch, so it keeps a flush per sprite. Without the rule above (no __pkrS) it flushes as before.
 //
+// item list cursor without a rebuild: in the party screen's item transfer ("move items"), each up or
+// down press first set the item's quantity back to its maximum and rebuilt the whole option window
+// (every option's BBCodeText destroyed and made again, the held items looked up again), then moved
+// the cursor: ~400 ms a press on the Vita late in a run (log189, 39-45 items). The rebuild now
+// happens only when that quantity actually changes (it was lowered with left/right); otherwise the
+// window it would build is the one already there. Scrolling still rebuilds (setOptionsCursor).
+//
 // starter slots from one starter list: the starter select screen's setup (after every game reset:
 // a new run rebuilds the UI) creates its 81 slots with `getAllStarters()[i]`, and each call goes
 // through all ~1300 species to list the starters again: 4.7 s of an 11 s frame on the Vita (0.89,
@@ -130,6 +137,14 @@ static const fix FIXES[] = {
      ".set1f(`terrainColorRatio`,@1)}onBatch(@2){@2&&this.flush()}",
      ".set1f(`terrainColorRatio`,@1)}onBatch(@2){@2&&!(this.__pkrS&&this.name===`FieldSprite`)&&this.flush()}",
      NULL, "terrainColorRatio", 0},
+    {"item list cursor without a rebuild",
+     "processModifierTransferModeUpDownInput(@1){let @2=!1,@3=this.options[this.optionsCursor];"
+     "return this.partyUiMode===@4.MODIFIER_TRANSFER&&(@3!==4e3&&(this.transferQuantities[@3]=this.transferQuantitiesMax[@3]),"
+     "this.updateOptions()),@2=this.moveOptionCursor(@1),@2}",
+     "processModifierTransferModeUpDownInput(@1){let @2=!1,@3=this.options[this.optionsCursor];"
+     "return this.partyUiMode===@4.MODIFIER_TRANSFER&&@3!==4e3&&this.transferQuantities[@3]!==this.transferQuantitiesMax[@3]&&"
+     "(this.transferQuantities[@3]=this.transferQuantitiesMax[@3],this.updateOptions()),@2=this.moveOptionCursor(@1),@2}",
+     NULL, "processModifierTransferModeUpDownInput", 0},
     {"icon loops: destroyed icons dropped, hidden ones left",
      "for(let[@1,@2]of this.icons)@1.y=@2.restY+this.getCurrentOffset(@2.mode)",
      "globalThis.__pkrIconSync(this)",

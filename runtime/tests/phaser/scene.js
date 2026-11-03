@@ -342,20 +342,24 @@ async function run() {
     report("webgl: a destroyed framebuffer frees its renderbuffer and texture", !detail, detail);
   }
   // js/fastpath.js covered objects: an opaque image covering the camera hides the top-level
-  // children before its own; they still go in the camera's render list. Not when it isn't opaque.
+  // children before its own; the interactive ones still go in the camera's render list, in drawing
+  // order (the input plugin sorts by it). Not when the cover isn't opaque.
   {
     const sc = game.scene.getScene("test"), cam = sc.cameras.main, sx = cam.scrollX, sy = cam.scrollY;
     await addBase64(sc, "cover-test", OPAQUE_PNG);
     cam.setScroll(0, 0); // (only an unscrolled camera is checked)
     const below = sc.add.container(0, 0), belowImg = sc.make.image({ x: 10, y: 10, key: "trim-test" }, false);
     below.add(belowImg);
+    belowImg.setInteractive();
+    const mid = sc.add.image(20, 20, "trim-test").setInteractive();
     const ui = sc.add.container(0, 0);
     const cover = sc.make.image({ x: 0, y: 0, key: "cover-test" }, false).setOrigin(0).setDisplaySize(cam.worldView.width, cam.worldView.height);
     ui.add(cover);
     const s0 = rt.coverStats ? rt.coverStats().skipped : 0;
     await nextFrames(game, 35); // (looked for every 30 frames)
     const s1 = rt.coverStats ? rt.coverStats().skipped : 0;
-    const listed = cam.renderList.includes(belowImg) && cam.renderList.includes(below) && cam.renderList.includes(cover);
+    const rl = cam.renderList, at = (o) => rl.indexOf(o);
+    const listed = at(belowImg) >= 0 && at(belowImg) < at(mid) && at(mid) < at(cover);
     cover.setAlpha(0.99);
     await nextFrames(game, 3);
     const s2 = rt.coverStats ? rt.coverStats().skipped : 0;
@@ -363,7 +367,7 @@ async function run() {
     const s3 = rt.coverStats ? rt.coverStats().skipped : 0;
     const detail = !rt.coverStats ? "not installed" : !(s1 > s0) ? "nothing skipped under the cover"
       : !listed ? "skipped objects missing from the render list" : s3 !== s2 ? "skipped under a translucent cover" : "";
-    below.destroy(), ui.destroy();
+    below.destroy(), mid.destroy(), ui.destroy();
     cam.setScroll(sx, sy);
     report("fastpath: an opaque screen-covering image hides what is under it", !detail, detail);
   }

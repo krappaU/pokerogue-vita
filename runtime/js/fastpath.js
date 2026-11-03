@@ -1208,6 +1208,45 @@
         if (o.type === "Container" && o.list) listSkipped(o.list, camera);
       }
     };
+    // Only the input plugin reads the render list (sortGameObjects: which of the objects under a
+    // pointer is on top, by their order in it), so of the children not drawn only the interactive
+    // ones need to be there, in drawing order. Walking every skipped object each frame took ~5% of
+    // a frame on the party screen (log189); the interactive ones are a handful.
+    const listInteractive = (scene, children, k, camera) => {
+      const inp = scene.sys.input, il = inp && inp._list;
+      if (!Array.isArray(il)) {
+        for (let i = 0; i < k; i++) {
+          camera.addToRenderList(children[i]);
+          if (children[i].type === "Container" && children[i].list) listSkipped(children[i].list, camera);
+        }
+        return;
+      }
+      let found = null;
+      for (let j = 0; j < il.length; j++) {
+        const o = il[j];
+        if (!o.willRender(camera)) continue;
+        const path = [];
+        let top = o, ok = true;
+        while (top.parentContainer) {
+          const p = top.parentContainer;
+          if (!p.willRender(camera)) { ok = false; break; }
+          path.push(p.list.indexOf(top));
+          top = p;
+        }
+        if (!ok) continue;
+        const t = children.indexOf(top);
+        if (t < 0 || t >= k) continue;
+        path.push(t);
+        (found || (found = [])).push([path.reverse(), o]);
+      }
+      if (!found) return;
+      if (found.length > 1) found.sort((a, b) => {
+        const p = a[0], q = b[0];
+        for (let i = 0; i < p.length && i < q.length; i++) if (p[i] !== q[i]) return p[i] - q[i];
+        return p.length - q.length; // a container before what it holds
+      });
+      for (let i = 0; i < found.length; i++) camera.addToRenderList(found[i][1]);
+    };
     WRP.render = function (scene, children, camera) {
       if (!enabled || children.length < 2 || camera.scrollX !== 0 || camera.scrollY !== 0 || camera.alpha !== 1 ||
           camera.mask || camera.rotation !== 0) return origRender.apply(this, arguments);
@@ -1226,10 +1265,7 @@
       if (k <= 0) return origRender.apply(this, arguments);
       coverStats.frames++;
       coverStats.skipped += k;
-      for (let i = 0; i < k; i++) {
-        camera.addToRenderList(children[i]);
-        if (children[i].type === "Container" && children[i].list) listSkipped(children[i].list, camera);
-      }
+      listInteractive(scene, children, k, camera);
       return origRender.call(this, scene, children.slice(k), camera);
     };
     g.__rt.coverSwap = [WRP, "render", origRender];

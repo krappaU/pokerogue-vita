@@ -1318,3 +1318,21 @@ silvershadowkat/pokerogue-nx merged our runtime up to 1.0.6 and ports it to the 
 Kept in mind (docs/PLAN.md): their finding that a fractional corrected Date.now() makes the save API
 reject saves (unconfirmed on the Vita: our correction only applies past 30 s of clock error), and their
 D-pad navigation for the login and register screens.
+
+### The item transfer menu (log189, 1.0.7, 2026-11-03)
+Late in a run (waves 114-119, Cave, 6 Pokémon, 39-45 held items) every up or down press in the party
+screen's "move items" list was a ~400 ms frame (up to 730 ms when the list scrolled). The profile:
+PartyUiHandler.processModifierTransferModeUpDownInput calls updateOptions on every press, which
+destroys and makes again every option's BBCodeText (TextStyle.setStyle, setText's tag parsing) and
+looks the held items up again, then moves the cursor. The rebuild exists to put the quantity of the
+item being left back to its maximum, so it only changes anything when that quantity was lowered with
+left/right. gamefix rule "item list cursor without a rebuild" now rebuilds only then; scrolling still
+rebuilds (setOptionsCursor does that itself), and the window otherwise is the one already shown.
+Smoke check: the same quantities, cursor and window as the game's code over a sequence of presses and
+quantity changes, with 6 rebuilds instead of 12. On the desktop (offline game, Abyss save, transfer
+screen) presses now rebuild nothing; the save has no held items, so the speed-up itself needs a log.
+Also, covered objects (fastpath.js): the children skipped under a screen-covering image were walked
+whole every frame to fill the camera's render list (listSkipped, 4.7% of the party screen's frames).
+Only the input plugin reads that list (sortGameObjects orders the objects under a pointer by it), so
+now only the skipped interactive objects (the input plugin's list) go in, in drawing order; the
+phaser test checks their order against what is drawn.

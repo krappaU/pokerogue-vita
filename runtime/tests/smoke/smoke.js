@@ -299,6 +299,35 @@ async function run() {
     if (ff.calls !== 9) return "starter filters: getVals called " + ff.calls + " times for 3 filterings (plain " + fp.calls + ")";
     if (ff.own) return "starter filters: getVals not put back";
   });
+  await check("gamefix: the item transfer list rebuilds only when a quantity changes", async () => {
+    const fixed = await import("./assets/party-Pk7rTst3.js"); // a chunk: src/gamefix.c rewrites it
+    const text = await (await fetch("./assets/party-Pk7rTst3.js")).text();
+    const plain = new Function(text.replace(/export (function|class)/g, "$1") + "\nreturn { makeParty };")();
+    const X = { MODIFIER_TRANSFER: 7, CHECK: 3 };
+    // up/down presses with left/right quantity changes in between, on items and on cancel (4e3)
+    const run = (mod, mode) => {
+      const Party = mod.makeParty(X);
+      const ui = new Party();
+      Object.assign(ui, { partyUiMode: mode, options: [0, 1, 2, 3, 4e3], optionsCursor: 0,
+        transferQuantities: [3, 1, 5, 2], transferQuantitiesMax: [3, 4, 5, 2], rebuilds: 0, window: "" });
+      ui.updateOptions = function () { this.rebuilds++; this.window = this.transferQuantities.join(","); };
+      ui.moveOptionCursor = function (e) { this.optionsCursor = (this.optionsCursor + (e ? 1 : this.options.length - 1)) % this.options.length; return true; };
+      ui.updateOptions();
+      const out = [];
+      for (const [k, v] of [["d"], ["d"], ["q", 2], ["u"], ["d"], ["d"], ["d"], ["d"], ["q", 1], ["u"], ["u"]]) {
+        if (k === "q") { ui.transferQuantities[ui.options[ui.optionsCursor]] = v; ui.updateOptions(); continue; }
+        const r = ui.processModifierTransferModeUpDownInput(k === "u" ? 0 : 1);
+        out.push(r + ":" + ui.optionsCursor + ":" + ui.transferQuantities.join(",") + ":" + ui.window);
+      }
+      return { out: out.join(" "), rebuilds: ui.rebuilds };
+    };
+    for (const mode of [X.MODIFIER_TRANSFER, X.CHECK]) {
+      const f = run(fixed, mode), p = run(plain, mode);
+      eq(f.out, p.out, "transfer list " + mode);
+      const want = mode === X.MODIFIER_TRANSFER ? 6 : 3; // first build + 2 left/right changes (+ 3 resets to the maximum)
+      if (f.rebuilds !== want) return "transfer list: " + f.rebuilds + " rebuilds, want " + want + " (plain " + p.rebuilds + ")";
+    }
+  });
   await check("net: Blob, object URLs and FileReader", async () => {
     const blob = new Blob(["abc", new Uint8Array([100, 101])], { type: "text/plain" });
     eq(blob.size, 5, "size");
