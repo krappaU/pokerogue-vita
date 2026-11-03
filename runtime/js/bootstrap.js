@@ -15,6 +15,32 @@
 
   // Debugging aid (debug builds): <data>/debug.js, if present, runs before the game loads (hooks).
   // g.__shaderHook(source), if a debug script defines it, can rewrite shader sources.
+  // Where the game is, for reading logs (only with a log): a line when the wave changes, and the
+  // wave on every [perf] line. Read-only; the game's shapes may change, so any error just stops it.
+  if (N.logging && N.setPerfTag) {
+    let lastPoll = 0, lastWave = -1;
+    const poll = () => {
+      const now = N.now();
+      if (now - lastPoll < 500) return;
+      lastPoll = now;
+      const game = rt.renderer && rt.renderer.game, s = game && game.scene.getScene("battle");
+      const b = s && s.currentBattle;
+      const wave = b ? b.waveIndex | 0 : 0;
+      if (wave === lastWave) return;
+      lastWave = wave;
+      N.setPerfTag(wave ? "wave " + wave : "");
+      if (!wave) return;
+      const bg = s.arenaBg && s.arenaBg.texture && s.arenaBg.texture.key;
+      const party = s.getPlayerParty ? s.getPlayerParty().length : "?", items = s.modifiers ? s.modifiers.length : "?";
+      N.log("[game] wave " + wave + ": " + (bg ? String(bg).replace(/_bg$/, "") : "?") + ", " + (b.trainer ? "trainer" : "wild") +
+        (b.double ? ", double" : "") + " | party " + party + ", items " + items);
+    };
+    const hook = () => {
+      try { poll(); } catch (e) { rt.frameHooks.splice(rt.frameHooks.indexOf(hook), 1); N.log("[game] wave lines stopped: " + e); }
+    };
+    rt.frameHooks.push(hook);
+  }
+
   const debugScript = N.debug && N.readFile("debug.js");
   if (debugScript) {
     N.log("[debug] running debug.js from the data folder");

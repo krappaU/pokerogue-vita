@@ -106,6 +106,14 @@ done in 1.0.4: renderbuffer leak, disk cache cleaning, missing-compiler message,
 - No fallback to the last working game version if a new PokeRogue release breaks the shim (risk 4
   above); no scheduled check that runs the offline game to the title screen.
 
+From the pokerogue-nx fork (Switch/Android, merged our 1.0.6; reviewed 2026-11-03), to keep in mind:
+- Unconfirmed for the Vita: when the console's clock is more than 30 s off, Date.now() is corrected
+  by a fractional offset (net.c note_server_date uses microseconds), and the fork found PokeRogue's
+  save API rejecting the fractional timestamps (`json: cannot unmarshal number ... of type int`;
+  their fix: Math.trunc in core.js's nowMs). To check on a console with a shifted clock.
+- Login and register screens without D-pad navigation (login still needs a tap or SELECT-and-cross
+  after the password); the fork's runtime/js/modal-controls.js adds focus navigation. Not ported yet.
+
 Features and checks:
 - Untested on the console: save import/export and the restart after an import (0.41), QR links (0.40).
 - Login uses the built-in keyboard; Discord/Google sign-in can't work (a QR code explains it).

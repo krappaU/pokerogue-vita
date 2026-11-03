@@ -342,7 +342,8 @@ static void cache_write(const char *url, const char *data, size_t len) {
         if (!(f = fopen(tmp, "wb"))) return;
     }
     bool ok = fwrite(data, 1, len, f) == len;
-    if (fclose(f) == 0 && ok) rename(tmp, path);
+    if (fclose(f) == 0 && ok && rename(tmp, path) == 0) return;
+    remove(tmp);
 }
 
 // ---------------------------------------------------------------- curl helpers
@@ -1227,10 +1228,12 @@ void net_poll(JSContext *ctx) {
         }
         if (r->from_cache) {
             if (r->local_status == 404) {
-                buf_add(&r->resp_headers, "HTTP/1.1 404 Not Found\r\n\r\n", 28);
+                static const char not_found[] = "HTTP/1.1 404 Not Found\r\n\r\n";
+                buf_add(&r->resp_headers, not_found, sizeof not_found - 1);
                 deliver(ctx, r, 404, NULL, NULL);
             } else {
-                buf_add(&r->resp_headers, "HTTP/1.1 200 OK\r\nx-runtime-cache: hit\r\n\r\n", 41);
+                static const char cached[] = "HTTP/1.1 200 OK\r\nx-runtime-cache: hit\r\n\r\n";
+                buf_add(&r->resp_headers, cached, sizeof cached - 1);
                 n_cache_hits++;
                 deliver(ctx, r, 200, NULL, NULL);
             }

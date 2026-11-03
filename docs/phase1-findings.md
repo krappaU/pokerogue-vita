@@ -1303,3 +1303,18 @@ The Abyss is ~7 ms slower than the Cave at the same draw calls, but on the deskt
 (the saved Temple run with its arena set to the Abyss) draws the same objects as the Temple (backdrop,
 four ground layers, the Pokémon) at the same cost (render 1.2 ms against 1.1): the difference is in
 the run (later waves), not the arena's drawing. Needs a profiled log to say more.
+
+### From the pokerogue-nx fork (reviewed 2026-11-03; runtime 1.0.7)
+silvershadowkat/pokerogue-nx merged our runtime up to 1.0.6 and ports it to the Switch and Android
+(SDL, touch controls, mbedTLS, storage that survives the Switch's rename-can't-overwrite). Taken over:
+- Storage writes that fail are tried again: the writer thread retries a failed write a second later,
+  up to 5 times (unless a newer copy of the file is queued), and storage.js keeps a file it couldn't
+  hand over dirty for the next flush. Before, the change waited for the game's next write to it.
+- net.c: a cached 404's status line was added with length 28 for 26 bytes (2 bytes read past the
+  literal); a cache entry whose rename fails no longer leaves its .tmp.
+- Where the game is, in logs (the fork logs every phase change; this is lower volume): a "[game] wave
+  N: <arena>, wild|trainer[, double] | party P, items I" line when the wave changes, and "wave N" on
+  every [perf] line (js/bootstrap.js, N.setPerfTag; only when there is a log).
+Kept in mind (docs/PLAN.md): their finding that a fractional corrected Date.now() makes the save API
+reject saves (unconfirmed on the Vita: our correction only applies past 30 s of clock error), and their
+D-pad navigation for the login and register screens.

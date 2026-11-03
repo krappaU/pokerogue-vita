@@ -506,6 +506,10 @@ static int cmp_d(const void *a, const void *b) {
 
 static double t_main_start; // host_now_ms() at the start of main(), for the [perf] line's t=
 
+// What the game is at (js/bootstrap.js: "wave 37"), so each [perf] window says where it was taken.
+static char perf_tag[48];
+void host_set_perf_tag(const char *tag) { snprintf(perf_tag, sizeof perf_tag, "%s", tag ? tag : ""); }
+
 // Logs JS time per frame (timers, rAF = Phaser's update + render, promise jobs) every 300 frames.
 static void perf_add(double js_ms) {
     if (perf_n == 0) perf_t0 = host_now_ms();
@@ -552,10 +556,10 @@ static void perf_add(double js_ms) {
     // Sampled frames (debug builds on the Vita): how long the GPU took for one frame.
     if (gpu_n) snprintf(gpu, sizeof gpu, " | GPU %.1f ms/frame (max %.0f, %d frames)", gpu_avg, gpu_max, gpu_n);
     host_log("[perf] %.1f fps | JS per frame: avg %.2f ms, p50 %.2f, p95 %.2f, max %.2f%s | draw %.1f, swap %.1f, after %.1f ms | "
-             "in GL draw calls %.1f ms/frame (max %.0f), %d calls/frame%s%s%s | net: %s | %s | t=%.1f s",
+             "in GL draw calls %.1f ms/frame (max %.0f), %d calls/frame%s%s%s | net: %s | %s | %s%st=%.1f s",
              perf_n / secs, sum / perf_n, perf_js[perf_n / 2], perf_js[perf_n * 95 / 100], perf_js[perf_n - 1], gc,
              perf_draw_ms / perf_n, perf_swap_ms / perf_n, perf_after_ms / perf_n, gl_total / perf_n, gl_max, draws / perf_n,
-             glx, gpu, other, net, dec, (host_now_ms() - t_main_start) / 1000.0);
+             glx, gpu, other, net, dec, perf_tag, perf_tag[0] ? ", " : "", (host_now_ms() - t_main_start) / 1000.0);
     perf_gc = 0;
     perf_gc_max = 0;
     perf_swap_ms = perf_after_ms = perf_draw_ms = 0;

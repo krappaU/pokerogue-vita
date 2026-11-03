@@ -663,8 +663,23 @@ static void *writer_thread(void *arg) {
         wq_busy = true;
         pthread_mutex_unlock(&wq_lock);
         double t0 = host_now_ms();
-        if (!write_atomic(j->path, j->data, j->len)) host_log("[storage] failed to write %s", j->path);
-        else if (host_now_ms() - t0 >= 100) host_log("[storage] %s written in %.0f ms (on its own thread)", j->path, host_now_ms() - t0);
+        // A write that fails (memory card busy or full) is tried again a second later, up to 5
+        // times, unless a newer copy of the file is waiting (that one replaces it).
+        bool ok = false;
+        for (int attempt = 0; attempt < 5 && !ok; attempt++) {
+            if (attempt) {
+                bool newer = false;
+                pthread_mutex_lock(&wq_lock);
+                for (wjob *w = wq_head; w && !newer; w = w->next) newer = !strcmp(w->path, j->path);
+                pthread_mutex_unlock(&wq_lock);
+                if (newer) break;
+                struct timespec ts = {1, 0};
+                nanosleep(&ts, NULL);
+            }
+            ok = write_atomic(j->path, j->data, j->len);
+            if (!ok) host_log("[storage] failed to write %s (attempt %d)", j->path, attempt + 1);
+        }
+        if (ok && host_now_ms() - t0 >= 100) host_log("[storage] %s written in %.0f ms (on its own thread)", j->path, host_now_ms() - t0);
         free(j->data);
         free(j);
         pthread_mutex_lock(&wq_lock);
@@ -1103,6 +1118,14 @@ static JSValue n_choice_poll(JSContext *ctx, JSValueConst this_val, int argc, JS
     return JS_NewInt32(ctx, dialog_choice_poll());
 }
 
+// setPerfTag(text): what the game is at, for the [perf] lines (main.c)
+static JSValue n_set_perf_tag(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    const char *t = JS_ToCString(ctx, argv[0]);
+    host_set_perf_tag(t);
+    JS_FreeCString(ctx, t);
+    return JS_UNDEFINED;
+}
+
 // relaunch(): location.reload, done by restarting the app after this frame (main.c)
 static JSValue n_relaunch(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     g_relaunch = true;
@@ -1138,6 +1161,7 @@ static const JSCFunctionListEntry native_funcs[] = {
     JS_CFUNC_DEF("choose", 2, n_choose),
     JS_CFUNC_DEF("choicePoll", 0, n_choice_poll),
     JS_CFUNC_DEF("relaunch", 0, n_relaunch),
+    JS_CFUNC_DEF("setPerfTag", 1, n_set_perf_tag),
     JS_CFUNC_DEF("showMessage", 1, n_show_message),
     JS_CFUNC_DEF("memoryUsage", 0, n_memory_usage),
     JS_CFUNC_DEF("imeOpen", 4, n_ime_open),

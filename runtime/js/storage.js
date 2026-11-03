@@ -18,8 +18,13 @@
     const now = N.now();
     if (!force && now - lastFlush < 1000) return;
     lastFlush = now;
-    for (const f of dirty) if (!write(f, JSON.stringify(writers[f]()))) N.log("[storage] failed to write " + f);
-    dirty.clear();
+    // A file that couldn't be handed over stays dirty and goes again with the next flush, instead of
+    // waiting for the game's next change to it (a failed write on the card is retried by the
+    // writer thread, js_host.c).
+    for (const f of dirty) {
+      if (write(f, JSON.stringify(writers[f]()))) dirty.delete(f);
+      else N.log("[storage] failed to write " + f);
+    }
     if (force && N.waitWrites) N.waitWrites();
   }
   rt.frameHooks.push(() => { if (dirty.size) flush(false); });
