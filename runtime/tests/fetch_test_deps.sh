@@ -4,6 +4,9 @@
 # tests/run_page.sh and tests/run_vita3k_page.sh. Each is checked against a known hash.
 # - Phaser 3.90.0 (MIT), the version PokeRogue uses: tests/phaser/ runs the native fast paths against
 #   Phaser's own code. ES module build, from the npm registry.
+# - rex's BBCodeText plugin (phaser3-rex-plugins 1.80.20, MIT), the version PokeRogue uses:
+#   tests/phaser/ checks js/fastpath.js's lazy drawing of it against its own. One file of the npm
+#   package (the whole package is ~100 MB), through jsDelivr's npm mirror.
 # - PokeRogue's own shaders (scripts/fetch_pokerogue_shaders.sh): tests/shaders/ compares them with
 #   js/webgl.js's rewrites, pixel for pixel.
 set -euo pipefail
@@ -19,6 +22,14 @@ if [ ! -f third_party/test/phaser.js ]; then
   echo "$PHASER_SHA256  $tmp/phaser.tgz" | sha256sum -c --quiet
   tar -xzf "$tmp/phaser.tgz" -C "$tmp" package/dist/phaser.esm.min.js
   mv "$tmp/package/dist/phaser.esm.min.js" third_party/test/phaser.js
+fi
+
+REX=1.80.20
+REX_SHA256=ada801c34c0a8eb0a4fb77c76d93faace43313deceed9f93cae0352c5912069f
+if [ ! -f third_party/test/rexbbcodetextplugin.js ]; then
+  curl -sfL "https://cdn.jsdelivr.net/npm/phaser3-rex-plugins@$REX/dist/rexbbcodetextplugin.min.js" -o third_party/test/rexbbcodetextplugin.js.part
+  echo "$REX_SHA256  third_party/test/rexbbcodetextplugin.js.part" | sha256sum -c --quiet
+  mv third_party/test/rexbbcodetextplugin.js.part third_party/test/rexbbcodetextplugin.js
 fi
 
 # PokeRogue's shaders: the same pinned copies the dev build's benchmark uses.

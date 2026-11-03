@@ -282,6 +282,74 @@ async function run() {
     b.destroy(), c.destroy(), d.destroy();
     report("fastpath: measuring makes no texture; a destroyed text's texture serves the same text", !detail, detail);
   }
+  // js/fastpath.js 4b: rex's BBCodeText (the game's rich text), built the way PokeRogue builds its
+  // option lists (constructor, setShadow, setLineSpacing, two setTexts, then its width), gives the
+  // same sizes, lines and canvas pixels as rex's own code, with one draw per text; destroyed ones'
+  // textures serve the same texts again.
+  {
+    const sc = game.scene.getScene("test");
+    let detail = "";
+    try {
+      // Phaser's ES module build has no Phaser.Class (the game's full build does), which rex uses
+      // to mix Phaser's components into its classes: the same as Phaser's Class.mixin.
+      const mixin = (cls, list) => {
+        for (const m of [].concat(list)) for (const k of Object.keys(m)) {
+          const v = m[k];
+          if (v && typeof v === "object" && (typeof v.get === "function" || typeof v.set === "function"))
+            Object.defineProperty(cls.prototype, k, { get: v.get, set: v.set, configurable: true, enumerable: true });
+          else cls.prototype[k] = v;
+        }
+      };
+      const ns = globalThis.Phaser;
+      if (!ns.Class) globalThis.Phaser = Object.assign({}, ns, { Class: { mixin } });
+      // (a UMD script: evaluated as a classic script it sets globalThis.rexbbcodetextplugin)
+      try { (0, eval)(await (await fetch("./rexbbcodetextplugin.js")).text()); } finally { globalThis.Phaser = ns; }
+      game.plugins.install("rexBBCodeTextPlugin", globalThis.rexbbcodetextplugin, true);
+    } catch (e) { detail = "plugin: " + e + " " + String(e.stack).slice(0, 300); }
+    if (!detail && !rt.rexTextPatched) detail = "not patched";
+    if (!detail) {
+      const words = ["Leftovers", "All (12)", "[color=#e05040]Big Root[/color]", "↑", "Choice Specs", "Lum Berry"];
+      const build = (i) => {
+        const s = words[i];
+        const t = sc.add.rexBBCodeText(20, 20 + i * 30, s, { fontFamily: "sans-serif", fontSize: "48px", color: "#f8f8f8", padding: { bottom: 6 }, maxLines: 1 });
+        t.setScale(1 / 3).setShadow(4, 5, "#606060");
+        t.setLineSpacing(20);
+        if (i % 2) t.setText(s + " [color=#f89890](" + i + ")[/color]");
+        t.setText("[shadow]" + t.text + "[/shadow]");
+        return t;
+      };
+      const state = (t) => [t.width, t.height, t.displayWidth, t.displayOriginX, t.getWrappedText().join("|")].join(",");
+      const pixels = (t) => Array.from(t.context.getImageData(0, 0, t.canvas.width, t.canvas.height).data).join();
+      const round = async (lazy) => {
+        rt.fastpath.set(lazy);
+        const s0 = rt.rexTextStats();
+        const ts = words.map((_, i) => build(i));
+        const st = ts.map(state);
+        await nextFrames(game, 3);
+        const s1 = rt.rexTextStats();
+        return { ts, st, px: ts.map(pixels), draws: s1.draws - s0.draws, updates: s1.updates - s0.updates, reused: s1.reused - s0.reused };
+      };
+      const ref = await round(false);
+      ref.ts.forEach((t) => t.destroy());
+      const a = await round(true);
+      const texs = a.ts.map((t) => t.frame.source.glTexture);
+      a.ts.forEach((t) => t.destroy());
+      const b = await round(true);
+      const reusedTex = b.ts.filter((t, i) => t.frame.source.glTexture === texs[i]).length;
+      const st2 = b.ts.map(state);
+      b.ts.forEach((t) => t.destroy());
+      const bad = a.st.findIndex((s, i) => s !== ref.st[i]), badPx = a.px.findIndex((p, i) => p !== ref.px[i]);
+      detail = ref.updates ? "rex's own code was patched while off (" + ref.updates + ")"
+        : bad >= 0 ? "size or lines of \"" + words[bad] + "\": " + a.st[bad] + " vs " + ref.st[bad]
+        : badPx >= 0 ? "pixels of \"" + words[badPx] + "\" differ"
+        : a.draws !== words.length ? a.draws + " draws for " + words.length + " texts (" + a.updates + " changes)"
+        : a.updates < 3 * words.length ? "only " + a.updates + " changes went through the patch"
+        : b.reused !== words.length || reusedTex !== words.length ? "textures reused: " + b.reused + " (" + reusedTex + " the same)"
+        : st2.some((s, i) => s !== ref.st[i]) ? "sizes after reuse differ" : "";
+    }
+    rt.fastpath.set(true);
+    report("fastpath: rex BBCodeText drawn once, when rendered, the same as rex's own drawing", !detail, detail);
+  }
   // js/fastpath.js trimmed quads: images drawn without the transparent part of their quads (in a
   // container: src/fastpath.c; alone: batchFast) give the same frame as the whole quads. Whole
   // scales: where a pixel centre falls exactly on a texel edge (scale 1.25: every 5 pixels), either

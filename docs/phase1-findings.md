@@ -1358,3 +1358,23 @@ dialog's input mute. And `[net] slow:` lines for any request over 5 s: the metho
 its query, upload size and speed, time to the first byte, download speed, whether the connection
 was new (connect and TLS times) or reused, and the HTTP version, so the next log says where such
 waits go (the upload, the server, or the download).
+
+### The item list's rebuild: rex BBCodeText drawn when rendered (log200, 1.0.9; runtime 1.0.10, 2026-11-03)
+1.0.8 stopped the rebuild on up/down within the item transfer list (log200: no more
+processModifierTransferModeUpDownInput stacks), but scrolling still rebuilds it, ~385 ms a press on the
+Vita (log200, waves 147-149, ~50 items). The rebuild makes ~10 option labels anew, rex BBCodeTexts
+(phaser3-rex-plugins 1.80.20), and each new one is changed ~5 times before the game reads its width
+(constructor, setShadow, setLineSpacing, setText twice); every change parsed the tags, laid out the
+lines, drew the canvas (96 px fonts, scaled down) and uploaded it. js/fastpath.js 4b does for them what
+4 does for Phaser's Text: a change only marks the text; it is laid out and measured with rex's own code
+(drawing off) when its size or lines are first read, and drawn and uploaded once, when rendered; a
+destroyed label's texture goes to a new one with the same text and style (textCache), as when the list
+scrolls by one. The class comes from window.RexPlugins.GameObjects.BBCodeText when the game registers
+the plugin; the game's code is precompiled without source, so its shape is checked instead (methods,
+updateText's one argument, the text's canvasText on first use), and anything else leaves rex alone.
+Checks: tests/phaser (rex 1.80.20 from npm, built as the game builds its options: same sizes, lines
+and canvas pixels as rex's own code, one draw per text, textures reused); scripts/probe_rex_text.js
+in the running game (ten labels in the game's own style at its size: same sizes, 0 of 2943 changed
+pixels differ, also with kept textures). Desktop, build plus the frame that draws them: 22-32 ms with
+rex's own drawing, 13-19 ms now; per label one measure instead of ~5 layouts, one draw instead of ~5.
+The Vita's number needs a log with the item list.

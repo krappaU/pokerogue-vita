@@ -477,6 +477,183 @@
   TP.updateText = lazyUpdateText;
   TP.renderWebGL = textRender;
 
+  // 4b. The same for rex's BBCodeText (phaser3-rex-plugins, the game's rich text: menu options, the
+  //     party screen's item lists). Its updateText parses the tags, measures, draws the canvas (96 px
+  //     fonts, scaled down) and uploads it on every change, and the game changes a new one ~5 times
+  //     in a row (constructor, setShadow, setLineSpacing, setText twice) before reading its width.
+  //     The item transfer list makes ~10 of them each time it scrolls: ~385 ms a press on the Vita
+  //     (log200). Here a change only marks the text: it is measured (rex's own code, drawing
+  //     switched off) when its size or lines are first read, and drawn and uploaded when rendered,
+  //     or given the texture a destroyed text with the same inputs left (textCache).
+  //     The class is the plugin's (window.RexPlugins.GameObjects.BBCodeText, set when its module
+  //     loads); it is patched when the game registers the plugin. Other rex texts are left alone.
+  const rexStats = { updates: 0, measures: 0, draws: 0, reused: 0 };
+  g.__rt.rexTextStats = () => Object.assign({}, rexStats);
+  function patchRexText(BB) {
+    const RTP = BB && BB.prototype && Object.getPrototypeOf(BB.prototype);
+    if (!RTP || Object.prototype.hasOwnProperty.call(RTP, "_pkrLazy") || typeof RTP.updateText !== "function" ||
+        typeof RTP.renderWebGL !== "function" || typeof RTP.preDestroy !== "function") return false;
+    // Not the code this was written for: rex 1.80's updateText(runWrap) lays out the lines
+    // (canvasText.updatePenManager), sizes the canvas, draws it and uploads it (canvasToTexture). The
+    // game's code is precompiled without its source, so where the source can't be read the shape
+    // is checked: these methods, and on first use the text's canvasText (see usable).
+    const src = Function.prototype.toString.call(RTP.updateText);
+    if (/\[native code\]/.test(src)) {
+      if (RTP.updateText.length !== 1 || typeof RTP.setText !== "function" || typeof RTP.setPadding !== "function" ||
+          typeof RTP.getWrappedText !== "function" || typeof BB.prototype.setDelimiters !== "function") return false;
+    } else if (!/updatePenManager/.test(src) || !/canvasToTexture/.test(src)) return false;
+    let shapeOk = null; // canvasText checked on the first text
+    const usable = (t) => {
+      if (shapeOk === null) {
+        const ct = t.canvasText;
+        if (!ct) return false;
+        shapeOk = typeof ct.updatePenManager === "function" && typeof ct.draw === "function" && "linesWidth" in ct &&
+          !!t.style && typeof t.style.toJSON === "function" && !!t.padding;
+        if (!shapeOk) g.__native.log("[fastpath] rex BBCodeText: its text layout isn't the one expected; left as it is");
+      }
+      return shapeOk;
+    };
+    const origUpdate = RTP.updateText, origRender = RTP.renderWebGL, origPreDestroy = RTP.preDestroy;
+    RTP._pkrLazy = true;
+    // The size becomes accessors that measure first while a change is pending. Only if they are
+    // plain data properties further up (Phaser's ComputedSize and Origin components).
+    const keys = ["width", "height", "_displayOriginX", "_displayOriginY"];
+    let lazy = true;
+    for (const k of keys) {
+      let d = null;
+      for (let p = RTP; p && !d; p = Object.getPrototypeOf(p)) d = Object.getOwnPropertyDescriptor(p, k);
+      if (d && !("value" in d)) lazy = false;
+    }
+    if (lazy) {
+      for (const k of keys) {
+        const store = "_pkrR_" + k;
+        let d = null;
+        for (let p = RTP; p && !d; p = Object.getPrototypeOf(p)) d = Object.getOwnPropertyDescriptor(p, k);
+        RTP[store] = d ? d.value : undefined;
+        Object.defineProperty(RTP, k, {
+          configurable: true, enumerable: true,
+          get() { if (this._pkrRexMeasure) rexMeasure(this); return this[store]; },
+          set(v) { this[store] = v; },
+        });
+      }
+    }
+    // So do the methods that read the laid-out lines (not canvasText itself: the constructor sets
+    // its link cursor style through it, after the first setText).
+    if (lazy) {
+      for (const k of ["getWrappedText", "getPlainText", "getText", "copyPenManager", "getPenManager", "setInteractive",
+        "drawAreaBounds", "getHitArea"]) {
+        const f = RTP[k];
+        if (typeof f !== "function") continue;
+        RTP[k] = function () { if (this._pkrRexMeasure) rexMeasure(this); return f.apply(this, arguments); };
+      }
+      for (let p = RTP; p; p = Object.getPrototypeOf(p)) {
+        const d = Object.getOwnPropertyDescriptor(p, "contentHeight");
+        if (!d) continue;
+        if (typeof d.get === "function") {
+          const get = d.get;
+          Object.defineProperty(RTP, "contentHeight", { configurable: true, enumerable: d.enumerable, set: d.set,
+            get() { if (this._pkrRexMeasure) rexMeasure(this); return get.call(this); } });
+        }
+        break;
+      }
+    }
+    // rex's updateText with the canvas's drawing calls switched off and the upload skipped.
+    function rexMeasure(t, useTex) {
+      rexStats.measures++;
+      t._pkrRexMeasure = false;
+      const wrap = t._pkrRexWrap;
+      t._pkrRexWrap = false;
+      const ctx = t.context, real = ctx._n, fsrc = t.frame && t.frame.source;
+      const tex = useTex || (fsrc && fsrc.glTexture) || null;
+      const r = t.renderer;
+      let stub = stubs.get(real);
+      if (!stub) stubs.set(real, (stub = measureStub(real)));
+      ctx._n = stub;
+      // (rex tags the texture it gets for a WebGL debugger, so a text without one yet gets a
+      // stand-in for the call, then none again.)
+      r.canvasToTexture = () => tex || {};
+      try { origUpdate.call(t, wrap); } finally {
+        ctx._n = real;
+        delete r.canvasToTexture;
+        if (fsrc) fsrc.glTexture = tex;
+      }
+    }
+    // The inputs of a draw: rex's drawing is deterministic in its text, style (all of it, as
+    // toJSON lists it), padding and lines' scroll. Texts with images or a custom parser are not kept.
+    function rexSignature(t) {
+      if (typeof t._text !== "string" || t._imageManager || !t.style || typeof t.style.toJSON !== "function" || !t.padding) return null;
+      let style;
+      try { style = JSON.stringify(t.style.toJSON()); } catch (e) { return null; }
+      const p = t.padding;
+      return ["rex", t.type, t._text, style, p.left, p.right, p.top, p.bottom, t._scrollY, g.__rt.fontGeneration | 0].join("\u0001");
+    }
+    function rexDraw(t) {
+      rexStats.draws++;
+      const fsrc = t.frame && t.frame.source;
+      const sig = fsrc && g.__rt.textReuse !== false ? rexSignature(t) : null;
+      if (sig && !fsrc.glTexture) {
+        const tex = textCacheTake(sig);
+        if (tex) {
+          rexMeasure(t, tex); // sizes the canvas and takes tex as the text's texture
+          if (t.canvas.width === tex.width && t.canvas.height === tex.height) { rexStats.reused++; t._pkrSig = sig; return; }
+          // a different size after all: draw into it
+        }
+      }
+      const wrap = t._pkrRexWrap;
+      t._pkrRexWrap = false;
+      t._pkrRexMeasure = false;
+      origUpdate.call(t, wrap);
+      t._pkrSig = sig;
+    }
+    RTP.updateText = function (runWrap) {
+      const ctx = this.context;
+      if (!enabled || g.__rt.lazyRexText === false || !this.renderer || !this.renderer.gl || !ctx || !ctx._n || !lazy || !usable(this)) {
+        const pending = this._pkrRexWrap; // lines not laid out since an earlier change
+        this._pkrRexDraw = this._pkrRexMeasure = this._pkrRexWrap = false;
+        this._pkrSig = null;
+        return origUpdate.call(this, runWrap === undefined || !!runWrap || !!pending);
+      }
+      rexStats.updates++;
+      if (runWrap === undefined || runWrap) this._pkrRexWrap = true;
+      this._pkrRexDraw = true;
+      this._pkrSig = null;
+      // An interactive text's hit area is sized here: measure now.
+      if (!this.input && g.__rt.lazyMeasure !== false) this._pkrRexMeasure = true;
+      else { this._pkrRexMeasure = true; rexMeasure(this); }
+      return this;
+    };
+    RTP.renderWebGL = function (renderer, s) {
+      if (s._pkrRexDraw) {
+        s._pkrRexDraw = false;
+        rexDraw(s);
+      }
+      return origRender.apply(this, arguments);
+    };
+    RTP.preDestroy = function () {
+      const fsrc = this.frame && this.frame.source, tex = fsrc && fsrc.glTexture;
+      this._pkrRexMeasure = false; // nothing reads its size any more
+      if (enabled && tex && this._pkrSig && !this._pkrRexDraw && this.renderer && textCachePut(this._pkrSig, tex, this.renderer)) fsrc.glTexture = null;
+      return origPreDestroy.apply(this, arguments);
+    };
+    g.__rt.rexTextPatched = true;
+    return true;
+  }
+  {
+    const PM = Phaser.Plugins && Phaser.Plugins.PluginManager && Phaser.Plugins.PluginManager.prototype;
+    const origReg = PM && PM.registerGameObject;
+    if (typeof origReg === "function") {
+      PM.registerGameObject = function (key) {
+        if (key === "rexBBCodeText" && !g.__rt.rexTextPatched) {
+          const ns = g.RexPlugins && g.RexPlugins.GameObjects;
+          const ok = patchRexText(ns && ns.BBCodeText);
+          g.__native.log("[fastpath] rex BBCodeText: " + (ok ? "drawn when rendered" : "left as it is (not the code this was written for)"));
+        }
+        return origReg.apply(this, arguments);
+      };
+    }
+    g.__rt.patchRexText = patchRexText; // tests/phaser
+  }
+
   // 5. NineSlice.renderWebGL (the game's window frames, 54 vertices each): Phaser's code with the
   //    vertex loop in native code (__native.batchVerts). If the batch can't take all vertices,
   //    it is flushed first instead of mid-way.
