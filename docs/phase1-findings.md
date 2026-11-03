@@ -1378,3 +1378,7 @@ in the running game (ten labels in the game's own style at its size: same sizes,
 pixels differ, also with kept textures). Desktop, build plus the frame that draws them: 22-32 ms with
 rex's own drawing, 13-19 ms now; per label one measure instead of ~5 layouts, one draw instead of ~5.
 The Vita's number needs a log with the item list.
+Measured again on the desktop with a real late run (the owner's save, wave 163, 43 held items; kept in
+runtime/.cache/saves/, not committed): scrolling the item transfer list (Mega Darkrai's items), the
+game's updateOptions took 24.2 ms a rebuild with rex's own drawing and 9.3 ms with 4b (the labels'
+drawing moves to the next frame, where scrolling mostly reuses their textures).
