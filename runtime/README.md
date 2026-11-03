@@ -58,6 +58,10 @@ For profiles and probes, `scripts/run_saved_battle.sh` is the reliable route: it
 data folder, starts the runtime in the background and presses Continue and through the battle messages,
 checking the game's UI mode, until the command menu (about 35 s on desktop). Make the snapshot once by
 playing any offline run to a battle and copying the data folder's `localStorage-offline.json`.
+`fixtures/run-wave163.json` is a committed one: a real late run (classic, wave 163 in the Volcano, six
+Pokémon at levels 144-153, 52 items, 43 of them held: long item lists, a busy field) with its seed, ids,
+timestamp, play time, money and score scrambled by `scripts/make_save_fixture.py`, which makes such a
+fixture from any exported run (`sessionData*.prsv`). It needs the offline game 1.12.1.1 or newer.
 
 ### Checking native fast paths
 Every replacement of Phaser code is checked against Phaser's own output with animations frozen:
