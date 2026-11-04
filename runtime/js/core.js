@@ -160,6 +160,117 @@
     if (scene && scene.tweens) Promise.resolve().then(() => sweepTweens(scene.tweens));
     return displayList.removeAll(true);
   } });
+  // Hatching eggs (gamefix.c "hatched Pokemon build their battle info on use"): every hatched Pokemon
+  // is a full PlayerPokemon, whose init() builds its battle info box (~40 objects: name, level, HP bar,
+  // stats) and puts it in the field UI. The hatch and its summary never show it, and the Pokemon is
+  // destroyed after: 89% of a hatch (log212: 21 s for a big one, skip chosen). While an egg makes its
+  // Pokemon, init() leaves battleInfo to be built on first use (then as init does: initBattleInfo,
+  // then added to the field UI at index 0); destroy() skips one never built.
+  let hatching = 0;
+  const lazyInfoStats = { deferred: 0, built: 0 };
+  Object.defineProperty(g, "__pkrHatch", { value: (fn) => {
+    hatching++;
+    try { return fn(); } finally { hatching--; }
+  } });
+  Object.defineProperty(g, "__pkrLazyInfoStats", { value: () => Object.assign({}, lazyInfoStats) });
+  Object.defineProperty(g, "__pkrInfoInit", { value: (pokemon, fieldUI) => {
+    if (!hatching || rt.lazyBattleInfo === false || !fieldUI || typeof pokemon.initBattleInfo !== "function" ||
+        Object.prototype.hasOwnProperty.call(pokemon, "battleInfo") && pokemon.battleInfo) return false;
+    lazyInfoStats.deferred++;
+    const ownDestroy = Object.prototype.hasOwnProperty.call(pokemon, "destroy");
+    const unhook = () => {
+      delete pokemon.battleInfo;
+      if (!ownDestroy) delete pokemon.destroy;
+    };
+    Object.defineProperty(pokemon, "battleInfo", {
+      configurable: true, enumerable: true,
+      get() {
+        unhook();
+        lazyInfoStats.built++;
+        pokemon.initBattleInfo();
+        fieldUI.addAt(pokemon.battleInfo, 0);
+        return pokemon.battleInfo;
+      },
+      set(v) { unhook(); pokemon.battleInfo = v; },
+    });
+    if (!ownDestroy) {
+      pokemon.destroy = function () {
+        unhook();
+        pokemon.battleInfo = undefined; // never built: nothing to destroy
+        return pokemon.destroy.apply(this, arguments);
+      };
+    }
+    return true;
+  } });
+  // The item bar (gamefix.c "item bar icons kept"): ModifierBar.updateModifiers destroyed all its
+  // ~46 icons and made them again on every item change (each a container, the item's sprite, its
+  // counts, the holder's Pokemon icon): ~250 ms on the Vita, several times a turn late in a run
+  // (log209). Here an icon is kept for its item while everything getIcon() draws from is the same:
+  // the item's own plain fields (counts, battles left...), its stack counts, and for a held item
+  // the holder's icon (atlas, frame, fusion, as addPokemonIcon picks them, and whether that texture
+  // is loaded) and treasure count. A kept icon gets back what updateModifiers then sets afresh: shown,
+  // without the two pointer listeners it adds again. One under a pointer is made anew (a new icon there
+  // gets a pointerover, which shows the tooltip and the bar's overflow row). Icons not used again are
+  // destroyed.
+  const barStats = { kept: 0, made: 0 };
+  Object.defineProperty(g, "__pkrModBarStats", { value: () => Object.assign({}, barStats) });
+  const iconSig = (m, scene) => {
+    const parts = [];
+    for (const k of Object.keys(m)) {
+      const v = m[k];
+      if (v === null || (typeof v !== "object" && typeof v !== "function")) parts.push(k, String(v));
+    }
+    const t = m.type;
+    parts.push(t && t.iconImage, t && t.id);
+    if (typeof m.getMaxStackCount === "function") parts.push(m.getMaxStackCount());
+    if (typeof m.getStackCount === "function") parts.push(m.getStackCount());
+    const p = m.pokemonId && typeof m.getPokemon === "function" ? m.getPokemon() : null;
+    if (p) {
+      const key = p.getIconAtlasKey(true, true), id = p.getIconId(true, true), fused = p.isFusion(true);
+      const tex = scene && scene.textures && scene.textures.exists(key) ? scene.textures.get(key) : null;
+      parts.push("pk", p.id, p.name, p.isPlayer && p.isPlayer(), key, id, tex ? tex.has(id) : "unloaded", fused,
+        typeof p.getPersistentTreasureCount === "function" ? p.getPersistentTreasureCount() : "");
+      if (fused) parts.push(p.getFusionIconAtlasKey(true, true), p.getFusionIconId(true, true));
+    }
+    return parts.join("\u0001");
+  };
+  const pools = new WeakMap();
+  Object.defineProperty(g, "__pkrModBarBegin", { value: (bar) => {
+    if (rt.keepBarIcons === false) { pools.delete(bar); return bar.removeAll(true); }
+    const pool = new Map();
+    for (const icon of bar.list) {
+      if (icon && icon._pkrMod && !pool.has(icon._pkrMod)) pool.set(icon._pkrMod, icon);
+      else if (icon) pool.set(icon, icon); // (not one of ours: destroyed at the end)
+    }
+    bar.removeAll(false);
+    pools.set(bar, pool);
+  } });
+  Object.defineProperty(g, "__pkrModBarIcon", { value: (bar, m) => {
+    const pool = pools.get(bar);
+    if (!pool) return m.getIcon();
+    const sig = iconSig(m, bar.scene);
+    const kept = pool.get(m);
+    const over = kept && kept.scene && kept.scene.input && kept.scene.input._over;
+    let hovered = false;
+    if (over) for (const k in over) if (Array.isArray(over[k]) && over[k].includes(kept)) hovered = true;
+    if (kept && kept._pkrSig === sig && kept.scene && !hovered) {
+      pool.delete(m);
+      barStats.kept++;
+      kept.setVisible(true);
+      kept.off("pointerover"), kept.off("pointerout");
+      return kept;
+    }
+    barStats.made++;
+    const icon = m.getIcon();
+    icon._pkrMod = m, icon._pkrSig = sig;
+    return icon;
+  } });
+  Object.defineProperty(g, "__pkrModBarEnd", { value: (bar) => {
+    const pool = pools.get(bar);
+    if (!pool) return;
+    pools.delete(bar);
+    for (const icon of pool.values()) if (icon.scene) icon.destroy();
+  } });
   // bigintExcept: see parseRevived.
   Object.defineProperty(g, "__pkrParseSome", { value: (text, reviver, names, suffix, bigintExcept) => {
     // members: src/js_host.c parseRevived; then the root, as the standard does last

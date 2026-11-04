@@ -1495,6 +1495,68 @@
     g.__rt.coverFind = (list, camera) => findCover(list, camera); // scripts/probe_*
   }
 
+  // 21. The input plugin's object list: an object made interactive is queued only if it isn't in the
+  //     pending list or the list already, each checked with indexOf, and each object removed is found
+  //     with indexOf and spliced out. PokeRogue's item bar destroys and makes all its ~46 interactive
+  //     icons again on every item change, over a list of hundreds: 27% of that rebuild on the desktop
+  //     (~250 ms on the Vita, several times a turn late in a run, log209). Here membership is kept in
+  //     sets (rebuilt from the arrays whenever something else changed them) and the removals are done
+  //     in one pass; the lists, their order and the clear() calls come out as Phaser's code makes them.
+  {
+    const IP = Phaser.Input && Phaser.Input.InputPlugin && Phaser.Input.InputPlugin.prototype;
+    const EV = Phaser.Input && Phaser.Input.Events;
+    const origPre = IP && IP.preUpdate, origQueue = IP && IP.queueForInsertion;
+    if (IP && EV && EV.PRE_UPDATE && typeof origPre === "function" && typeof origQueue === "function" &&
+        /this\._list=\w+\.concat\(\w+\.splice\(0\)\)/.test(String(origPre)) &&
+        /this\._pendingInsertion\.indexOf\(\w+\)/.test(String(origQueue)) && /this\._list\.indexOf\(\w+\)/.test(String(origQueue)) &&
+        /this\._pendingInsertion\.push\(\w+\)/.test(String(origQueue))) {
+      const sets = (p) => {
+        let s = p.__pkrSets;
+        if (!s) Object.defineProperty(p, "__pkrSets", { value: (s = {}), writable: true });
+        if (s.list !== p._list || s.listLen !== p._list.length) s.list = p._list, s.listLen = p._list.length, s.inList = new Set(p._list);
+        if (s.pendArr !== p._pendingInsertion || s.pendLen !== p._pendingInsertion.length)
+          s.pendArr = p._pendingInsertion, s.pendLen = p._pendingInsertion.length, s.pend = new Set(p._pendingInsertion);
+        return s;
+      };
+      IP.queueForInsertion = function (child) {
+        if (!enabled) return origQueue.apply(this, arguments);
+        const s = sets(this);
+        if (!s.pend.has(child) && !s.inList.has(child)) {
+          this._pendingInsertion.push(child);
+          s.pend.add(child), s.pendLen++;
+        }
+        return this;
+      };
+      IP.preUpdate = function () {
+        if (!enabled) return origPre.apply(this, arguments);
+        this.pluginEvents.emit(EV.PRE_UPDATE);
+        const removeList = this._pendingRemoval, insertList = this._pendingInsertion;
+        if (removeList.length === 0 && insertList.length === 0) return;
+        const s = sets(this);
+        let current = this._list;
+        if (removeList.length) {
+          const gone = new Set(), cleared = [];
+          for (let i = 0; i < removeList.length; i++) {
+            const o = removeList[i];
+            if (s.inList.has(o) && !gone.has(o)) gone.add(o), cleared.push(o);
+          }
+          if (gone.size) {
+            current = current.filter((o) => !gone.has(o));
+            for (const o of gone) s.inList.delete(o);
+            for (let i = 0; i < cleared.length; i++) this.clear(cleared[i], true);
+          }
+          this._pendingRemoval.length = 0;
+        }
+        const inserted = insertList.splice(0);
+        this._list = current.concat(inserted);
+        for (let i = 0; i < inserted.length; i++) s.inList.add(inserted[i]);
+        s.list = this._list, s.listLen = this._list.length;
+        s.pend = new Set(), s.pendArr = this._pendingInsertion, s.pendLen = 0;
+      };
+      g.__rt.inputListSwap = [IP, origPre, origQueue]; // tests/phaser
+    }
+  }
+
   // Which of the checked fast paths went in. Each one is skipped silently when Phaser's code no
   // longer looks like 3.90's, or when its source isn't there to check (0.49-0.54: compiled code
   // without source, so none were installed on the Vita); this line makes that visible.

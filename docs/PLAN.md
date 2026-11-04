@@ -126,6 +126,8 @@ Performance:
   7. Hatching many eggs at once (skip chosen): ~0.5 s per egg on the Vita, 89% of it building a
      battle info box per hatched Pokemon that is never shown (log212: 21 s). A battle info built on
      first use for hatched Pokemon would need three gamefix rules (the hatch, Pokemon.init, destroy).
+  (1.0.14: 6 and 7 done: item bar icons kept, hatched Pokemon's battle info built on use; Vita
+  numbers pending.)
   (1.0.12: memory over long sessions: retries no longer leave the old battle alive, and canvas
   textures no longer copy their canvas when made; log207 ran out of memory at wave 200.)
   Network, not ours to fix: the save after each wave uploads 255-265 KB (game and session data);

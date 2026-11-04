@@ -384,6 +384,38 @@ async function run() {
     }
     report("fastpath: a canvas texture copies its pixels only when they are used", !detail, detail);
   }
+  // js/fastpath.js 21: the input plugin's object list kept with sets gives Phaser's list, order and
+  // input states through objects made interactive, destroyed, disabled and enabled again, and new ones.
+  {
+    const sc = game.scene.getScene("test");
+    let detail = rt.inputListSwap ? "" : "not installed";
+    if (!detail) {
+      const run = async (on) => {
+        rt.fastpath.set(on);
+        const mk = (n) => sc.add.image(10 + n, 10, "atlas", 0).setName("i" + n).setInteractive();
+        const objs = Array.from({ length: 30 }, (_, i) => mk(i));
+        await nextFrames(game, 2);
+        for (const i of [3, 7, 8, 20]) objs[i].destroy();
+        objs[11].disableInteractive(), objs[12].removeInteractive();
+        objs[12].setInteractive(); // removed, then made interactive again before the update
+        const more = Array.from({ length: 5 }, (_, i) => mk(100 + i));
+        more[2].destroy(); // queued and destroyed in the same frame
+        await nextFrames(game, 2);
+        objs[5].removeInteractive(), objs[5].setInteractive();
+        await nextFrames(game, 2);
+        const all = objs.concat(more);
+        const out = sc.input._list.filter((o) => all.includes(o)).map((o) => o.name).join(",") + " | " +
+          all.map((o) => (o.input ? (o.input.enabled ? "e" : "d") : "-")).join("");
+        all.forEach((o) => o.scene && o.destroy());
+        await nextFrames(game, 2);
+        return out + " | left " + sc.input._list.filter((o) => all.includes(o)).length;
+      };
+      const ref = await run(false), got = await run(true);
+      rt.fastpath.set(true);
+      detail = got !== ref ? got + " vs Phaser's " + ref : "";
+    }
+    report("fastpath: the input plugin's object list kept with sets is Phaser's", !detail, detail);
+  }
   // js/lazy_ui.js: handlers PokeRogue's UI sets up at each reset are built on first use instead. A
   // never-built one is destroyed without its destroy() (which reads what setup() made); a used one is
   // built then, its objects in the order they would have had; a built one's destroy() runs.

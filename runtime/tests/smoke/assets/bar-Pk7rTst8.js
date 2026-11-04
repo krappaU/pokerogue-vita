@@ -1,0 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// ModifierBar.updateModifiers (src/modifier/modifier.ts, Pagefault Games) as its bundler emits it, for
+// the smoke test of src/gamefix.c. The container base, scene, overflow count, sort and Phaser are
+// parameters.
+export function makeBar(Base,b,Ta,modifierSortFunc,Phaser){return class ModifierBar extends Base{updateModifiers(e,t=!1){this.removeAll(!0);let n=e.filter(e=>e.isIconVisible()),r=n.filter(e=>!e.pokemonId).sort(modifierSortFunc),i=n.filter(e=>e.pokemonId).sort(modifierSortFunc),a=t?r:r.concat(i);a.forEach((e,t)=>{let n=e.getIcon();t>=Ta&&n.setVisible(!1),this.add(n),this.setModifierIconPosition(n,a.length),n.setInteractive(new Phaser.Geom.Rectangle(0,0,32,24),Phaser.Geom.Rectangle.Contains),n.on(`pointerover`,()=>{b.ui.showTooltip(e.type.name,e.type.getDescription()),this.modifierCache&&this.modifierCache.length>Ta&&this.updateModifierOverflowVisibility(!0)}),n.on(`pointerout`,()=>{b.ui.hideTooltip(),this.modifierCache&&this.modifierCache.length>Ta&&this.updateModifierOverflowVisibility(!1)})});for(let e of this.getAll())this.sendToBack(e);this.modifierCache=e}updateModifierOverflowVisibility(e){}}}

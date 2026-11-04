@@ -323,6 +323,72 @@ async function run() {
     eq(f.launched + "/" + p.launched, "1/1", "launchBattle");
     eq(f.left, "running,alive", "tweens left");
   });
+  await check("gamefix: the item bar keeps the icons of unchanged items, and shows the same", async () => {
+    const fixed = await import("./assets/bar-Pk7rTst8.js"); // a chunk: src/gamefix.c rewrites it
+    const text = await (await fetch("./assets/bar-Pk7rTst8.js")).text();
+    const plain = new Function(text.replace(/export (function|class)/g, "$1") + "\nreturn { makeBar };")();
+    const run = (mod) => {
+      let made = 0, destroyed = 0;
+      const scene = { input: { _over: { 0: [] } }, textures: { exists: () => true, get: () => ({ has: () => true }) } };
+      class Base {
+        constructor() { this.list = []; this.scene = scene; }
+        removeAll(destroy) { const l = this.list; this.list = []; if (destroy) l.forEach((c) => c.destroy()); }
+        add(c) { this.list.push(c); }
+        getAll() { return this.list.slice(); }
+        getIndex(c) { return this.list.indexOf(c); }
+        sendToBack(c) { this.list.splice(this.list.indexOf(c), 1); this.list.unshift(c); }
+        setModifierIconPosition(n, len) { n.x = this.getIndex(n) + "/" + len; }
+      }
+      const icon = (label) => {
+        made++;
+        const ev = {};
+        return { label, scene, visible: true, x: 0, setVisible(v) { this.visible = v; return this; }, setInteractive() { return this; },
+          on(e, f) { (ev[e] || (ev[e] = [])).push(f); return this; }, off(e) { delete ev[e]; return this; }, count: () => Object.values(ev).flat().length,
+          destroy() { this.scene = undefined; destroyed++; } };
+      };
+      const item = (id, n, pokemonId) => ({ type: { id, name: id, iconImage: id, getDescription: () => "" }, stackCount: n, pokemonId,
+        isIconVisible: () => true, getMaxStackCount: () => 99, getStackCount() { return this.stackCount; },
+        getPokemon: () => null, getIcon() { return icon(id + "x" + this.stackCount); } });
+      const mods = Array.from({ length: 14 }, (_, i) => item("item" + i, 1 + (i % 3), i % 2 ? 0 : i + 1));
+      const Bar = mod.makeBar(Base, { ui: { showTooltip() {}, hideTooltip() {} } }, 12, (a, b) => (a.type.id < b.type.id ? -1 : 1),
+        { Geom: { Rectangle: class { static Contains() {} } } });
+      const bar = new Bar(), out = [];
+      const snap = () => out.push(bar.list.map((c) => c.label + "@" + c.x + (c.visible ? "" : "H") + ":" + c.count()).join(" "));
+      bar.updateModifiers(mods); snap();
+      bar.updateModifiers(mods); snap();
+      mods[4].stackCount++; bar.updateModifiers(mods); snap();
+      mods.splice(6, 1); bar.updateModifiers(mods); snap();
+      return { out: out.join(" | "), made, destroyed, left: bar.list.length };
+    };
+    const f = run(fixed), p = run(plain);
+    eq(f.out, p.out, "icons");
+    if (f.made !== 14 + 1 || f.destroyed !== 2) return "rewritten: made " + f.made + ", destroyed " + f.destroyed + " (plain " + p.made + ", " + p.destroyed + ")";
+  });
+  await check("gamefix: hatched Pokemon build their battle info only when it is used", async () => {
+    const fixed = await import("./assets/hatch-Pk7rTst7.js"); // a chunk: src/gamefix.c rewrites it
+    const text = await (await fetch("./assets/hatch-Pk7rTst7.js")).text();
+    const plain = new Function(text.replace(/export (function|class)/g, "$1") + "\nreturn { make };")();
+    const run = (mod) => {
+      const log = [], ui = [];
+      class Info { destroy() { log.push("destroyed"); } }
+      const b = { fieldUI: { addAt: (o, i) => { ui.splice(i, 0, o); log.push("added at " + i); } } };
+      const { Egg, Pokemon } = mod.make(b, Info, log);
+      const unused = new Egg().generatePlayerPokemon();
+      log.push("|");
+      unused.destroy();
+      log.push("|");
+      const used = new Egg().generatePlayerPokemon();
+      log.push("|");
+      const info = used.battleInfo;
+      log.push(info instanceof Info && ui[0] === info ? "same object first in the UI" : "wrong object");
+      used.destroy();
+      log.push("|");
+      new Pokemon(); // not hatching: as before
+      return log.join(", ");
+    };
+    eq(run(plain), "built, added at 0, |, destroyed, |, built, added at 0, |, same object first in the UI, destroyed, |, built, added at 0", "plain");
+    eq(run(fixed), "|, |, |, built, added at 0, same object first in the UI, destroyed, |, built, added at 0", "rewritten");
+  });
   await check("gamefix: a destroyed time-of-day widget stops listening to encounters", async () => {
     const fixed = await import("./assets/widget-Pk7rTst6.js"); // a chunk: src/gamefix.c rewrites it
     const text = await (await fetch("./assets/widget-Pk7rTst6.js")).text();

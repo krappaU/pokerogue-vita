@@ -1459,3 +1459,22 @@ stat panel; 2.9-4.5 ms each on the desktop) that the hatch and summary screens n
 destroyed with the Pokemon after the summary. The slower frames after the hatch were the egg summary
 screen (sprites loaded as the cursor moves); after leaving it the desktop is back to its frame times
 and object counts.
+
+### Egg hatches and the item bar (runtime 1.0.14, 2026-11-04)
+- Hatches: gamefix "hatched Pokemon build their battle info on use" (two rules: the egg's
+  generatePlayerPokemon runs under js/core.js __pkrHatch; Pokemon.init asks __pkrInfoInit, which,
+  while hatching, makes battleInfo an accessor that builds it on first use exactly as init does, and
+  makes destroy() skip a never-built one). Desktop, 40 eggs with skip: 40 boxes deferred, none built;
+  the hatch's longest stretch between frames 81 ms (was 564 ms). The hatched Pokemon are the same with
+  the change on and off (species, form, IVs, nature, ability, shininess, variant, gender, tera type,
+  luck; 12 eggs under the hatch's own seed), and the summary screen shows them as before.
+- Item bar: gamefix "item bar icons kept" (one rule over ModifierBar.updateModifiers): an icon is kept
+  for its item while what getIcon() draws from is unchanged (the item's plain fields and stack counts,
+  the holder's icon atlas/frame/fusion and texture, treasure count); a kept icon is shown again and
+  loses the two pointer listeners the method adds again; one under a pointer is made anew (a new
+  one there would get a pointerover). Desktop, wave-199 fixture (31 icons): 10.3 -> 2.4 ms per rebuild;
+  screenshots of the bar identical to the game's own for the same items, a changed count and a
+  removed item.
+- js/fastpath.js 21: the input plugin's object list (1,936 interactive objects in that battle) is
+  checked with sets when an object is made interactive or removed, instead of indexOf over it: ~6%
+  of the item bar's rebuild, and every other screen that makes interactive objects.

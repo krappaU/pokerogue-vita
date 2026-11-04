@@ -57,6 +57,21 @@
 // of the same array" (log212). It now stops listening when destroyed (and then does what
 // Container.preDestroy does, as before).
 //
+// hatched Pokemon build their battle info on use: each egg hatched makes a full PlayerPokemon, whose
+// init() builds its battle info box (name, level, HP bar, stat panel: ~40 objects) and puts it in the
+// field UI; the hatch and its summary never show it and the Pokemon is destroyed after. That was 89%
+// of a hatch (log212: a big one, skip chosen, 21 s on the Vita; desktop 425 of 476 ms for 40 eggs).
+// The egg's generatePlayerPokemon now runs under js/core.js __pkrHatch, and init() asks
+// __pkrInfoInit first: while hatching, battleInfo is built on first use (as init builds it), and a
+// Pokemon destroyed without it never builds it.
+//
+// item bar icons kept: ModifierBar.updateModifiers (the item bars at the top of the battle) destroyed
+// every icon and made all of them again whenever an item changed: ~46 icons late in a run, each a
+// container with the item's sprite, its counts and its holder's Pokemon icon, ~250 ms on the Vita
+// and several times a turn (log209). js/core.js __pkrModBarBegin/Icon/End keep the icon of an item
+// whose drawn state is unchanged and make the others with the game's getIcon(); the rest of the method
+// (order, overflow, positions, hit areas, tooltips) runs as before.
+//
 // system save parsed with fewer calls: GameData.parseSystemData reads the system save (dex, starters,
 // eggs, stats; 220-250 KB late in a run) with JSON.parse and a reviver that the engine calls for every
 // one of its ~21,000 members: 650-900 ms on the Vita, at the title, each Continue or battle retry and
@@ -177,6 +192,35 @@ static const fix FIXES[] = {
      "this.add(this.timeOfDayIcons),@1.eventTarget.addEventListener(`onEncounterPhase`,this.onEncounterPhaseEvent))}"
      "preDestroy(){@1.eventTarget.removeEventListener(`onEncounterPhase`,this.onEncounterPhaseEvent),super.preDestroy()}getBackTweens(){",
      NULL, "TimeOfDayWidget", 0},
+    {"hatched Pokemon build their battle info on use (hatch)",
+     "generatePlayerPokemon(){",
+     "generatePlayerPokemon(){return globalThis.__pkrHatch(()=>this.__pkrGenPlayer())}__pkrGenPlayer(){",
+     NULL, "generatePlayerPokemonHelper", 0},
+    {"hatched Pokemon build their battle info on use (init)",
+     "this.initBattleInfo(),@1.fieldUI.addAt(this.battleInfo,0);let getSprite=",
+     "globalThis.__pkrInfoInit(this,@1.fieldUI)||(this.initBattleInfo(),@1.fieldUI.addAt(this.battleInfo,0));let getSprite=",
+     NULL, "initBattleInfo", 0},
+    {"item bar icons kept",
+     "updateModifiers(@1,@2=!1){this.removeAll(!0);let @3=@1.filter(@1=>@1.isIconVisible()),@4=@3.filt"
+     "er(@1=>!@1.pokemonId).sort(modifierSortFunc),@5=@3.filter(@1=>@1.pokemonId).sort(modifierSortFun"
+     "c),@6=@2?@4:@4.concat(@5);@6.forEach((@1,@2)=>{let @3=@1.getIcon();@2>=@7&&@3.setVisible(!1),thi"
+     "s.add(@3),this.setModifierIconPosition(@3,@6.length),@3.setInteractive(new Phaser.Geom.Rectangle"
+     "(0,0,32,24),Phaser.Geom.Rectangle.Contains),@3.on(`pointerover`,()=>{@8.ui.showTooltip(@1.type.n"
+     "ame,@1.type.getDescription()),this.modifierCache&&this.modifierCache.length>@7&&this.updateModif"
+     "ierOverflowVisibility(!0)}),@3.on(`pointerout`,()=>{@8.ui.hideTooltip(),this.modifierCache&&this"
+     ".modifierCache.length>@7&&this.updateModifierOverflowVisibility(!1)})});for(let @1 of this.getAl"
+     "l())this.sendToBack(@1);this.modifierCache=@1}updateModifierOverflowVisibility(",
+     "updateModifiers(@1,@2=!1){globalThis.__pkrModBarBegin(this);let @3=@1.filter(@1=>@1.isIconVisibl"
+     "e()),@4=@3.filter(@1=>!@1.pokemonId).sort(modifierSortFunc),@5=@3.filter(@1=>@1.pokemonId).sort("
+     "modifierSortFunc),@6=@2?@4:@4.concat(@5);@6.forEach((@1,@2)=>{let @3=globalThis.__pkrModBarIcon("
+     "this,@1);@2>=@7&&@3.setVisible(!1),this.add(@3),this.setModifierIconPosition(@3,@6.length),@3.se"
+     "tInteractive(new Phaser.Geom.Rectangle(0,0,32,24),Phaser.Geom.Rectangle.Contains),@3.on(`pointer"
+     "over`,()=>{@8.ui.showTooltip(@1.type.name,@1.type.getDescription()),this.modifierCache&&this.mod"
+     "ifierCache.length>@7&&this.updateModifierOverflowVisibility(!0)}),@3.on(`pointerout`,()=>{@8.ui."
+     "hideTooltip(),this.modifierCache&&this.modifierCache.length>@7&&this.updateModifierOverflowVisib"
+     "ility(!1)})});for(let @1 of this.getAll())this.sendToBack(@1);globalThis.__pkrModBarEnd(this),th"
+     "is.modifierCache=@1}updateModifierOverflowVisibility(",
+     NULL, "updateModifierOverflowVisibility", 0},
     {"system save parsed with fewer calls",
      "JSON.parse(@7,(@1,@2)=>{if(@1===`gameStats`)return new @3(@2);if(@1===`eggs`){let @1=[];@2===null&&(@2=[]);"
      "for(let @4 of @2)@1.push(new @5(@4));return @1}return @1===`ribbons`?@6.fromJSON(@2):@1.endsWith(`Attr`)&&"
