@@ -1494,3 +1494,26 @@ log215 (sampler off, waves 16-26, ~14 eggs hatched with skip between waves 25 an
   ability hooks it applies, for every move against every target), the speed sort at a turn's start
   (0.7 s: getEffectiveStat -> applyAbAttrs), the save at each wave (0.5-0.8 s, JSON.stringify), and
   one 1.6 s collection after a save.
+
+### The enemy's move choice (runtime 1.0.15, 2026-11-04)
+log215's 1.1 s frames in double battles were EnemyPokemon.getNextMove (wild and trainer AI): it
+checks every usable move against every opponent for a KO, then scores every move and target, each
+with the game's damage formula, simulated. Desktop, offline game 1.12.1.1, a double battle made from
+fixtures/run-wave163.json (a second wild Pokemon added; `.cache/session-double.json`): ~31-36 ms for
+the two enemies' choices per turn (~1.1-1.3 s at the Vita's ~35x), 5 ms in a single battle. Profile:
+35% canApplyAbility (~1,150 calls per choice, applyAbAttrs asks it for every Pokemon's ability and
+passive at every hook), 22% inSpeedOrder (a priority queue that shuffles and sorts again at every pop,
+sortBySpeed's comparator computing both Pokemon's speed with all stat and ability hooks at every
+comparison), getAbility 13% of its own.
+- gamefix "enemy move choice remembers what it asks again": getNextMove runs under js/core.js
+  __pkrAIChoice, which swaps memoizing versions of canApplyAbility, getAbility, getPassiveAbility and
+  hasPassive onto Pokemon's prototype for the choice (answers per Pokemon and flag) and puts the
+  originals back after (also when it throws), so the rest of the game pays nothing.
+- gamefix "enemy move choice keeps the speed order": within a choice sortInSpeedOrder returns a copy
+  of the order it gave for the same list (its shuffle is seeded from turn and wave and restores the
+  random state).
+- gamefix "speed order sorts with each speed once": sortBySpeed computes each speed once per sort
+  (once per choice inside one) and sorts with the same comparisons; also at each turn's start.
+Desktop: the double battle's two choices 36 -> 16 ms per turn (-56%), single battle 4.2 -> 3.2 ms.
+Same moves, targets and the game's printed move scores both ways for every choice compared (60 in
+the double battle, 30 in the wave-199 single battle, each pair from the same battle random state).

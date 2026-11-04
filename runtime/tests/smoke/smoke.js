@@ -389,6 +389,37 @@ async function run() {
     eq(run(plain), "built, added at 0, |, destroyed, |, built, added at 0, |, same object first in the UI, destroyed, |, built, added at 0", "plain");
     eq(run(fixed), "|, |, |, built, added at 0, same object first in the UI, destroyed, |, built, added at 0", "rewritten");
   });
+  await check("gamefix: the enemy's move choice keeps answers and speeds within one choice, same result", async () => {
+    const fixed = await import("./assets/ai-Pk7rTst9.js"); // a chunk: src/gamefix.c rewrites it
+    const text = await (await fetch("./assets/ai-Pk7rTst9.js")).text();
+    const plain = new Function(text.replace(/export (function|class)/g, "$1") + "\nreturn { make };")();
+    const run = (mod) => {
+      const log = [], b = { field: [] };
+      const { Pokemon, EnemyPokemon, sortInSpeedOrder } = mod.make(b, log);
+      const methods = ["canApplyAbility", "getAbility", "getPassiveAbility", "hasPassive"].map((n) => Pokemon.prototype[n]);
+      const foe = new EnemyPokemon("E", 80, 10, true);
+      b.field = [new Pokemon("A", 50, 10, true), foe, new Pokemon("B", 80, 0, false), new Pokemon("C", 120, 10, false)];
+      const choice = foe.getNextMove(), during = log.length;
+      const counts = {};
+      for (const l of log) { const k = l.split(" ")[0]; counts[k] = (counts[k] || 0) + 1; }
+      log.length = 0;
+      const after = sortInSpeedOrder(b.field).map((p) => p.name).join("") + " " + foe.canApplyAbility() + foe.canApplyAbility();
+      const outside = log.length;
+      b.fail = true;
+      let threw = false;
+      try { foe.getNextMove(); } catch (e) { threw = true; }
+      const restored = threw && ["canApplyAbility", "getAbility", "getPassiveAbility", "hasPassive"].every((n, i) => Pokemon.prototype[n] === methods[i]);
+      return { choice, after, restored, counts, during, outside };
+    };
+    const f = run(fixed), p = run(plain);
+    eq(f.choice, p.choice, "choice");
+    eq(f.after, p.after, "after the choice");
+    if (!f.restored || !p.restored) return "methods not put back after a choice that threw";
+    // kept: each speed once, each canApplyAbility (Pokemon, flag) once, each ability once
+    eq(f.counts, { speed: 4, can: 6, ability: 6, hasPassive: 4, passive: 2 }, "rewritten calls");
+    if (p.during <= f.during * 2) return "plain " + p.during + " calls, rewritten " + f.during;
+    if (f.outside >= p.outside) return "outside a choice, rewritten " + f.outside + " calls, plain " + p.outside;
+  });
   await check("gamefix: a destroyed time-of-day widget stops listening to encounters", async () => {
     const fixed = await import("./assets/widget-Pk7rTst6.js"); // a chunk: src/gamefix.c rewrites it
     const text = await (await fetch("./assets/widget-Pk7rTst6.js")).text();

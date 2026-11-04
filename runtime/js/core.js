@@ -271,6 +271,73 @@
     pools.delete(bar);
     for (const icon of pool.values()) if (icon.scene) icon.destroy();
   } });
+  // The enemy's move choice (gamefix.c "enemy move choice remembers what it asks again"): within one
+  // getNextMove, these Pokemon methods remember their answer per Pokemon (and first argument, a flag
+  // for two of them), and sortInSpeedOrder its order per list; speeds (__pkrSpeedSort) are kept too.
+  // The choice only simulates, so nothing they read changes during it. The methods are swapped in on
+  // the prototype that defines them for the choice and put back after. Switch: __rt.aiMemo = false.
+  const AI_KEPT = ["canApplyAbility", "getAbility", "getPassiveAbility", "hasPassive"];
+  let aiMemo = null;
+  const aiStats = { choices: 0, calls: 0, kept: 0, speeds: 0, speedsKept: 0, orders: 0, ordersKept: 0 };
+  function keepAnswers(pokemon) {
+    const undo = [];
+    for (const name of AI_KEPT) {
+      let owner = pokemon;
+      while (owner && !Object.prototype.hasOwnProperty.call(owner, name)) owner = Object.getPrototypeOf(owner);
+      if (!owner || owner === pokemon || typeof owner[name] !== "function") continue;
+      const orig = owner[name], answers = new Map();
+      owner[name] = function (flag) {
+        if (arguments.length > 1) return orig.apply(this, arguments);
+        aiStats.calls++;
+        let m = answers.get(this);
+        if (!m) answers.set(this, (m = [undefined, undefined]));
+        const k = flag ? 1 : 0;
+        if (m[k] !== undefined) { aiStats.kept++; return m[k]; }
+        return (m[k] = orig.apply(this, arguments));
+      };
+      undo.push(() => { owner[name] = orig; });
+    }
+    return undo;
+  }
+  Object.defineProperty(g, "__pkrAIStats", { value: () => Object.assign({}, aiStats) });
+  Object.defineProperty(g, "__pkrAIChoice", { value: (pokemon, fn) => {
+    if (aiMemo || rt.aiMemo === false) return fn();
+    aiMemo = { speed: new Map(), orders: [] };
+    aiStats.choices++;
+    const undo = keepAnswers(pokemon);
+    try { return fn(); } finally { aiMemo = null; for (const u of undo) u(); }
+  } });
+  // sortInSpeedOrder (gamefix.c "enemy move choice keeps the speed order"): within a move choice the
+  // same list (the same objects in the same order) gets the same order: a copy of the one kept.
+  Object.defineProperty(g, "__pkrSpeedOrder", { value: (list, fn) => {
+    if (!aiMemo) return fn();
+    aiStats.orders++;
+    outer: for (const o of aiMemo.orders) {
+      if (o.list.length !== list.length) continue;
+      for (let i = 0; i < list.length; i++) if (o.list[i] !== list[i]) continue outer;
+      aiStats.ordersKept++;
+      return o.order.slice();
+    }
+    const order = fn();
+    aiMemo.orders.push({ list: list.slice(), order: order.slice() });
+    return order;
+  } });
+  // sortBySpeed (gamefix.c "speed order sorts with each speed once"): the same comparisons, with each
+  // Pokemon's speed computed once per sort (once per move choice inside one).
+  Object.defineProperty(g, "__pkrSpeedSort", { value: (list, getPokemon) => {
+    if (rt.aiMemo === false)
+      return list.sort((a, b) => { const n = getPokemon(a[0]).getEffectiveStat(5); return getPokemon(b[0]).getEffectiveStat(5) - n; });
+    const memo = aiMemo ? aiMemo.speed : new Map();
+    const speed = (group) => {
+      const p = getPokemon(group[0]);
+      aiStats.speeds++;
+      let v = memo.get(p);
+      if (v === undefined) memo.set(p, (v = p.getEffectiveStat(5)));
+      else aiStats.speedsKept++;
+      return v;
+    };
+    return list.sort((a, b) => { const n = speed(a); return speed(b) - n; });
+  } });
   // bigintExcept: see parseRevived.
   Object.defineProperty(g, "__pkrParseSome", { value: (text, reviver, names, suffix, bigintExcept) => {
     // members: src/js_host.c parseRevived; then the root, as the standard does last

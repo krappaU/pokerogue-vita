@@ -81,6 +81,26 @@
 // way (src/js_host.c parseRevived), calling the reviver only for the first three and doing its BigInt
 // rule itself (which this exact text fixes): 6.5 instead of 11.7 ms on the desktop.
 //
+// enemy move choice remembers what it asks again: EnemyPokemon.getNextMove (the AI of wild and
+// trainer Pokemon) weighs every usable move against every target with the game's damage formula,
+// simulated (a possible KO, then a score per move and target). Each estimate applies the ability
+// hooks on the field (applyAbAttrs: canApplyAbility, getAbility, getPassiveAbility and hasPassive for
+// each Pokemon, ability and passive) and puts the field in speed order (inSpeedOrder: a priority queue
+// that shuffles and sorts again at each pop, every comparison working out both speeds). In a double
+// battle that was ~1,150 canApplyAbility calls and ~60 speed computations per choice: ~31 ms for
+// two enemies on the desktop, 1.1 s frames on the Vita (log215). A simulated choice changes nothing
+// those read (abilities, HP, tags, stat stages, the turn and wave seeds), so within one getNextMove
+// (js/core.js __pkrAIChoice) the four ability methods remember their answer per Pokemon (they are
+// swapped in on Pokemon's prototype for the choice and put back after, so the rest of the game
+// calls the originals), and sortInSpeedOrder its order per list of Pokemon (js/core.js
+// __pkrSpeedOrder; the shuffle in it is seeded from the turn and the wave and puts the random
+// state back). Outside a choice sortInSpeedOrder runs as before.
+//
+// speed order sorts with each speed once: sortBySpeed's comparator works out both Pokemon's speed
+// (getEffectiveStat, with every stat and ability hook) for each comparison; js/core.js __pkrSpeedSort
+// computes each once per sort (once per enemy move choice inside one) and sorts with the same
+// comparisons. The speed sort runs at each turn's start and in many ability and move checks.
+//
 // starter slots from one starter list: the starter select screen's setup (after every game reset:
 // a new run rebuilds the UI) creates its 81 slots with `getAllStarters()[i]`, and each call goes
 // through all ~1300 species to list the starters again: 4.7 s of an 11 s frame on the Vita (0.89,
@@ -230,6 +250,19 @@ static const fix FIXES[] = {
      "![`natureAttr`,`abilityAttr`,`passiveAttr`].includes(@1)?BigInt(@2??0):@2},"
      "[`gameStats`,`eggs`,`ribbons`],`Attr`,[`natureAttr`,`abilityAttr`,`passiveAttr`])",
      NULL, "parseSystemData", 0},
+    {"enemy move choice remembers what it asks again",
+     "getNextMove(){let @1=this.getMoveQueue();",
+     "getNextMove(){return globalThis.__pkrAIChoice(this,()=>this.__pkrNextMove())}__pkrNextMove(){let @1=this.getMoveQueue();",
+     NULL, "getNextMove", 0},
+    {"enemy move choice keeps the speed order",
+     "function sortInSpeedOrder(@1){let @2=groupPokemon(@1);return shufflePokemonList(@2),sortBySpeed(@2),@2.flat()}",
+     "function sortInSpeedOrder(@1){return globalThis.__pkrSpeedOrder(@1,()=>{let @2=groupPokemon(@1);"
+     "return shufflePokemonList(@2),sortBySpeed(@2),@2.flat()})}",
+     NULL, "sortInSpeedOrder", 0},
+    {"speed order sorts with each speed once",
+     "@1.sort((@2,@3)=>{let @4=getPokemon(@2[0]).getEffectiveStat(5);return getPokemon(@3[0]).getEffectiveStat(5)-@4})",
+     "globalThis.__pkrSpeedSort(@1,getPokemon)",
+     NULL, "sortBySpeed", 0},
     {"icon loops: destroyed icons dropped, hidden ones left",
      "for(let[@1,@2]of this.icons)@1.y=@2.restY+this.getCurrentOffset(@2.mode)",
      "globalThis.__pkrIconSync(this)",

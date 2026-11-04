@@ -130,7 +130,8 @@ Performance:
   ~14 eggs hatched with no stretch over 0.5 s (log212: 21 s), the summary screen at half the frame
   time; the item bar's Vita number needs a late-run log.)
   8. The enemy's move choice in double battles: 1.1 s frames (log215), the game's damage estimate
-     for each move and target with its ability hooks.
+     for each move and target with its ability hooks. (1.0.15: answers and speeds kept within one
+     choice; desktop -56% in a double battle; Vita numbers pending.)
   (1.0.12: memory over long sessions: retries no longer leave the old battle alive, and canvas
   textures no longer copy their canvas when made; log207 ran out of memory at wave 200.)
   Network, not ours to fix: the save after each wave uploads 255-265 KB (game and session data);
