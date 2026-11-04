@@ -131,6 +131,35 @@
   // fewer calls"). The same walk as the standard's (each value's members first, in key order; a
   // reviver result of undefined deletes the member), but the reviver only runs for those keys
   // instead of all ~21,000 of a late system save (650-900 ms on the Vita, log203).
+  // BattleScene.reset ends with this.children.removeAll(true), meant to drop the old battle's objects:
+  // on a display list that argument only skips the removal callbacks, so every top-level object (field,
+  // arena, trays, bars...) stayed alive, with its sprites in the update list and its texts' textures,
+  // once per battle retry: +35 updated objects, +43 textures, ~+1.3 MB of JS heap each on the desktop
+  // (gamefix.c "a reset destroys the old battle"). launchBattle makes them all anew; here they are
+  // destroyed first. One that throws is left as before.
+  // Then, after this frame's JS (reset runs in a tween's onComplete), the tweens left on destroyed
+  // objects go too: ones kept to be replayed (persist, stopped) and endless ones (repeat -1), all of
+  // whose targets are destroyed game objects (the time-of-day widget's: +8 tweens per retry). A
+  // tween still running to its end is left: the game may wait for its onComplete.
+  const isDead = (t) => t && typeof t.destroy === "function" && "scene" in t && !t.scene;
+  const sweepTweens = (tweens) => {
+    if (!tweens || typeof tweens.getTweens !== "function") return;
+    for (const tw of tweens.getTweens()) {
+      const ts = tw.targets;
+      if (!Array.isArray(ts) || !ts.length || !ts.every(isDead)) continue;
+      const playing = typeof tw.isPlaying === "function" && tw.isPlaying();
+      if (playing && tw.loop !== -1) continue;
+      try { tweens.remove(tw); tw.destroy(); } catch (e) { report(e); }
+    }
+  };
+  Object.defineProperty(g, "__pkrDestroyAll", { value: (displayList) => {
+    const scene = displayList.scene;
+    for (const o of displayList.list.slice()) {
+      try { if (o && o.scene && typeof o.destroy === "function") o.destroy(); } catch (e) { report(e); }
+    }
+    if (scene && scene.tweens) Promise.resolve().then(() => sweepTweens(scene.tweens));
+    return displayList.removeAll(true);
+  } });
   // bigintExcept: see parseRevived.
   Object.defineProperty(g, "__pkrParseSome", { value: (text, reviver, names, suffix, bigintExcept) => {
     // members: src/js_host.c parseRevived; then the root, as the standard does last

@@ -784,6 +784,52 @@
     };
     g.__rt.textTextureSwap = true; // tests/phaser
   }
+  // 6c. A canvas texture's pixel copy: Phaser's CanvasTexture reads its whole canvas back when it is
+  //     made (getImageData) and keeps the copy (imageData, data, buffer, pixels) for its pixel methods
+  //     (getPixel, setPixel, putData...), which PokeRogue never calls. A stat change's TileSprite has a
+  //     canvas the size of the Pokemon's sprite: 936x1896 for wave 200's boss, a 7 MB copy nothing
+  //     reads, and that one ran the Vita out of memory late in a long session (log207). The copy is
+  //     all transparent anyway here: the texture's GPU upload comes first in Phaser's constructor, and
+  //     src/canvas2d.c frees a canvas's pixels once uploaded. Now the copy is made when one of those
+  //     four is first read, at the size the texture was made with (giving what Phaser's gives on this
+  //     runtime); Phaser's own update() sets them as before.
+  {
+    const CT = Phaser.Textures && Phaser.Textures.CanvasTexture;
+    const TMP2 = Phaser.Textures && Phaser.Textures.TextureManager && Phaser.Textures.TextureManager.prototype;
+    const ctSrc = CT ? String(CT) : "";
+    if (TMP2 && typeof TMP2.addCanvas === "function" && /imageData=this\.context\.getImageData\(0,0,/.test(ctSrc)) {
+      const addCanvas = TMP2.addCanvas, tiny = () => new g.ImageData(1, 1);
+      const KEYS = ["imageData", "data", "buffer", "pixels"];
+      const lazyStats = { textures: 0, copies: 0 };
+      g.__rt.canvasCopyStats = () => Object.assign({}, lazyStats);
+      TMP2.addCanvas = function (key, source) {
+        const ctx = enabled && g.__rt.lazyCanvasCopy !== false && source && typeof source.getContext === "function" ? source.getContext("2d") : null;
+        if (!ctx || typeof ctx.getImageData !== "function" || Object.prototype.hasOwnProperty.call(ctx, "getImageData"))
+          return addCanvas.apply(this, arguments);
+        ctx.getImageData = tiny; // the constructor's read-back
+        let tex;
+        try { tex = addCanvas.apply(this, arguments); } finally { delete ctx.getImageData; }
+        if (!tex || !(tex instanceof CT)) return tex;
+        lazyStats.textures++;
+        const v = {};
+        let loaded = false;
+        const load = () => {
+          if (loaded) return;
+          loaded = true;
+          lazyStats.copies++;
+          const id = tex.context.getImageData(0, 0, tex.width, tex.height);
+          v.imageData = id, v.data = id.data, v.buffer = id.data.buffer, v.pixels = new Uint32Array(id.data.buffer);
+        };
+        for (const k of KEYS)
+          Object.defineProperty(tex, k, { configurable: true, enumerable: true,
+            get() { load(); return v[k]; },
+            set(x) { loaded = true; v[k] = x; } });
+        return tex;
+      };
+      g.__rt.canvasCopySwap = true; // tests/phaser
+    }
+  }
+
   // 7. Display list and container membership: Phaser checks membership by scanning the scene's
   //    display list (thousands of objects in PokeRogue) when an object is added or moved into a
   //    container, and removes with indexOf plus a JS shifting loop: quadratic during UI setup

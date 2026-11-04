@@ -120,6 +120,11 @@ Performance:
      (native-renderer.md). The item screens: ~45 ms of JS a frame while open, with nothing changing.
   5. Collections grow with the run: 1.4-2.6 s late in it (JS heap 95 MB before one), already placed
      after saves and under loading screens.
+  6. The item bar (ModifierBar.updateModifiers) rebuilds all ~46 icons on every item change: ~220 ms,
+     several times a turn late in a run (log209). Reusing the icons of unchanged items is the next
+     per-turn win; the enemy's move choice (250-350 ms a turn) is the game's own logic.
+  (1.0.12: memory over long sessions: retries no longer leave the old battle alive, and canvas
+  textures no longer copy their canvas when made; log207 ran out of memory at wave 200.)
   Network, not ours to fix: the save after each wave uploads 255-265 KB (game and session data);
   on busy Wi-Fi 17-74 s (5-31 KB/s). Smaller uploads would need the server to accept compression.
 

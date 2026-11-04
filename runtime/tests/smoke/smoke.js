@@ -299,6 +299,30 @@ async function run() {
     if (ff.calls !== 9) return "starter filters: getVals called " + ff.calls + " times for 3 filterings (plain " + fp.calls + ")";
     if (ff.own) return "starter filters: getVals not put back";
   });
+  await check("gamefix: a reset destroys the old battle's objects and the tweens left on them", async () => {
+    const fixed = await import("./assets/reset-Pk7rTst5.js"); // a chunk: src/gamefix.c rewrites it
+    const text = await (await fetch("./assets/reset-Pk7rTst5.js")).text();
+    const plain = new Function(text.replace(/export (function|class)/g, "$1") + "\nreturn { Scene };")();
+    const run = async (mod) => {
+      const scene = {}, log = [];
+      const obj = (n) => ({ n, scene, destroy() { log.push("destroy " + n); this.scene = undefined; } });
+      const objs = [obj("field"), obj("trays"), obj("bars")];
+      const tween = (n, targets, playing, loop) => ({ n, targets, loop, isPlaying: () => playing, destroy() { log.push("tween " + n); } });
+      const tweens = [tween("kept", [objs[0]], false, 0), tween("endless", [objs[1]], true, -1), tween("running", [objs[2]], true, 0),
+        tween("alive", [{ scene, destroy() {} }], false, 0)];
+      scene.tweens = { getTweens: () => tweens.slice(), remove(t) { tweens.splice(tweens.indexOf(t), 1); } };
+      const children = { scene, list: objs.slice(), removeAll() { this.list.length = 0; log.push("removeAll"); } };
+      const sc = new mod.Scene(children, { domContainer: {} });
+      sc.finish();
+      await new Promise((r) => setTimeout(r, 0)); // the tween sweep runs after the frame's JS
+      return { log: log.join(", "), launched: sc.launched, left: tweens.map((t) => t.n).join(",") };
+    };
+    const f = await run(fixed), p = await run(plain);
+    eq(p.log, "removeAll", "plain");
+    eq(f.log, "destroy field, destroy trays, destroy bars, removeAll, tween kept, tween endless", "rewritten");
+    eq(f.launched + "/" + p.launched, "1/1", "launchBattle");
+    eq(f.left, "running,alive", "tweens left");
+  });
   await check("gamefix: the system save parsed with fewer calls gives the same data", async () => {
     const fixed = await import("./assets/system-Pk7rTst4.js"); // a chunk: src/gamefix.c rewrites it
     const text = await (await fetch("./assets/system-Pk7rTst4.js")).text();

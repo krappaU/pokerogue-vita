@@ -43,6 +43,14 @@
 // happens only when that quantity actually changes (it was lowered with left/right); otherwise the
 // window it would build is the one already there. Scrolling still rebuilds (setOptionsCursor).
 //
+// a reset destroys the old battle: BattleScene.reset (back to the title: each battle retry, a run's
+// end) ends with this.children.removeAll(true) and launchBattle(), which makes the field, arena,
+// trays, bars and UI anew. On Phaser's display list removeAll's argument skips the removal callbacks
+// rather than destroying, so the old battle's objects all stayed alive, their sprites still updated
+// every frame and their texts' textures kept: per retry +35 updated objects, +43 textures, ~1.3 MB
+// (desktop, fixtures/run-wave199.json); log207 ran out of memory at wave 200 after a session of
+// retries. js/core.js __pkrDestroyAll destroys them first.
+//
 // system save parsed with fewer calls: GameData.parseSystemData reads the system save (dex, starters,
 // eggs, stats; 220-250 KB late in a run) with JSON.parse and a reviver that the engine calls for every
 // one of its ~21,000 members: 650-900 ms on the Vita, at the title, each Continue or battle retry and
@@ -154,6 +162,10 @@ static const fix FIXES[] = {
      "return this.partyUiMode===@4.MODIFIER_TRANSFER&&@3!==4e3&&this.transferQuantities[@3]!==this.transferQuantitiesMax[@3]&&"
      "(this.transferQuantities[@3]=this.transferQuantitiesMax[@3],this.updateOptions()),@2=this.moveOptionCursor(@1),@2}",
      NULL, "processModifierTransferModeUpDownInput", 0},
+    {"a reset destroys the old battle",
+     "this.children.removeAll(!0),this.game.domContainer.innerHTML=``,this.launchBattle()",
+     "globalThis.__pkrDestroyAll(this.children),this.game.domContainer.innerHTML=``,this.launchBattle()",
+     NULL, "launchBattle", 0},
     {"system save parsed with fewer calls",
      "JSON.parse(@7,(@1,@2)=>{if(@1===`gameStats`)return new @3(@2);if(@1===`eggs`){let @1=[];@2===null&&(@2=[]);"
      "for(let @4 of @2)@1.push(new @5(@4));return @1}return @1===`ribbons`?@6.fromJSON(@2):@1.endsWith(`Attr`)&&"

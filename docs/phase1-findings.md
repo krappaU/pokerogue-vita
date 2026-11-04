@@ -1406,3 +1406,31 @@ load (6.7 s in log203). Two changes, and a better report for such frames:
   instead was slower than the engine's reviver (16.5 ms). Smoke test: the same data (classes, BigInts,
   a member revived to undefined deleted) and the same error for a fractional *Attr.
 The Vita's numbers need a log with a retry.
+
+### Out of memory at wave 200 after a long session (log205-209, 1.0.10/1.0.11; runtime 1.0.12, 2026-11-04)
+One app session played waves 163-199 with many battle retries (log203-207, ~2 h). Late in it the
+256 MB heap was full five times (an emergency collection of ~3 s each, 191 -> 231 MB still in use
+after it; JS heap after collections 61 MB at wave 164, 115 MB at 200). At wave 200 a stat change's
+TileSprite asked for its canvas copy (Phaser's CanvasTexture reads its canvas back when made:
+936x1896, 7 MB, for the boss's sprite size) and got "out of memory" inside a battle phase's start():
+the phase never ended and the battle stopped, while frames went on (the "hang"). After restarting the
+app, wave 200 went through: 141 MB in use, JS 47 MB (log209).
+Causes found on the desktop with fixtures/run-wave199.json (reset + Continue, as a retry does):
+- BattleScene.reset ends with this.children.removeAll(true): on a display list the argument skips
+  the removal callbacks; nothing is destroyed. Each retry left the old battle's top-level objects
+  alive (trays, arenas, bars, candy bar, time-of-day widget: their sprites still in the update list,
+  their texts' textures kept): +35 updated objects, +43-70 textures, ~1.3 MB of JS heap per retry.
+  gamefix "a reset destroys the old battle" destroys them first (launchBattle makes them all anew),
+  and afterwards drops tweens left on destroyed objects (stopped kept ones and endless ones; one still
+  running to its end is left). Six retries: textures flat at 690 (were +43-70 each), JS heap +0.25 MB
+  each (was ~1.3), tweens +5 each (was +8: the rest are counters and target-less tweens); the battle
+  plays on after them.
+- js/fastpath.js 6c: a canvas texture copies its canvas only when its pixel copy is read. On this
+  runtime the copy was all transparent anyway (Phaser uploads the texture first, and src/canvas2d.c
+  frees an uploaded canvas's pixels), so it was up to 7 MB of zeros per stat change. tests/phaser
+  compares with Phaser's own code both ways (blank and drawn canvases, update()).
+log209 (1.0.11, the wave-200 battle from a fresh start): 36 fps, JS 30 ms, 14 draw calls. Every turn:
+the enemy's move choice (getNextMove: stats and abilities per candidate move) 250-350 ms, the
+turn-end phase (held items, an item transfer) 300-380 ms, and the item bar rebuilt from scratch on
+each item change (ModifierBar.updateModifiers: all ~46 icons with their sprites, counts and pointer
+handlers made again) ~220 of 260 ms.

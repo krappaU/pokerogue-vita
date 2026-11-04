@@ -350,6 +350,40 @@ async function run() {
     rt.fastpath.set(true);
     report("fastpath: rex BBCodeText drawn once, when rendered, the same as rex's own drawing", !detail, detail);
   }
+  // js/fastpath.js 6c: a canvas texture reads its canvas back only when its pixel copy is used. Its
+  // pixel methods give what Phaser's own code gives on this runtime, for a canvas blank when the
+  // texture is made and for one with a drawing, before and after drawing more and update().
+  {
+    const sc = game.scene.getScene("test");
+    let detail = rt.canvasCopySwap ? "" : "not installed";
+    if (!detail) {
+      const CP = Phaser.Display.Canvas.CanvasPool, px = (p) => (p ? [p.r, p.g, p.b, p.a].join(",") : "none");
+      const run = (lazy, drawnFirst) => {
+        rt.lazyCanvasCopy = lazy;
+        const c = CP.create2D(sc, 64, 48), cx = c.getContext("2d"), key = "copy-test-" + lazy + drawnFirst;
+        const draw = () => { cx.fillStyle = "#ff8000", cx.fillRect(0, 0, 64, 48), cx.fillStyle = "#0040ff", cx.fillRect(10, 5, 4, 4); };
+        if (drawnFirst) draw();
+        const s0 = rt.canvasCopyStats();
+        const tex = sc.textures.addCanvas(key, c);
+        const copiesWhenMade = rt.canvasCopyStats().copies - s0.copies;
+        const out = [px(tex.getPixel(11, 6)), px(tex.getPixel(40, 40))];
+        if (!drawnFirst) draw();
+        cx.fillStyle = "#00ff00", cx.fillRect(40, 40, 2, 2);
+        tex.update();
+        out.push(px(tex.getPixel(11, 6)), px(tex.getPixel(40, 40)));
+        sc.textures.remove(key);
+        rt.lazyCanvasCopy = true;
+        return { out: out.join(" "), copiesWhenMade };
+      };
+      for (const drawnFirst of [false, true]) {
+        const ref = run(false, drawnFirst), got = run(true, drawnFirst);
+        if (!detail && got.out !== ref.out) detail = (drawnFirst ? "drawn" : "blank") + " canvas: " + got.out + " vs Phaser's " + ref.out;
+        if (!detail && got.copiesWhenMade) detail = "read back when made";
+        if (!detail && !/0,255,0,255$/.test(got.out)) detail = "update() didn't read the canvas: " + got.out;
+      }
+    }
+    report("fastpath: a canvas texture copies its pixels only when they are used", !detail, detail);
+  }
   // js/lazy_ui.js: handlers PokeRogue's UI sets up at each reset are built on first use instead. A
   // never-built one is destroyed without its destroy() (which reads what setup() made); a used one is
   // built then, its objects in the order they would have had; a built one's destroy() runs.
