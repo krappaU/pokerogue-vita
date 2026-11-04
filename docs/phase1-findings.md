@@ -1450,3 +1450,12 @@ menus (some exactly ~1.03 s, several in a row); texture re-uploads of 30-115 ms 
 gives the starter menus 13-20 ms frames and wave 10 -> 11 no long frame. Since logs usually have the
 sampler off, a frame (or promise jobs) still running after 0.5, 5 and 20 s now logs one JS stack each
 ("[stuck] ... s into <phase>: <stack>"), at no cost otherwise.
+The 21 s after wave 10 in log212 was a big egg hatch (the owner, "skip" chosen). Desktop, 40 eggs
+added to a test save (.cache/session-eggs.json): the hatch is one 564 ms run of promise jobs between
+frames (the slow-frame report only covers frame JS, so it showed nothing); ~37x on the Vita matches
+21 s. Method timers: Egg.generatePlayerPokemon 476 ms for 40, of which PlayerPokemon.initBattleInfo
+425 ms (89%): each hatched Pokemon builds a full battle info box (~40 objects: name, level, HP bar,
+stat panel; 2.9-4.5 ms each on the desktop) that the hatch and summary screens never show; it is
+destroyed with the Pokemon after the summary. The slower frames after the hatch were the egg summary
+screen (sprites loaded as the cursor moves); after leaving it the desktop is back to its frame times
+and object counts.
