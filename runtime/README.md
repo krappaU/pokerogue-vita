@@ -62,6 +62,8 @@ playing any offline run to a battle and copying the data folder's `localStorage-
 Pokémon at levels 144-153, 52 items, 43 of them held: long item lists, a busy field) with its seed, ids,
 timestamp, play time, money and score scrambled by `scripts/make_save_fixture.py`, which makes such a
 fixture from any exported run (`sessionData*.prsv`). It needs the offline game 1.12.1.1 or newer.
+`fixtures/run-wave199.json` is the same player's run at its end: wave 199 in the End biome, six
+Pokémon at level 200, 47 items (37 held).
 
 ### Checking native fast paths
 Every replacement of Phaser code is checked against Phaser's own output with animations frozen:
