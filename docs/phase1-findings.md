@@ -1478,3 +1478,19 @@ and object counts.
 - js/fastpath.js 21: the input plugin's object list (1,936 interactive objects in that battle) is
   checked with sets when an object is made interactive or removed, instead of indexOf over it: ~6%
   of the item bar's rebuild, and every other screen that makes interactive objects.
+
+### The egg hatch on the Vita with 1.0.14 (log215, 2026-11-04)
+log215 (sampler off, waves 16-26, ~14 eggs hatched with skip between waves 25 and 26; no errors):
+- The hatch: no stretch of frame JS or promise jobs reached 0.5 s (none logged a `[stuck]` stack);
+  the window holding it has a 370 ms longest frame. log212's bigger hatch was one 21.2 s stretch.
+- The egg summary screen after it: frames at 26-31 ms of JS at the median (log212: 53-55 ms), and
+  no long frame when leaving it (log212: 2.1 s). Both are the battle info boxes that are no longer
+  built: they sat hidden in the field UI during the summary and were destroyed after it.
+  The summary's own texture re-uploads (the 249x747 and 492x404 atlases, ~35 ms each) are the same.
+- The item bar: with 7-11 items early in a run there is nothing to see (sampler off); a late run
+  is needed for its Vita number.
+- What remains slow in battles: the enemy's move choice in double battles, 1.1 s frames twice
+  (`[stuck]` stacks: getNextMove -> getAttackDamage -> getBaseDamage -> calculateBattlePower and the
+  ability hooks it applies, for every move against every target), the speed sort at a turn's start
+  (0.7 s: getEffectiveStat -> applyAbAttrs), the save at each wave (0.5-0.8 s, JSON.stringify), and
+  one 1.6 s collection after a save.
