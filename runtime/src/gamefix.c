@@ -51,6 +51,12 @@
 // (desktop, fixtures/run-wave199.json); log207 ran out of memory at wave 200 after a session of
 // retries. js/core.js __pkrDestroyAll destroys them first.
 //
+// time-of-day widget unsubscribes when destroyed: TimeOfDayWidget listens to the game's
+// onEncounterPhase event and never stops (no destroy of its own), so an old battle's widget, destroyed
+// by the rule above, still had its icons tweened at every encounter: "Supplied items must be elements
+// of the same array" (log212). It now stops listening when destroyed (and then does what
+// Container.preDestroy does, as before).
+//
 // system save parsed with fewer calls: GameData.parseSystemData reads the system save (dex, starters,
 // eggs, stats; 220-250 KB late in a run) with JSON.parse and a reviver that the engine calls for every
 // one of its ~21,000 members: 650-900 ms on the Vita, at the title, each Continue or battle retry and
@@ -166,6 +172,11 @@ static const fix FIXES[] = {
      "this.children.removeAll(!0),this.game.domContainer.innerHTML=``,this.launchBattle()",
      "globalThis.__pkrDestroyAll(this.children),this.game.domContainer.innerHTML=``,this.launchBattle()",
      NULL, "launchBattle", 0},
+    {"time-of-day widget unsubscribes when destroyed",
+     "this.add(this.timeOfDayIcons),@1.eventTarget.addEventListener(`onEncounterPhase`,this.onEncounterPhaseEvent))}getBackTweens(){",
+     "this.add(this.timeOfDayIcons),@1.eventTarget.addEventListener(`onEncounterPhase`,this.onEncounterPhaseEvent))}"
+     "preDestroy(){@1.eventTarget.removeEventListener(`onEncounterPhase`,this.onEncounterPhaseEvent),super.preDestroy()}getBackTweens(){",
+     NULL, "TimeOfDayWidget", 0},
     {"system save parsed with fewer calls",
      "JSON.parse(@7,(@1,@2)=>{if(@1===`gameStats`)return new @3(@2);if(@1===`eggs`){let @1=[];@2===null&&(@2=[]);"
      "for(let @4 of @2)@1.push(new @5(@4));return @1}return @1===`ribbons`?@6.fromJSON(@2):@1.endsWith(`Attr`)&&"

@@ -158,6 +158,24 @@ void prof_poll(JSContext *ctx) {
     }
 }
 
+// One stack of a frame (or promise jobs) still running after 0.5, 5 and 20 s, whether the sampler is on
+// or not: the player's logs usually have it off, and then a long frame said nothing of where it
+// was (log212: a 21 s frame after wave 10, 0.7-1 s frames in the starter screen). Three stacks at most
+// per frame, so it costs nothing in normal play. From the JS interrupt handler.
+static const char *stack_tail(const char *key, int n);
+void prof_long_frame(JSContext *ctx, double t0, double now, const char *phase) {
+    static double seen_t0;
+    static int stage;
+    static const double at_ms[] = {500, 5000, 20000};
+    if (t0 != seen_t0) seen_t0 = t0, stage = 0;
+    if (stage >= 3 || now - t0 < at_ms[stage]) return;
+    stage++;
+    static char buf[4096];
+    if (JS_SampleStack(ctx, buf, sizeof buf) <= 0 || !buf[0]) return;
+    shorten(buf);
+    host_log("[stuck] %.1f s into %s: %.900s", (now - t0) / 1000, phase, stack_tail(buf, 12));
+}
+
 // The innermost `n` frames of a stack ("a;b;c;d" -> "c;d" for n = 2).
 static const char *stack_tail(const char *key, int n) {
     const char *p = key + strlen(key);

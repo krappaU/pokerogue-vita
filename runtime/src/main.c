@@ -825,6 +825,7 @@ static void precompile_between_frames(void) {
 static int js_interrupt(JSRuntime *rt, void *opaque) {
     (void)rt, (void)opaque;
     if (g_ctx_for_mem) prof_poll(g_ctx_for_mem);
+    if (g_ctx_for_mem && in_frame_js) prof_long_frame(g_ctx_for_mem, phase_t0, host_now_ms(), loop_phase);
     net_pump();
     busy_poll();
     if (!in_frame_js || !g_cfg.interrupt_after_s || host_now_ms() - phase_t0 < g_cfg.interrupt_after_s * 1000.0)

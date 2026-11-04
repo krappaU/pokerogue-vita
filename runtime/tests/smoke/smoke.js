@@ -323,6 +323,23 @@ async function run() {
     eq(f.launched + "/" + p.launched, "1/1", "launchBattle");
     eq(f.left, "running,alive", "tweens left");
   });
+  await check("gamefix: a destroyed time-of-day widget stops listening to encounters", async () => {
+    const fixed = await import("./assets/widget-Pk7rTst6.js"); // a chunk: src/gamefix.c rewrites it
+    const text = await (await fetch("./assets/widget-Pk7rTst6.js")).text();
+    const plain = new Function(text.replace(/export (function|class)/g, "$1") + "\nreturn { makeWidget };")();
+    const run = (mod) => {
+      const log = [];
+      class Base { add() {} preDestroy() { log.push("container preDestroy"); } }
+      const B = { eventTarget: new EventTarget() };
+      const W = mod.makeWidget(Base, B), w = new W();
+      B.eventTarget.dispatchEvent(new Event("onEncounterPhase"));
+      if (typeof w.preDestroy === "function") w.preDestroy();
+      B.eventTarget.dispatchEvent(new Event("onEncounterPhase"));
+      return w.seen + " " + log.join(",");
+    };
+    eq(run(fixed), "1 container preDestroy", "rewritten");
+    eq(run(plain), "2 container preDestroy", "plain");
+  });
   await check("gamefix: the system save parsed with fewer calls gives the same data", async () => {
     const fixed = await import("./assets/system-Pk7rTst4.js"); // a chunk: src/gamefix.c rewrites it
     const text = await (await fetch("./assets/system-Pk7rTst4.js")).text();

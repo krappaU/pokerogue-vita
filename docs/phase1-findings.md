@@ -1434,3 +1434,19 @@ the enemy's move choice (getNextMove: stats and abilities per candidate move) 25
 turn-end phase (held items, an item transfer) 300-380 ms, and the item bar rebuilt from scratch on
 each item change (ModifierBar.updateModifiers: all ~46 icons with their sprites, counts and pointer
 handlers made again) ~220 of 260 ms.
+
+### A regression of 1.0.12 and stacks for long frames (log212, 1.0.12; runtime 1.0.13, 2026-11-04)
+log212 (sampler off): twice "Supplied items must be elements of the same array" at a new run's first
+encounter. TimeOfDayWidget listens to the game's onEncounterPhase event and never stops; 1.0.12's
+reset rule destroys old battles' widgets, whose listeners then tweened destroyed icons when the time
+of day changed (the event target's dispatch caught the error; the run went on). gamefix "time-of-day
+widget unsubscribes when destroyed" gives it a preDestroy that removes the listener (then
+Container.preDestroy, as before): across three retries the game's event target keeps one listener per
+event (it gained one per retry). Before 1.0.12 the old widgets were alive and animated hidden icons.
+The other listeners on that target belong to ArenaFlyout and BattleFlyout, which remove theirs.
+Also in log212, not found on the desktop: a 21 s frame in "promise jobs after frame" right after wave
+10, with frames at 55-65 ms of JS afterwards (20-25 before); 0.7-1 s frames in the starter screen's
+menus (some exactly ~1.03 s, several in a row); texture re-uploads of 30-115 ms there. The desktop
+gives the starter menus 13-20 ms frames and wave 10 -> 11 no long frame. Since logs usually have the
+sampler off, a frame (or promise jobs) still running after 0.5, 5 and 20 s now logs one JS stack each
+("[stuck] ... s into <phase>: <stack>"), at no cost otherwise.
