@@ -75,6 +75,10 @@
 
   const COMPOSITE = { "clear": 0, "copy": 1, "destination": 2, "source-over": 3, "destination-over": 4, "source-in": 5,
     "destination-in": 6, "source-out": 7, "destination-out": 8, "source-atop": 9, "destination-atop": 10, "xor": 11 };
+  // A canvas whose pixels couldn't be allocated (out of memory) answers undefined to every native call:
+  // its drawing does nothing, and these stand in for what it would have returned (log225: a destructured
+  // undefined threw in Phaser's render, which stopped the game).
+  const NO_TRANSFORM = [1, 0, 0, 1, 0, 0], NO_METRICS = [0, 0, 0, 0, 0];
   const CAPS = { butt: 0, round: 1, square: 2 };
   const JOINS = { miter: 0, round: 1, bevel: 2 };
 
@@ -204,7 +208,7 @@
       this._n.setTransform(a, b, c, d, e, f);
     }
     resetTransform() { this._n.setTransform(1, 0, 0, 1, 0, 0); }
-    getTransform() { const [a, b, c, d, e, f] = this._n.getTransform(); return { a, b, c, d, e, f, m11: a, m12: b, m21: c, m22: d, m41: e, m42: f, is2D: true, isIdentity: a === 1 && !b && !c && d === 1 && !e && !f }; }
+    getTransform() { const [a, b, c, d, e, f] = this._n.getTransform() || NO_TRANSFORM; return { a, b, c, d, e, f, m11: a, m12: b, m21: c, m22: d, m41: e, m42: f, is2D: true, isIdentity: a === 1 && !b && !c && d === 1 && !e && !f }; }
     transform(a, b, c, d, e, f) { this._n.transform(a, b, c, d, e, f); }
     translate(x, y) { this._n.translate(x, y); }
     scale(x, y) { this._n.scale(x, y); }
@@ -220,7 +224,7 @@
       if (sc) {
         this._n.save();
         // Shadow offsets are in device space, independent of the current transform.
-        const [a, b, c, d, e, f] = this._n.getTransform();
+        const [a, b, c, d, e, f] = this._n.getTransform() || NO_TRANSFORM;
         this._n.setTransform(a, b, c, d, e + this._s.shadowOffsetX, f + this._s.shadowOffsetY);
         if (isStroke) this._n.setStroke(sc[0], sc[1], sc[2], sc[3]); else this._n.setFill(sc[0], sc[1], sc[2], sc[3]);
         draw(true);
@@ -251,7 +255,7 @@
 
     // -- text
     _textPos(text, x, y) {
-      const [w, asc, desc] = this._n.measureText(text);
+      const [w, asc, desc] = this._n.measureText(text) || NO_METRICS;
       const al = this._s.textAlign;
       if (al === "center") x -= w / 2;
       else if (al === "right" || al === "end") x -= w;
@@ -274,7 +278,7 @@
       this._withShadow(() => this._n.strokeText(text, tx, ty), true);
     }
     measureText(text) {
-      const [w, asc, desc, left, right] = this._n.measureText(String(text));
+      const [w, asc, desc, left, right] = this._n.measureText(String(text)) || NO_METRICS;
       return new TextMetrics(w, asc, desc, left, right);
     }
 

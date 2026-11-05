@@ -790,6 +790,26 @@ static void gc_at_save(void) {
     host_log("[gc] collected after the game saved: %.0f ms, JS heap %.1f -> %.1f MB", ms, before / 1048576.0, gc_left / 1048576.0);
 }
 
+// An allocation for pixels failed (canvas2d.c): collect now, from inside the game's call, and let
+// the caller try once more. log225: after an hour, at 226 of 256 MB in use, a 1224x357 canvas found
+// no room (garbage and fragmentation), its text drawing threw in Phaser's render, and the game
+// stopped. Not again until the heap has grown by 4 MB or 5 s have passed (a collection that freed
+// nothing would only repeat for every canvas drawn).
+bool host_gc_for_alloc(const char *what) {
+    static size_t used_after;
+    static double last;
+    if (!g_ctx_for_mem) return false;
+    double now = host_now_ms();
+    if (last && now - last < 5000 && heap_used() < used_after + ((size_t)4 << 20)) return false;
+    double ms;
+    size_t before = gc_collect(JS_GetRuntime(g_ctx_for_mem), &ms);
+    used_after = heap_used();
+    last = host_now_ms();
+    host_log("[gc] collected when %s found no memory: %.0f ms, JS heap %.1f -> %.1f MB, heap in use %.0f MB", what, ms,
+             before / 1048576.0, gc_left / 1048576.0, used_after / 1048576.0);
+    return true;
+}
+
 // Between frames: the heap is nearly full (less than half of HEAP_RESERVE free). Collect now, with
 // the loading screen up, rather than let an allocation fail in the game's code. Not again until the
 // heap has grown by 8 MB since (when what is left is live data, collecting again frees nothing).

@@ -1531,3 +1531,28 @@ the double battle, 30 in the wave-199 single battle, each pair from the same bat
   double battles at waves 16-22).
 - log219's first start of 1.0.15 had one 28.4 s frame at startup: the game's code compiled again
   for the new gamefix set (once per update; log220's start: 2.3 s for that part).
+
+### A freeze after an hour: memory, and one error that stopped the game (log225; runtime 1.0.17, 2026-11-05)
+log225 (1.0.15, ~64 minutes): a run to wave 48 (game over), ~16 minutes in the starter select screen,
+then a new run that froze at wave 31: the picture stopped, the music played on. At 226 of 256 MB of
+heap in use, "[canvas] out of memory for a 1224x357 canvas"; that canvas's native calls answered
+undefined, canvas2d.js destructured one (getTransform in fillText's shadow), the TypeError went up
+through Phaser's render, and Phaser's step, which asks for its next frame at its end, never asked
+again: 60 empty frames a second from then on. No collection ran before the failure: the heap-low one
+waits for 236 MB, and 30 MB free wasn't enough for 1.7 MB (garbage, fragmentation).
+1.0.17:
+- A canvas or image whose pixels can't be allocated makes the runtime collect garbage right there
+  (main.c host_gc_for_alloc, logged "[gc] collected when ... found no memory") and try once more.
+- A canvas without pixels answers its transform and text metrics with defaults (identity, zeros) in
+  canvas2d.js, so drawing on it does nothing instead of throwing.
+- A requestAnimationFrame callback that throws without asking for its next frame is called again
+  next frame under the same id (up to 300 frames in a row); the same error is logged 5 times, then
+  every 600th. One failing frame no longer stops the game.
+Memory over that session (JS left after each collection): 47 MB at wave 32, 59, then 69 -> 81 MB in
+the starter screen, 92 MB by the next run's wave 13; heap in use 119 -> 227 MB; Phaser textures
+516 -> 1017 (+350 in the starter screen). Desktop (wave-163 save): loading the sprites of 81 species
+(what the starter screen does for each species the cursor visits) keeps 21.7 MB more JS after a
+collection (0.27 MB, ~1,240 objects and ~8,500 properties per species: the atlas's ~88 Phaser Frame
+objects, its animation, and a copy of the atlas JSON in customData, ~18% of it, which neither Phaser's
+WebGL path nor the game reads). Nothing unloads them, in the browser either; on the Vita a long visit
+to the starter screen adds tens of MB for the rest of the session.

@@ -71,6 +71,7 @@ static void bitmap_finalizer(JSRuntime *rt, JSValue v) {
 static plutovg_surface_t *bitmap_surface(bitmap *b) {
     if (!b->surface && bitmap_pixels(b)) {
         b->surface = plutovg_surface_create(b->w, b->h);
+        if (!b->surface && host_gc_for_alloc("an image")) b->surface = plutovg_surface_create(b->w, b->h);
         if (!b->surface) return NULL; // out of memory: drawImage reports an unsupported source
         mem_decoded += (size_t)b->w * b->h * 4;
         plutovg_convert_rgba_to_argb(plutovg_surface_get_data(b->surface), b->rgba, b->w, b->h,
@@ -482,6 +483,7 @@ static bool c2d_alloc(c2d *c, int w, int h) {
     c->h = h > 0 ? h : 1;
     double t0 = host_now_ms();
     c->surface = plutovg_surface_create(c->w, c->h);
+    if (!c->surface && host_gc_for_alloc("a canvas")) c->surface = plutovg_surface_create(c->w, c->h);
     double ms = host_now_ms() - t0;
     if (ms >= 30) host_log("[canvas] a %dx%d canvas took %.0f ms to allocate", c->w, c->h, ms);
     if (!c->surface) {

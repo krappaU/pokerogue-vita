@@ -84,6 +84,27 @@ async function run() {
     const a = await nextFrame(), b = await nextFrame();
     if (!(b > a)) return "rAF times " + a + ", " + b;
   });
+  await check("core: a frame loop whose callback throws once keeps running", async () => {
+    // like Phaser's step: asks for the next frame at its end, so a throw would end the loop
+    let calls = 0, id = 0;
+    const step = () => {
+      calls++;
+      if (calls === 2) throw Object.assign(new Error("one bad frame"), { expectedBySmokeTest: true });
+      if (calls < 5) id = requestAnimationFrame(step);
+    };
+    id = requestAnimationFrame(step);
+    for (let i = 0; i < 8; i++) await nextFrame();
+    if (calls !== 5) return "the loop ran " + calls + " times, 5 expected";
+    // a callback cancelled after it threw isn't called again
+    let other = 0;
+    const once = () => { other++; throw Object.assign(new Error("always throws"), { expectedBySmokeTest: true }); };
+    const oid = requestAnimationFrame(once);
+    await nextFrame(); await nextFrame();
+    cancelAnimationFrame(oid);
+    const seen = other;
+    await nextFrame(); await nextFrame();
+    if (seen < 1 || other !== seen) return "cancelled callback called " + other + " times (" + seen + " before)";
+  });
   await check("core: TextEncoder/TextDecoder round trip", () => {
     const s = "Pokémon ★ ポケモン";
     const b = new TextEncoder().encode(s);
@@ -552,6 +573,18 @@ async function run() {
     eq(Array.from(d.slice(16, 20)), [255, 255, 0, 255], "background");
     const b = Array.from(d.slice(8, 12)); // half-transparent blue over yellow
     if (Math.abs(b[0] - 127) > 3 || Math.abs(b[2] - 128) > 3 || b[3] !== 255) return "blended pixel " + b;
+  });
+  await check("canvas2d: a canvas without pixels (out of memory) draws nothing and doesn't throw", () => {
+    // 40000 px wide: plutovg refuses it, as an allocation that failed (log225); the runtime collects
+    // garbage and tries once more, then the canvas stays without pixels
+    const c = document.createElement("canvas");
+    c.width = 40000; c.height = 4;
+    const x = c.getContext("2d");
+    x.shadowColor = "#000"; x.shadowOffsetX = 1;
+    x.font = "16px sans-serif";
+    x.fillText("text", 0, 0); x.strokeText("text", 0, 0); x.fillRect(0, 0, 2, 2);
+    const m = x.measureText("text"), t = x.getTransform();
+    if (typeof m.width !== "number" || t.a !== 1) return "metrics " + m.width + ", transform a " + t.a;
   });
   await check("canvas2d: measureText", () => {
     const ctx = document.createElement("canvas").getContext("2d");

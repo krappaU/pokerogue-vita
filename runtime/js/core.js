@@ -120,6 +120,16 @@
   g.queueMicrotask = (fn) => { Promise.resolve().then(fn); };
 
   function report(e) { N.log("[js] uncaught: " + (e && e.stack ? e + "\n" + e.stack : e)); }
+  // The same error again and again (a frame callback failing every frame): logged 5 times, then
+  // once more every 600.
+  const reported = new Map();
+  function reportOnce(e) {
+    if (e && e.expectedBySmokeTest) return; // tests/smoke: errors it throws on purpose
+    const key = String(e && e.stack ? e + e.stack : e);
+    const n = (reported.get(key) || 0) + 1;
+    if (reported.size < 100 || reported.has(key)) reported.set(key, n);
+    if (n <= 5 || n % 600 === 0) report(n > 5 ? new Error("(" + n + " times) " + e) : e);
+  }
 
   // 128 zeros the game's code reads (only copies them, with flat()) where gamefix.c took out its
   // loops that built them.
@@ -387,7 +397,17 @@
     const q = rafQueue;
     rafQueue = [];
     const ts = now - start;
-    for (const r of q) { try { r.fn(ts); } catch (e) { report(e); } }
+    for (const r of q) {
+      const queued = rafQueue.length;
+      try { r.fn(ts); } catch (e) {
+        reportOnce(e);
+        // Phaser asks for its next frame at the end of its step: one exception (log225: out of
+        // memory in a text's drawing) would stop the game for good while its sound plays on. A
+        // callback that threw before asking again is called again next frame, under the same id
+        // (up to 300 frames in a row: a one-off callback that always throws isn't kept forever).
+        if ((r.retries = (r.retries || 0) + 1) <= 300 && !rafQueue.slice(queued).some((n) => n.fn === r.fn)) rafQueue.push(r);
+      }
+    }
     // Timers due by the frame's start, in due order, after the game's frame: when a frame runs
     // long, the game sees released buttons (in its frame) before its button-repeat intervals fire;
     // run first, those repeated a press the player had already let go of (cursor skipping an entry

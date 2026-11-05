@@ -134,6 +134,11 @@ Performance:
      choice; desktop -56% in a double battle; log219: no frame over 0.5 s in double battles.)
   (1.0.12: memory over long sessions: retries no longer leave the old battle alive, and canvas
   textures no longer copy their canvas when made; log207 ran out of memory at wave 200.)
+  9. Memory over long sessions (log225, a freeze after an hour): every species whose sprite is
+     loaded keeps ~0.27 MB of JS (desktop) for the rest of the session (Phaser's atlas frames and
+     animation); the starter screen loads one per species the cursor visits. Unloading the atlases
+     and animations no object uses (and the atlas JSON copy nothing reads) would bound it. (1.0.17:
+     a failed allocation collects and retries, and one failing frame no longer stops the game.)
   Network, not ours to fix: the save after each wave uploads 255-265 KB (game and session data);
   on busy Wi-Fi 17-74 s (5-31 KB/s). Smaller uploads would need the server to accept compression.
 
