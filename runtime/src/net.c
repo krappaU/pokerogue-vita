@@ -1192,7 +1192,9 @@ static void note_server_date(const char *hdrs) {
     double off = server_ms - (tv.tv_sec * 1000.0 + tv.tv_usec / 1000.0);
     clock_known = true;
     if (fabs(off) < 30000) return; // within the header's precision: the clock is fine
-    clock_offset_ms = off;
+    // whole milliseconds, as Date.now() gives: PokeRogue's server rejects a save whose timestamp
+    // has a fraction (log220: "cannot unmarshal number 1793852076922.301 ... of type int")
+    clock_offset_ms = round(off);
     host_log("[clock] the console's clock is off by %.2f hours; the game uses the server's time", off / 3600000.0);
 }
 

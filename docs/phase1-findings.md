@@ -1517,3 +1517,17 @@ comparison), getAbility 13% of its own.
 Desktop: the double battle's two choices 36 -> 16 ms per turn (-56%), single battle 4.2 -> 3.2 ms.
 Same moves, targets and the game's printed move scores both ways for every choice compared (60 in
 the double battle, 30 in the wave-199 single battle, each pair from the same battle random state).
+
+### A shifted clock breaks online saves; the AI on the Vita (log219, log220; runtime 1.0.16, 2026-11-05)
+- log220 (1.0.15, the owner moved the console's clock ~2 minutes back to test the pokerogue-nx
+  fork's finding): "[clock] the console's clock is off by -0.03 hours", then at wave 32's save the
+  server answered "failed to decode request body: json: cannot unmarshal number 1793852076922.301
+  into Go struct field CombinedSaveData.system.timestamp of type int", and the game went back to
+  the title. The fork was right: net.c's offset had a fraction (microseconds from gettimeofday), so
+  Date.now() did too. 1.0.16 rounds the offset to whole milliseconds (the fork truncated in nowMs).
+  Only consoles whose clock is more than 30 s off were affected.
+- The enemy's move choice (1.0.15) on the Vita, log219 waves 29-30 (double battles): no `[stuck]`
+  stack in getNextMove and no frame over 0.5 s in battle (log215, 1.0.14: seven, up to 1.15 s, in
+  double battles at waves 16-22).
+- log219's first start of 1.0.15 had one 28.4 s frame at startup: the game's code compiled again
+  for the new gamefix set (once per update; log220's start: 2.3 s for that part).

@@ -131,7 +131,7 @@ Performance:
   time; the item bar's Vita number needs a late-run log.)
   8. The enemy's move choice in double battles: 1.1 s frames (log215), the game's damage estimate
      for each move and target with its ability hooks. (1.0.15: answers and speeds kept within one
-     choice; desktop -56% in a double battle; Vita numbers pending.)
+     choice; desktop -56% in a double battle; log219: no frame over 0.5 s in double battles.)
   (1.0.12: memory over long sessions: retries no longer leave the old battle alive, and canvas
   textures no longer copy their canvas when made; log207 ran out of memory at wave 200.)
   Network, not ours to fix: the save after each wave uploads 255-265 KB (game and session data);
@@ -146,10 +146,8 @@ done in 1.0.4: renderbuffer leak, disk cache cleaning, missing-compiler message,
   above); no scheduled check that runs the offline game to the title screen.
 
 From the pokerogue-nx fork (Switch/Android, merged our 1.0.6; reviewed 2026-11-03), to keep in mind:
-- Unconfirmed for the Vita: when the console's clock is more than 30 s off, Date.now() is corrected
-  by a fractional offset (net.c note_server_date uses microseconds), and the fork found PokeRogue's
-  save API rejecting the fractional timestamps (`json: cannot unmarshal number ... of type int`;
-  their fix: Math.trunc in core.js's nowMs). To check on a console with a shifted clock.
+- Done in 1.0.16 (confirmed in log220): with the console's clock more than 30 s off, Date.now() had a
+  fraction (net.c's offset), and PokeRogue's save API rejected the save; the offset is now whole ms.
 - Login and register screens without D-pad navigation (login still needs a tap or SELECT-and-cross
   after the password); the fork's runtime/js/modal-controls.js adds focus navigation. Not ported yet.
 
