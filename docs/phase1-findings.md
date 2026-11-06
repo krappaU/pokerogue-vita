@@ -1629,3 +1629,24 @@ unloaded, 17 in use), 65 ms at the title (14 of 17: the party isn't shown there;
 it again). No JS errors, no missing sprites; JS left by a collection 47-60 MB. The game makes a new
 Arena for each biome as well as each run, so the wave-41 pass was logged as "new run"; 1.0.21 names
 it by what changed ("new biome", "new run", "title screen").
+
+### Starter screen filter changes (runtime 1.0.22, 2026-11-06)
+Desktop, wave-163 save with every species marked caught (572 starters shown, as in a long-played
+save), the starter select screen opened with ui.setMode: one filter change (updateStarters) took
+30.7 ms (about 1 s on the Vita): updateScroll 18.4 ms, of it setSpecies 12.8 ms (each of the 81 slots
+destroys its icon sprite and makes a new one); filterStarters 11.1 ms; the rest ~1 ms. log225's Vita
+stacks inside updateStarters: updateScroll 14 of 28, tryUpdateValue 12, filterStarters 1 (stacks are
+taken 0.5 s into a frame, so the later steps are over-represented).
+- gamefix "starter icons kept, not remade" + js/core.js __pkrStarterIcon: the slot's icon is reset to
+  what the game's new sprite would be (position, scale, origin, alpha, visible, angle, flip, depth,
+  texture, frame, tint), its tweens stopped, dropped from the screen's icon animation helper; it stays
+  in the slot when only the badges brought to the top next follow it (the rule's text names them).
+  Every slot's child order and icon state compared equal both ways after refreshes (81 slots, kept
+  and remade in both orders); tests/phaser checks the same on a copy of the code with real sprites.
+  updateStarters 31.9 -> 20.4 ms (-36%).
+- Tried and dropped: answering the type filter once per pair of types (isOfType reads only type1 and
+  type2): no change, the filter's ~10 ms are spread over many small checks per starter (the
+  Unlocks/Misc options' `some`, getStarterData, getStarter, the passive, cost and egg checks).
+- Found on the way: a dynamic import() from code resumed after an await in a frame callback (tests'
+  scene.js) or from a control-channel eval fails with "cannot read property 'length' of undefined"
+  before loading anything. The game's own lazy imports work; not looked into further.

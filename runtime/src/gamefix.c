@@ -109,6 +109,18 @@
 // closures, and a touch there runs all of them. The old pair now goes before the new one is added:
 // one pointerover and one pointerout, as the code means (nothing else listens to these objects).
 //
+// starter icons kept, not remade: the starter select screen refreshes its 81 slots (updateScroll) on
+// every filter change and scroll, and each slot's setSpecies destroyed its icon sprite and made a new
+// one: 12.8 of a filter change's 30.7 ms on the desktop with ~570 starters caught (about 1 s on the
+// Vita). js/core.js __pkrStarterIcon takes the slot's icon out of it, stops its tweens, drops it from
+// its screen's icon animation helper, and sets it as a new sprite would be (position, scale, origin,
+// alpha, visible, angle, flip, depth, texture, frame, tint); the game's code then adds it back and
+// sets the rest as before. The helper re-adds it and the upgrade animation makes its tweens again, as
+// for a new icon; the old code left the old icon's tweens running on a destroyed sprite. The icon stays
+// in the slot when only the badges the code then brings to the top (label, shiny icons, hidden ability,
+// favorite, classic win, candy upgrade: the list this rule's text names) follow it there: taken out
+// and added back it would end in the same place, before them.
+//
 // starter slots from one starter list: the starter select screen's setup (after every game reset:
 // a new run rebuilds the UI) creates its 81 slots with `getAllStarters()[i]`, and each call goes
 // through all ~1300 species to list the starters again: 4.7 s of an 11 s frame on the Vita (0.89,
@@ -283,6 +295,18 @@ static const fix FIXES[] = {
      "this.pokemonCandyContainer.setVisible(!0).on(`pointerover`,",
      "this.pokemonCandyContainer.setVisible(!0).off(`pointerover`).off(`pointerout`).on(`pointerover`,",
      NULL, "pokemonCandyContainer", 0},
+    {"starter icons kept, not remade",
+     "this.icon&&(this.remove(this.icon),this.icon.destroy()),this.icon=@1.add.sprite(-2,2,this.species.getIconAtlasKey(@2,@3,@4))"
+     ".setScale(.5).setOrigin(0).setFrame(this.species.getIconId(@5,@2,@3,@4)).setTint(0),this.checkIconId(@5,@2,@3,@4),"
+     "this.add(this.icon),[this.label,...this.shinyIcons,this.hiddenAbilityIcon,this.favoriteIcon,this.classicWinIcon,"
+     "this.candyUpgradeIcon,this.candyUpgradeOverlayIcon].forEach(",
+     "this.icon=globalThis.__pkrStarterIcon(this,@1,this.species.getIconAtlasKey(@2,@3,@4),this.species.getIconId(@5,@2,@3,@4),"
+     "[this.label,...this.shinyIcons,this.hiddenAbilityIcon,this.favoriteIcon,this.classicWinIcon,this.candyUpgradeIcon,"
+     "this.candyUpgradeOverlayIcon])||(this.icon&&(this.remove(this.icon),this.icon.destroy()),@1.add.sprite(-2,2,"
+     "this.species.getIconAtlasKey(@2,@3,@4)).setScale(.5).setOrigin(0).setFrame(this.species.getIconId(@5,@2,@3,@4)).setTint(0)),"
+     "this.checkIconId(@5,@2,@3,@4),this.add(this.icon),[this.label,...this.shinyIcons,this.hiddenAbilityIcon,this.favoriteIcon,"
+     "this.classicWinIcon,this.candyUpgradeIcon,this.candyUpgradeOverlayIcon].forEach(",
+     NULL, "checkIconId", 0},
     {"icon loops: destroyed icons dropped, hidden ones left",
      "for(let[@1,@2]of this.icons)@1.y=@2.restY+this.getCurrentOffset(@2.mode)",
      "globalThis.__pkrIconSync(this)",

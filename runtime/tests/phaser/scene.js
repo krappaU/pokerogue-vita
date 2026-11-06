@@ -8,6 +8,7 @@
 // runner), which alternate native and Phaser code frame by frame and compare vertex data, uniform
 // calls, draw calls and texture binds. Logs "[test] PASS/FAIL" lines and "[test] DONE ...".
 import * as Phaser from "./phaser.js";
+import * as starterChunk from "./starter-Pk7rTstB.js"; // a chunk: src/gamefix.c rewrites it
 
 // The game's bundle assigns window.Phaser the same way; the runtime patches Phaser (pre-FX off,
 // fast paths) the moment it is assigned (js/bootstrap.js).
@@ -441,6 +442,52 @@ async function run() {
       for (const k of keys) sc.textures.remove(k);
     }
     report("sprite_gc: textures in use are found on lists, off them and in animations", !detail, detail);
+  }
+  // gamefix.c "starter icons kept, not remade" (js/core.js __pkrStarterIcon): a starter slot's icon set
+  // again comes out as the game's new one would: the slot's children in the same order, the icon's
+  // place, size, look and frame, no tweens left on it, out of the icon animation helper.
+  {
+    const sc = game.scene.getScene("test");
+    let detail = "";
+    try {
+      const fixed = starterChunk;
+      const text = await (await fetch("./starter-Pk7rTstB.js")).text();
+      const plain = new Function(text.replace(/export (function|class)/g, "$1") + "\nreturn { make };")();
+      const species = (n) => ({ getIconAtlasKey: () => "atlas", getIconId: (female) => "f" + ((n + (female ? 4 : 0)) % 8) });
+      const z = { getSpecies: (id) => species(id) };
+      const run = (mod) => {
+        const helper = { icons: new Map() };
+        const saved = sc.ui;
+        sc.ui = { handlers: [] };
+        const { StarterContainer } = mod.make(sc, z);
+        const slot = new StarterContainer(1);
+        sc.ui.handlers.push({ starterContainers: [slot], iconAnimHandler: helper });
+        const out = [];
+        let made = 0;
+        const add = sc.add.sprite;
+        sc.add.sprite = function () { made++; return add.apply(this, arguments); };
+        try {
+          for (const [id, female] of [[1, false], [2, true], [3, false], [3, false]]) {
+            slot.setSpecies(id, { shiny: false, formIndex: 0, female, variant: 0 });
+            const i = slot.icon;
+            out.push(slot.list.map((o) => o.name || o.type).join(",") + "|" + [i.x, i.y, i.scaleX, i.originX, i.alpha, i.visible,
+              i.tintTopLeft, i.tintFill, i.texture.key, i.frame.name, i.angle, i.flipX].join(",") + "|tweens " +
+              sc.tweens.getTweensOf(i).length + "|helper " + helper.icons.has(i));
+            // what the screen does to an icon between refreshes: an upgrade animation, the helper,
+            // the value check's alpha, a tint
+            sc.tweens.add({ targets: i, y: 5, duration: 1000, yoyo: true, repeat: -1 });
+            helper.icons.set(i, { mode: 3, restY: 2 });
+            i.setAlpha(0.375).setTint(0x808080).setVisible(false);
+          }
+        } finally { sc.add.sprite = add; }
+        slot.destroy();
+        sc.ui = saved;
+        return { out: out.join(" / "), made };
+      };
+      const p = run(plain), f = run(fixed);
+      detail = f.out !== p.out ? f.out + " VS the game's " + p.out : f.made !== 1 ? "kept version made " + f.made + " sprites (the game " + p.made + ")" : "";
+    } catch (e) { detail = String(e) + " " + (e && e.stack); }
+    report("gamefix: a starter slot's kept icon is set as the game's new one", !detail, detail);
   }
   // js/fastpath.js 7b: a child taken out of a container (not destroyed) loses the DESTROY listener the
   // container gave it; Phaser 3.90 leaves it, one more each time the child is added back (log225).

@@ -144,7 +144,8 @@ Performance:
   10. The starter select screen (log225): idle 45-75 ms of JS a frame (drawing); a filter change ~0.7 s
      (filterStarters works out every filter for each of ~600 starters; each visible slot remakes its
      icon sprite). (1.0.18: the listeners that piled up with every cursor move, Phaser's and the
-     game's, no longer do.)
+     game's, no longer do. 1.0.22: slot icons kept, a filter change -36% on the desktop; the filter
+     itself, ~10 ms there, is many small checks per starter.)
   Network, not ours to fix: the save after each wave uploads 255-265 KB (game and session data);
   on busy Wi-Fi 17-74 s (5-31 KB/s). Smaller uploads would need the server to accept compression.
 

@@ -348,6 +348,39 @@
     };
     return list.sort((a, b) => { const n = speed(a); return speed(b) - n; });
   } });
+  // A starter select slot's icon (gamefix.c "starter icons kept, not remade"): the slot's old icon,
+  // set as `scene.add.sprite(-2, 2, key).setScale(.5).setOrigin(0).setFrame(frame).setTint(0)` would
+  // make it, or null to let the game make a new one. The game adds it to the slot next, then brings
+  // `badges` to the top.
+  // Switch: __rt.keepStarterIcons = false.
+  const iconOwners = new WeakMap(); // slot -> its screen's icon animation helper (or null)
+  const starterIconStats = { kept: 0, made: 0 };
+  Object.defineProperty(g, "__pkrStarterIconStats", { value: () => Object.assign({}, starterIconStats) });
+  Object.defineProperty(g, "__pkrStarterIcon", { value: (slot, scene, key, frame, badges) => {
+    const old = slot.icon;
+    if (rt.keepStarterIcons === false || !old || !old.scene || old.parentContainer !== slot || old.type !== "Sprite" ||
+        !scene || !scene.tweens || typeof old.setTexture !== "function") { starterIconStats.made++; return null; }
+    let helper = iconOwners.get(slot);
+    if (helper === undefined) {
+      helper = null;
+      const hs = scene.ui && scene.ui.handlers;
+      if (Array.isArray(hs)) for (const h of hs) if (h && Array.isArray(h.starterContainers) && h.starterContainers.includes(slot)) helper = h.iconAnimHandler || null;
+      iconOwners.set(slot, helper);
+    }
+    // out of the slot, unless only the badges the game brings to the top next follow it (then
+    // taking it out and adding it back leaves the same order)
+    const list = slot.list, at = list.indexOf(old);
+    let tail = at >= 0 && Array.isArray(badges);
+    for (let j = at + 1; tail && j < list.length; j++) if (!badges.includes(list[j])) tail = false;
+    if (!tail) slot.remove(old);
+    scene.tweens.killTweensOf(old);
+    if (old.anims && old.anims.isPlaying) old.anims.stop();
+    if (helper && helper.icons instanceof Map) helper.icons.delete(old);
+    old.setPosition(-2, 2).setScale(0.5).setOrigin(0).setAlpha(1).setVisible(true).setAngle(0).setFlip(false, false).setDepth(0);
+    old.setTexture(key).setFrame(frame).setTint(0);
+    starterIconStats.kept++;
+    return old;
+  } });
   // bigintExcept: see parseRevived.
   Object.defineProperty(g, "__pkrParseSome", { value: (text, reviver, names, suffix, bigintExcept) => {
     // members: src/js_host.c parseRevived; then the root, as the standard does last
