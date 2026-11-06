@@ -195,7 +195,8 @@
     // the biome (biomeId; biomeType in older builds), and a new Arena (a new run, even in the same biome)
     const arena = s.arena, biome = arena ? (arena.biomeId !== undefined ? arena.biomeId : arena.biomeType) : undefined;
     if (arena && biome !== undefined && (biome !== lastBiome || arena !== lastArena)) {
-      if (lastArena) pending = { reason: arena !== lastArena ? "new run" : "new biome", since: now };
+      // (the game makes a new Arena for each biome, each run and the title screen)
+      if (lastArena) pending = { reason: !s.currentBattle ? "title screen" : biome !== lastBiome ? "new biome" : "new run", since: now };
       lastBiome = biome, lastArena = arena;
     }
     // under memory pressure, only once enough sprites came since the last pass to be worth the walk

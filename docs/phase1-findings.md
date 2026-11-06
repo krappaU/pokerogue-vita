@@ -1621,3 +1621,11 @@ session's log to the log server...", "Checking for a new offline game release...
 has the evidence that was missing: "[start] chosen after N s on the start screen", a line for any
 stretch over 0.5 s the screen didn't run, and each job's duration ("prev log upload: ... (N s)",
 "latest release on GitHub: ... (N s)").
+
+### Sprite unloading on the Vita (log229, 1.0.19; runtime 1.0.21, 2026-11-06)
+log229 (waves 31-41, ~18 minutes, Continue then a return to the title): three passes, 85 ms at the
+start (Continue: 0 of 16, 15 in use), 142 ms at wave 41's new biome (graveyard to abyss: 15 of 32
+unloaded, 17 in use), 65 ms at the title (14 of 17: the party isn't shown there; Continue loads
+it again). No JS errors, no missing sprites; JS left by a collection 47-60 MB. The game makes a new
+Arena for each biome as well as each run, so the wave-41 pass was logged as "new run"; 1.0.21 names
+it by what changed ("new biome", "new run", "title screen").
