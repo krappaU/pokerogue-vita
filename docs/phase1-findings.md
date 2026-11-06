@@ -1606,3 +1606,18 @@ atlases in 14 ms, 130.3 -> 115.3 MB of JS after a collection (21.7 MB had come w
 battle drew the same; the starter screen reloaded and showed an unloaded species; a double-battle
 turn played after a pass; with the party's keys pinned, 14 of 15 kept in that battle.
 Switch: __rt.spriteGc = false. Log: "[sprites] <reason>: unloaded N of M Pokemon sprites ...".
+
+### The start screen waiting on background work (runtime 1.0.20, 2026-11-06)
+The owner: since some time after 1.0 the start screen ("Play online / Play offline") ignores input
+for ~30 s after launch, with nothing on screen saying why. In the 40 most recent logs the choice
+always comes after the previous log's upload finished (test builds send it at start: 350 KB by
+now, with the [stuck] and [perf] lines of an hour, over busy hotel Wi-Fi), never before. The upload
+thread and the offline release check (a TLS request to GitHub) were the only helper threads that
+didn't lower their priority (plat_thread_setup): the Vita's kernel doesn't time-slice threads of
+equal priority, so a busy one can keep the start screen's thread from running.
+1.0.20: both run below the main thread on core 1, like the network, cache and decoder threads; the
+start screen says what runs in the background in place of its help line ("Sending the last
+session's log to the log server...", "Checking for a new offline game release..."); and the log now
+has the evidence that was missing: "[start] chosen after N s on the start screen", a line for any
+stretch over 0.5 s the screen didn't run, and each job's duration ("prev log upload: ... (N s)",
+"latest release on GitHub: ... (N s)").

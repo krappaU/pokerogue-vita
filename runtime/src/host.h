@@ -115,6 +115,7 @@ bool dev_offer_update(void);           // start screen: installs a newer test bu
 void dev_send_log(void);               // L + R + START in game: uploads the current log
 void dev_send_bench_log(void);         // the benchmark page (bench/) is done: uploads its log
 void dev_frame(void);                  // main loop: shows upload results
+bool dev_upload_active(void);          // a log is being sent (the start screen says so)
 #else
 static inline void dev_early(void) {}
 static inline void dev_start(const char *prev_log) { (void)prev_log; }
@@ -122,9 +123,11 @@ static inline bool dev_offer_update(void) { return false; }
 static inline void dev_send_log(void) {}
 static inline void dev_send_bench_log(void) {}
 static inline void dev_frame(void) {}
+static inline bool dev_upload_active(void) { return false; }
 #endif                 // offline_install.c: download <data>/game.zip (or an update)
 void offline_update_check_start(void);      // background check for a newer offline game release
 const char *offline_update_available(const char *installed); // its tag, or NULL
+bool offline_check_active(void);          // that check is still waiting for GitHub
 void plat_shutdown(void);
 // Returns false when there are no more events.
 bool plat_poll_event(plat_event *ev);

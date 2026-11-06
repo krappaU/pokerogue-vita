@@ -72,7 +72,18 @@ static void frame_rect(int x, int y, int w, int h, int t, const uint8_t c[4]) {
 
 static void text(int x, int y, const char *s, int scale, const uint8_t c[4]) { overlay_blit_text(img, W, H, x, y, s, scale, c); }
 
-static void render(int sel, const int *modes, int n, const char *offline_version, const char *update) {
+// What runs in the background while the start screen is up (the previous log going to the log
+// server in test builds, the offline release check), shown in place of the help line: the screen
+// waited on them without a word before (up to ~30 s on busy Wi-Fi).
+static const char *status_text(void) {
+    bool up = dev_upload_active(), check = offline_check_active();
+    return up && check ? "Sending the last session's log, checking for updates..."
+           : up      ? "Sending the last session's log to the log server..."
+           : check   ? "Checking for a new offline game release..."
+                     : "";
+}
+
+static void render(int sel, const int *modes, int n, const char *offline_version, const char *update, const char *status) {
     static const uint8_t bg[4] = {40, 30, 48, 255}, red[4] = {200, 60, 50, 255}, box[4] = {64, 52, 74, 255},
                          hi[4] = {232, 168, 56, 255}, fg[4] = {245, 235, 250, 255}, dim[4] = {150, 140, 160, 255},
                          dark[4] = {30, 22, 36, 255};
@@ -126,7 +137,8 @@ static void render(int sel, const int *modes, int n, const char *offline_version
         const char *st = toggle_on(i) ? "ON" : "off";
         text(x + TOG_W - 10 - 8 * (int)strlen(st), y + (TOG_H - 8) / 2, st, 1, s ? dark : toggle_on(i) ? on : dim);
     }
-    text(BOX_X, H - 46, "D-pad and X (or touch): play, or switch an option (saved).", 1, dim);
+    if (status[0]) text(BOX_X, H - 46, status, 1, hi);
+    else text(BOX_X, H - 46, "D-pad and X (or touch): play, or switch an option (saved).", 1, dim);
     text(BOX_X, H - 26, host_version_string(), 1, dim);
 }
 
@@ -193,8 +205,15 @@ int launcher_run(bool offline_ok, const char *offline_version, bool bench_ok, vo
     int ox = 0, oy = 0;
     // Buttons held from the previous app (or from launching) don't count until released.
     bool armed = false;
+    char status[96] = "";
+    double shown = host_now_ms(), last = shown;
     while (!chosen && !quit) {
+        double now = host_now_ms();
+        if (now - last > 500) host_log("[start] the start screen didn't run for %.1f s", (now - last) / 1000);
+        last = now;
         poll(&quit);
+        const char *st = status_text();
+        if (strcmp(st, status)) snprintf(status, sizeof status, "%s", st), dirty = true;
         if (offline_ok && !update && (update = offline_update_available(offline_version))) {
             n = list_modes(modes, offline_ok, update, bench_ok);
             if (sel >= n - 1) sel++; // a toggle stays the one selected
@@ -238,7 +257,7 @@ int launcher_run(bool offline_ok, const char *offline_version, bool bench_ok, vo
         glViewport(0, 0, sw, sh);
         glClearColor(0.10f, 0.07f, 0.12f, 1);
         glClear(GL_COLOR_BUFFER_BIT);
-        if (dirty) render(sel, modes, n, offline_version, update);
+        if (dirty) render(sel, modes, n, offline_version, update, status);
         overlay_image_draw(img, W, H, dirty, &ox, &oy);
         dirty = false;
         host_frame_drawn();
@@ -250,6 +269,8 @@ int launcher_run(bool offline_ok, const char *offline_version, bool bench_ok, vo
     }
     if (quit) return -1;
     int m = modes[sel];
+    host_log("[start] chosen after %.1f s on the start screen%s%s%s", (host_now_ms() - shown) / 1000,
+             status[0] ? " (still: " : "", status, status[0] ? ")" : "");
     if (m == M_DOWNLOAD) return 2;
     if (m == M_UPDATE) return 3;
     f = fopen(path, "w");

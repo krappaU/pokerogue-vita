@@ -83,6 +83,11 @@ typedef struct {
 
 static void *upload_thread(void *arg) {
     upload_job *j = arg;
+    // Below the main thread and off its core: the kernel doesn't time-slice threads of equal
+    // priority, and the start screen didn't take input until the previous log was sent (up to
+    // ~30 s for 350 KB on busy Wi-Fi).
+    plat_thread_setup("pkr_upload", 1, 10);
+    double t0 = host_now_ms();
     size_t len = 0;
     host_log_flush(); // the lines logged so far, when it's this run's log
     char *body = read_file(j->path, &len);
@@ -103,7 +108,7 @@ static void *upload_thread(void *arg) {
         if (status == 200) snprintf(msg, sizeof msg, "Log sent to the log server (%lu KB).", (unsigned long)((len + 1023) / 1024));
         else if (status) snprintf(msg, sizeof msg, "The log server refused the log (HTTP %ld).", status);
         else snprintf(msg, sizeof msg, "Couldn't reach the log server: %s", err);
-        host_log("[dev] %s log upload: %s", j->kind, msg);
+        host_log("[dev] %s log upload: %s (%.1f s)", j->kind, msg, (host_now_ms() - t0) / 1000);
     }
     free(body);
     pthread_mutex_lock(&up_lock);
@@ -141,6 +146,13 @@ static void upload_start(const char *path, const char *kind, bool notify) {
     pthread_mutex_lock(&up_lock);
     up_busy = false;
     pthread_mutex_unlock(&up_lock);
+}
+
+bool dev_upload_active(void) {
+    pthread_mutex_lock(&up_lock);
+    bool busy = up_busy;
+    pthread_mutex_unlock(&up_lock);
+    return busy;
 }
 
 void dev_start(const char *prev_log) {

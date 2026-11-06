@@ -126,6 +126,8 @@ static void latest_path(char *out, size_t n) { snprintf(out, n, "%s/offline-late
 
 static void *check_thread(void *arg) {
     (void)arg;
+    plat_thread_setup("pkr_check", 1, 10); // below the start screen's thread and off its core (TLS is work)
+    double t0 = host_now_ms();
     size_t len = 0;
     long status = 0;
     char *json = net_get_threadsafe(RELEASE_API, &len, &status);
@@ -139,9 +141,9 @@ static void *check_thread(void *arg) {
             fprintf(f, "%lld %s\n", (long long)time(NULL), strip_tag(tag));
             fclose(f);
         }
-        host_log("[offline] latest release on GitHub: %s", tag);
+        host_log("[offline] latest release on GitHub: %s (%.1f s)", tag, (host_now_ms() - t0) / 1000);
     } else {
-        host_log("[offline] update check failed (HTTP %ld)", status);
+        host_log("[offline] update check failed (HTTP %ld, %.1f s)", status, (host_now_ms() - t0) / 1000);
         tag[0] = 0;
     }
     free(json);
@@ -174,6 +176,13 @@ void offline_update_check_start(void) {
         pthread_attr_destroy(&attr);
     }
     pthread_mutex_unlock(&check_lock);
+}
+
+bool offline_check_active(void) {
+    pthread_mutex_lock(&check_lock);
+    bool r = check_running;
+    pthread_mutex_unlock(&check_lock);
+    return r;
 }
 
 // The newer release's tag, or NULL (no update known, or `installed` is the latest).
