@@ -82,7 +82,7 @@ Docker image and is tested in Vita3K (does it boot?) and on the real Vita (perfo
    LiveArea assets.
 3. **Playable: done.** Sound, gamepad, touch, built-in keyboard login, online saves,
    offline mode with downloads and updates, save import/export. Released as betas
-   (v0.37-beta onward), then v0.93 and v1.0.
+   (v0.37-beta onward), then v0.93, v1.0 and v1.1.
 4. **Performance and polish: in progress.** See the findings log for what has been done (native
    container walk, sprite batching, uniforms and flushes; lazily built UI; translation cache;
    native save encryption; work moved off the main thread) and the open items below.
