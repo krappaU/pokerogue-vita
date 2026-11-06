@@ -1556,3 +1556,33 @@ collection (0.27 MB, ~1,240 objects and ~8,500 properties per species: the atlas
 objects, its animation, and a copy of the atlas JSON in customData, ~18% of it, which neither Phaser's
 WebGL path nor the game reads). Nothing unloads them, in the browser either; on the Vita a long visit
 to the starter screen adds tens of MB for the rest of the session.
+
+### Why log225 ran out when longer sessions didn't; the starter screen (runtime 1.0.18, 2026-11-06)
+Memory, earlier sessions (JS left after a collection / most heap in use): log203 40 min, one run, 80 /
+214 MB; log207 128 min, one run, 84 / 235 MB (out of memory at wave 200, fixed in 1.0.12); log212,
+log216 under 70 / 175 MB. log225: 92 / 227 MB, the first session with a game over, 16 minutes in the
+starter select screen and a second run. Every gamefix rule still applied to the game's new build
+(battle-scene-DzzynR15, loading-scene-CKnNUEJ8), so nothing of ours stopped working; what that
+session did differently was load ~350 more species sprites (kept for the session, see above) and
+spend 16 minutes in a screen that accumulates listeners.
+The starter screen in log225 (81 `[stuck]` stacks) and on the desktop (wave-163 save, the screen
+opened over the battle with ui.setMode):
+- Idle, it costs 45-75 ms of JS a frame on the Vita (10-20 fps) and 2.4 ms on the desktop, nearly all
+  of it drawing (Phaser's container walk, the sprite pipelines, texts): the general render cost.
+- A cursor move: 2.6 ms of JS on the desktop (setStarter, setStarterDetails, the instructions), plus
+  loading the species' sprite. Phaser 3.90's Container.removeHandler takes the child's DESTROY
+  listener off this.remove where addHandler put this.onChildDestroyed, so every child taken out and
+  added back keeps one more; the screen's instructions do that to their icons twice per move (+1.5
+  listeners per move each, 82 after 40 moves), and each removal scans and copies the whole list. With
+  1,500 stale listeners a move's instructions cost 0.28 instead of 0.06 ms on the desktop. Fixed in
+  js/fastpath.js 7b (the listener addHandler made is taken off, as later Phaser does; tests/phaser).
+- The game's own leak, same screen: StarterSummary takes the old pointerover off its ability and
+  passive texts but not the pointerout, and its candy container (and the Pokedex page's) adds both
+  and removes neither: +1 closure per move each. gamefix "starter tooltips replaced, not added"
+  (three rules; tests/smoke, the tooltips shown the same both ways).
+  After 40 moves with both fixes, no object in the screen has more than 3 listeners.
+- A filter change: 19 ms on the desktop (~0.7 s on the Vita): filterStarters 13 ms (every filter's
+  values worked out for each of the ~600 starters, whatever is selected) and updateScroll 5 ms (each
+  of up to 81 slots destroys its icon sprite and makes a new one). Not changed yet.
+Also: src/gamefix.c's "[gamefix]" line was cut at 400 characters (the battle scene chunk's 19 rule
+names); it now has room for all.

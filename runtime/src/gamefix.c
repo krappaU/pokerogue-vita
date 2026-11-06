@@ -101,6 +101,14 @@
 // computes each once per sort (once per enemy move choice inside one) and sorts with the same
 // comparisons. The speed sort runs at each turn's start and in many ability and move checks.
 //
+// starter tooltips replaced, not added: the starter select screen's summary (StarterSummary) gives its
+// ability and passive texts a pointerover and a pointerout listener (the tooltips) each time the
+// cursor reaches a caught species, and before that takes the old pointerover off but not the
+// pointerout; its candy container (and the Pokedex page's) adds both and takes neither off. After
+// many cursor moves (log225: 16 minutes in that screen) each holds hundreds of listeners and
+// closures, and a touch there runs all of them. The old pair now goes before the new one is added:
+// one pointerover and one pointerout, as the code means (nothing else listens to these objects).
+//
 // starter slots from one starter list: the starter select screen's setup (after every game reset:
 // a new run rebuilds the UI) creates its 81 slots with `getAllStarters()[i]`, and each call goes
 // through all ~1300 species to list the starters again: 4.7 s of an 11 s frame on the Vita (0.89,
@@ -263,6 +271,18 @@ static const fix FIXES[] = {
      "@1.sort((@2,@3)=>{let @4=getPokemon(@2[0]).getEffectiveStat(5);return getPokemon(@3[0]).getEffectiveStat(5)-@4})",
      "globalThis.__pkrSpeedSort(@1,getPokemon)",
      NULL, "sortBySpeed", 0},
+    {"starter tooltips replaced, not added (ability, passive)",
+     "this.pokemonAbilityText.off(`pointerover`),this.pokemonPassiveText.off(`pointerover`)",
+     "this.pokemonAbilityText.off(`pointerover`).off(`pointerout`),this.pokemonPassiveText.off(`pointerover`).off(`pointerout`)",
+     NULL, "pokemonAbilityText", 2},
+    {"starter tooltips replaced, not added (candy, Pokedex page)",
+     "this.pokemonCandyContainer.on(`pointerover`,",
+     "this.pokemonCandyContainer.off(`pointerover`).off(`pointerout`).on(`pointerover`,",
+     NULL, "pokemonCandyContainer", 0},
+    {"starter tooltips replaced, not added (candy)",
+     "this.pokemonCandyContainer.setVisible(!0).on(`pointerover`,",
+     "this.pokemonCandyContainer.setVisible(!0).off(`pointerover`).off(`pointerout`).on(`pointerover`,",
+     NULL, "pokemonCandyContainer", 0},
     {"icon loops: destroyed icons dropped, hidden ones left",
      "for(let[@1,@2]of this.icons)@1.y=@2.restY+this.getCurrentOffset(@2.mode)",
      "globalThis.__pkrIconSync(this)",
@@ -366,7 +386,7 @@ char *gamefix_source(const char *url, const char *src, size_t len, size_t *out_l
     char *cur = NULL;
     size_t cur_len = len;
     const char *in = src;
-    char applied[400] = "";
+    char applied[1024] = ""; // every rule's name: the battle scene chunk has over a dozen
     for (int f = 0; f < NFIX; f++) {
         const fix *x = &FIXES[f];
         if (!has_marker[f]) continue;

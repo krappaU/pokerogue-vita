@@ -416,6 +416,35 @@ async function run() {
     }
     report("fastpath: the input plugin's object list kept with sets is Phaser's", !detail, detail);
   }
+  // js/fastpath.js 7b: a child taken out of a container (not destroyed) loses the DESTROY listener the
+  // container gave it; Phaser 3.90 leaves it, one more each time the child is added back (log225).
+  // The container's list and the child's destruction come out the same either way.
+  {
+    const sc = game.scene.getScene("test");
+    let detail = rt.containerListenerFix ? "" : "not installed";
+    if (!detail) {
+      const run = (on) => {
+        rt.fastpath.set(on);
+        const box = sc.add.container(0, 0), other = sc.add.container(0, 0);
+        const a = sc.add.image(0, 0, "atlas", 0).setName("a"), b = sc.add.image(0, 0, "atlas", 0).setName("b");
+        for (let i = 0; i < 5; i++) { box.add([a, b]); box.removeAll(); }
+        box.add([a, b]); box.remove(b);
+        other.add(b);
+        const listeners = a.listenerCount("destroy") + "/" + b.listenerCount("destroy");
+        a.destroy();
+        const out = box.list.map((o) => o.name).join(",") + " | " + other.list.map((o) => o.name).join(",");
+        b.destroy();
+        const after = box.list.length + "," + other.list.length;
+        box.destroy(), other.destroy();
+        return { listeners, out: out + " | " + after };
+      };
+      const ref = run(false), got = run(true);
+      rt.fastpath.set(true);
+      detail = got.out !== ref.out ? got.out + " vs Phaser's " + ref.out
+        : got.listeners !== "1/1" ? "destroy listeners " + got.listeners + " (Phaser's " + ref.listeners + ")" : "";
+    }
+    report("fastpath: a container takes its DESTROY listener off a child it lets go", !detail, detail);
+  }
   // js/lazy_ui.js: handlers PokeRogue's UI sets up at each reset are built on first use instead. A
   // never-built one is destroyed without its destroy() (which reads what setup() made); a used one is
   // built then, its objects in the order they would have had; a built one's destroy() runs.

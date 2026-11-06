@@ -887,6 +887,27 @@
     }
     return origContainerAdd.apply(this, arguments);
   };
+  // 7b. Container.removeHandler (Phaser 3.90) unsubscribes the child's DESTROY event from
+  //     this.remove, but addHandler subscribed this.onChildDestroyed: every child taken out without
+  //     being destroyed keeps a listener, and one added back gets another. The starter select
+  //     screen's instructions take their icons out and add them back on every cursor move (log225:
+  //     ~1,200 listeners per icon after 16 minutes there); each removal then scans and copies the
+  //     whole list (eventemitter3 rebuilds it), and the moves took 0.5-1 s on the Vita. The listener
+  //     addHandler made is now taken off with the child, as later Phaser does. The stale ones only
+  //     ever ran when the child was destroyed: onChildDestroyed once per stale listener, removing
+  //     a child that was no longer in the list.
+  {
+    const GOE = Phaser.GameObjects.Events;
+    const origRemoveHandler = CP2.removeHandler, addSrc = String(CP2.addHandler), removeSrc = String(origRemoveHandler);
+    if (GOE && GOE.DESTROY && /\.once\(\w+\.DESTROY,this\.onChildDestroyed,this\)/.test(addSrc) &&
+        /\.off\(\w+\.DESTROY,this\.remove,this\)/.test(removeSrc)) {
+      CP2.removeHandler = function (child) {
+        if (enabled && child && typeof child.off === "function") child.off(GOE.DESTROY, this.onChildDestroyed, this);
+        return origRemoveHandler.call(this, child);
+      };
+      g.__rt.containerListenerFix = true; // tests/phaser
+    }
+  }
 
   // 8. Utils.Array.Remove / RemoveAt (Container.remove, Structs.List): Phaser removes the element with
   //    SpliceOne, a JS loop shifting the rest of the array down. Destroying a big container's

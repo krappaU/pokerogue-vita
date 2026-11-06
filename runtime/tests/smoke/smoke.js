@@ -441,6 +441,44 @@ async function run() {
     if (p.during <= f.during * 2) return "plain " + p.during + " calls, rewritten " + f.during;
     if (f.outside >= p.outside) return "outside a choice, rewritten " + f.outside + " calls, plain " + p.outside;
   });
+  await check("gamefix: starter screen tooltips are replaced, not added, and show the same", async () => {
+    const fixed = await import("./assets/tips-Pk7rTstA.js"); // a chunk: src/gamefix.c rewrites it
+    const text = await (await fetch("./assets/tips-Pk7rTstA.js")).text();
+    const plain = new Function(text.replace(/export (function|class)/g, "$1") + "\nreturn { make };")();
+    class Emitter {
+      constructor() { this.l = {}; }
+      on(e, fn) { (this.l[e] = this.l[e] || []).push(fn); return this; }
+      off(e) { delete this.l[e]; return this; }
+      emit(e) { for (const fn of this.l[e] || []) fn(); }
+      count(e) { return (this.l[e] || []).length; }
+      setVisible() { return this; }
+    }
+    const run = (mod) => {
+      // what is on screen: the last tooltip shown (each call replaces it), or none once hidden
+      const log = [];
+      let shown = "none";
+      const B = { ui: { showTooltip: (a, b) => { shown = a + " " + b; }, hideTooltip: () => { shown = "none"; } } };
+      const { StarterSummary, PokedexPageUiHandler } = mod.make(Emitter, B);
+      const s = new StarterSummary(), p = new PokedexPageUiHandler();
+      for (let i = 1; i <= 5; i++) {
+        s.setStarter({ candy: i, friendship: 10, ability: "ab" + i, passive: "pa" + i });
+        p.setSpecies({ candy: i });
+      }
+      s.setNoStarter();
+      s.setStarter({ candy: 9, friendship: 10, ability: "last", passive: "lastp" });
+      for (const o of [s.pokemonAbilityText, s.pokemonPassiveText, s.pokemonCandyContainer, p.pokemonCandyContainer]) {
+        o.emit("pointerover"); log.push(shown);
+        o.emit("pointerout"); log.push(shown);
+      }
+      const counts = [s.pokemonAbilityText, s.pokemonPassiveText, s.pokemonCandyContainer, p.pokemonCandyContainer]
+        .map((o) => o.count("pointerover") + "/" + o.count("pointerout")).join(" ");
+      return { counts, log: log.join(", ") };
+    };
+    const f = run(fixed), p = run(plain);
+    eq(f.log, p.log, "tooltips shown and hidden");
+    eq(f.counts, "1/1 1/1 1/1 1/1", "rewritten listeners");
+    if (p.counts === f.counts) return "not rewritten (plain: " + p.counts + ")";
+  });
   await check("gamefix: a destroyed time-of-day widget stops listening to encounters", async () => {
     const fixed = await import("./assets/widget-Pk7rTst6.js"); // a chunk: src/gamefix.c rewrites it
     const text = await (await fetch("./assets/widget-Pk7rTst6.js")).text();
