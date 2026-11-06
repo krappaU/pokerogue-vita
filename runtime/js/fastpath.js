@@ -330,12 +330,15 @@
     return stub;
   }
   const stubs = new WeakMap(); // native canvas object -> its measuring stand-in
-  const textStats = { updates: 0, measures: 0, draws: 0, reused: 0 };
+  const textStats = { updates: 0, measures: 0, draws: 0, reused: 0, same: 0 };
   g.__rt.textStats = () => Object.assign({}, textStats);
   // useTex: the GPU texture the text gets (a reused one, see textCache), else it keeps its own.
   function measureNow(t, useTex) {
     textStats.measures++;
     t._pkrMeasureDirty = false;
+    // measured in some other state than its texture shows: its sizes are that state's now, so the
+    // next render draws (drawText's skip relies on the sizes of the last draw)
+    if (!useTex) t._pkrSig = null;
     const ctx = t.context;
     const real = ctx._n, tex = useTex || (t.frame && t.frame.source && t.frame.source.glTexture) || null;
     const r = t.renderer, origC2T = r.canvasToTexture;
@@ -407,9 +410,16 @@
   };
   // The draw a render does when the text changed: Phaser's updateText, or a kept texture.
   function drawText(t) {
-    textStats.draws++;
     const src = t.frame && t.frame.source;
     const sig = src && g.__rt.textReuse !== false ? textSignature(t) : null;
+    // Changed back to what its texture already shows (the game sets the same text, colour or shadow
+    // again: the starter screen does it to its 81 cost labels on every filter change, log232): the
+    // same inputs draw the same pixels at the same size, so nothing to draw or upload.
+    if (sig && sig === t._pkrSig && src.glTexture && t.canvas && t.canvas.width && g.__rt.textSkipSame !== false) {
+      textStats.same++;
+      return;
+    }
+    textStats.draws++;
     if (sig && !src.glTexture) {
       const tex = textCacheTake(sig);
       if (tex) {

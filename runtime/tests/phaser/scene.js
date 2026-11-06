@@ -283,6 +283,37 @@ async function run() {
     b.destroy(), c.destroy(), d.destroy();
     report("fastpath: measuring makes no texture; a destroyed text's texture serves the same text", !detail, detail);
   }
+  // js/fastpath.js 4: a text changed back to what its texture shows (same words, colour, shadow) is
+  // not drawn again; one really changed is, and so is one measured meanwhile in another state (its
+  // sizes are that state's), whose size then matches Phaser's for its words.
+  {
+    const sc = game.scene.getScene("test");
+    const style = { fontFamily: "sans-serif", fontSize: "24px", color: "#ffffff" };
+    const t = sc.add.text(10, 160, "3", style).setShadow(2, 2, "#333333");
+    await nextFrames(game, 3);
+    const tex = t.frame.source.glTexture, size0 = t.width + "x" + t.height;
+    const draws = () => rt.textStats().draws;
+    let d0 = draws();
+    t.setText("3"); t.setColor("#ffffff"); t.setShadowColor("#333333");
+    await nextFrames(game, 2);
+    const sameDraws = draws() - d0, sameTex = t.frame.source.glTexture === tex;
+    d0 = draws();
+    t.setColor("#ffcc00");
+    await nextFrames(game, 2);
+    const changedDraws = draws() - d0;
+    t.setColor("#ffffff");
+    await nextFrames(game, 2);
+    d0 = draws();
+    t.setText("12345"); void t.width; t.setText("3");
+    await nextFrames(game, 2);
+    const measuredDraws = draws() - d0, size1 = t.width + "x" + t.height;
+    t.destroy();
+    const detail = !("same" in rt.textStats()) ? "not installed" : sameDraws ? "drawn " + sameDraws + " times though unchanged"
+      : !sameTex ? "lost its texture" : changedDraws !== 1 ? "a new colour drawn " + changedDraws + " times"
+      : measuredDraws !== 1 ? "measured as another text, then back: drawn " + measuredDraws + " times"
+      : size1 !== size0 ? "size " + size1 + " after, " + size0 + " before" : "";
+    report("fastpath: a text changed back to what it shows isn't drawn again", !detail, detail);
+  }
   // js/fastpath.js 4b: rex's BBCodeText (the game's rich text), built the way PokeRogue builds its
   // option lists (constructor, setShadow, setLineSpacing, two setTexts, then its width), gives the
   // same sizes, lines and canvas pixels as rex's own code, with one draw per text; destroyed ones'

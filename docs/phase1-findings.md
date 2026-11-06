@@ -1650,3 +1650,19 @@ taken 0.5 s into a frame, so the later steps are over-represented).
 - Found on the way: a dynamic import() from code resumed after an await in a frame callback (tests'
   scene.js) or from a control-channel eval fails with "cannot read property 'length' of undefined"
   before loading anything. The game's own lazy imports work; not looked into further.
+
+### The starter screen on the Vita after 1.0.22; texts set to what they show (runtime 1.0.23, 2026-11-06)
+log232 (1.0.22, the starter screen after the title): filter changes 0.88-0.90 s on the Vita (log225:
+1.05-1.08 s), so -15% there for the -36% on the desktop; the screen idles at 42-70 ms of JS a frame.
+The start screen: "[start] chosen after 7.4 s" with no stall line, but that start sent a 1 KB log
+(the previous run was the updater's), so the slow case is still to be seen.
+Several of log232's long frames were in drawing texts at render (textRender -> drawText ->
+updateText): each refresh sets every slot's cost label to its text and colours again (setText,
+setColor, setShadowColor), Phaser marks a text changed on every setColor even to the same colour, and
+js/fastpath.js 4 drew each again at the next render, canvas and GPU upload (texts are drawn at 6x).
+On the desktop one filter change gave 170 text updates and 88 draws. Now a text whose inputs (the
+signature 4 already kept for reusing destroyed texts' textures: words, font, colours, shadow,
+padding, spacing...) are those its texture was last drawn with isn't drawn again: 0 draws for the
+same change. A text measured in another state since its last draw (its sizes are that state's now)
+is drawn as before. tests/phaser checks: unchanged, not drawn; another colour, drawn once; measured as
+other words and set back, drawn once with Phaser's size. Switch: __rt.textSkipSame = false.
