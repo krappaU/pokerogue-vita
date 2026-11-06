@@ -1586,3 +1586,23 @@ opened over the battle with ui.setMode):
   of up to 81 slots destroys its icon sprite and makes a new one). Not changed yet.
 Also: src/gamefix.c's "[gamefix]" line was cut at 400 characters (the battle scene chunk's 19 rule
 names); it now has room for all.
+
+### Pokemon sprites unloaded when unused (runtime 1.0.19, 2026-11-06)
+js/sprite_gc.js, like a garbage collector for the species atlases (see log225 above: ~0.27 MB of JS
+each on the desktop, kept for the session). A pass unloads "pkmn__" atlas textures and their
+animations that no object uses and that loaded over a minute ago. "In use": any object on a scene's
+display or update list (into containers), every live sprite through its animation state
+(js/fastpath.js 9 keeps them all, on a list or not), objects the battle scene and UI handlers hold
+directly, what each plays or will play, and every sprite key of a Pokemon in either party (the
+fusion palette reads front and back atlases by name). A pass runs at a new biome or a new run (the
+old route's Pokemon won't come back soon), and under memory pressure: JS left by the last collection
+over 27% of the heap (69 MB on the Vita), at most once a minute and only after 20 more sprites were
+loaded. Never while a loader is busy. The game loads every Pokemon sprite through loadPokemonAtlas
+(Phaser's loader skips existing keys) and makes its animation when missing, so an unloaded sprite
+loads again from the disk cache when shown. Animations leave the manager's map directly:
+AnimationManager.remove would call every sprite's animation state for each one, and none plays them.
+Desktop (wave-163 save, 81 species loaded as the starter screen would): one pass unloaded 88 of 96
+atlases in 14 ms, 130.3 -> 115.3 MB of JS after a collection (21.7 MB had come with the 81); the
+battle drew the same; the starter screen reloaded and showed an unloaded species; a double-battle
+turn played after a pass; with the party's keys pinned, 14 of 15 kept in that battle.
+Switch: __rt.spriteGc = false. Log: "[sprites] <reason>: unloaded N of M Pokemon sprites ...".

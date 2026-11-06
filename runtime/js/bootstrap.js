@@ -7,7 +7,7 @@
 (function (g) {
   "use strict";
   const N = g.__native;
-  for (const f of ["core.js", "i18n_cache.js", "dom.js", "canvas2d.js", "webgl.js", "net.js", "storage.js", "input.js", "audio.js", "savecrypt.js"]) {
+  for (const f of ["core.js", "i18n_cache.js", "dom.js", "canvas2d.js", "webgl.js", "net.js", "storage.js", "input.js", "audio.js", "savecrypt.js", "sprite_gc.js"]) {
     N.loadScript(f);
   }
   const rt = g.__rt, doc = g.document;

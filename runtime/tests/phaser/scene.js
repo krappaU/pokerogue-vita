@@ -416,6 +416,32 @@ async function run() {
     }
     report("fastpath: the input plugin's object list kept with sets is Phaser's", !detail, detail);
   }
+  // js/sprite_gc.js: the textures (and animations) it must never unload are found: shown by an object
+  // in a container on the display list, by a sprite on no list, by an image only a root holds, and
+  // played as an animation by a sprite on no list; one nothing uses is not.
+  {
+    const sc = game.scene.getScene("test");
+    let detail = rt.spriteGcInUse ? "" : "not installed";
+    if (!detail) {
+      const img = sc.textures.get("atlas").getSourceImage();
+      const keys = ["pkmn__a", "pkmn__b", "pkmn__c", "pkmn__d", "pkmn__e"];
+      for (const k of keys) sc.textures.addImage(k, img);
+      sc.anims.create({ key: "pkmn__c", frames: [{ key: "pkmn__c", frame: "__BASE" }], repeat: -1 });
+      const box = sc.add.container(0, 0);
+      box.add(sc.add.sprite(0, 0, "pkmn__a"));
+      const b = sc.make.sprite({ key: "pkmn__b" }, false);
+      const c = sc.make.sprite({ key: "atlas" }, false);
+      c.play("pkmn__c");
+      const e = sc.make.image({ key: "pkmn__e" }, false);
+      const used = rt.spriteGcInUse(game, [[e]]);
+      const got = ["a", "b", "c", "d", "e"].filter((k) => used.has("pkmn__" + k)).join("");
+      detail = got !== "abce" ? "found " + got + " (want abce)" : "";
+      box.destroy(), b.destroy(), c.destroy(), e.destroy();
+      sc.anims.remove("pkmn__c");
+      for (const k of keys) sc.textures.remove(k);
+    }
+    report("sprite_gc: textures in use are found on lists, off them and in animations", !detail, detail);
+  }
   // js/fastpath.js 7b: a child taken out of a container (not destroyed) loses the DESTROY listener the
   // container gave it; Phaser 3.90 leaves it, one more each time the child is added back (log225).
   // The container's list and the child's destruction come out the same either way.

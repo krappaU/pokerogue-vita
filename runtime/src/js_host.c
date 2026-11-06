@@ -828,6 +828,16 @@ static JSValue n_gc(JSContext *ctx, JSValueConst this_val, int argc, JSValueCons
     return JS_NewFloat64(ctx, host_now_ms() - t0);
 }
 
+// jsMemory() -> [what the last collection left of the JS heap, the fixed heap's size (0: none)], bytes
+static JSValue n_js_memory(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    double live, heap;
+    host_js_memory(&live, &heap);
+    JSValue a = JS_NewArray(ctx);
+    JS_SetPropertyUint32(ctx, a, 0, JS_NewFloat64(ctx, live));
+    JS_SetPropertyUint32(ctx, a, 1, JS_NewFloat64(ctx, heap));
+    return a;
+}
+
 // utf8Decode(ArrayBuffer|TypedArray[, start, end]) -> string
 static JSValue n_utf8_decode(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     size_t len = 0;
@@ -1327,6 +1337,7 @@ static const JSCFunctionListEntry native_funcs[] = {
     JS_CFUNC_DEF("utf8Encode", 1, n_utf8_encode),
     JS_CFUNC_DEF("btoa", 1, n_btoa),
     JS_CFUNC_DEF("gc", 0, n_gc),
+    JS_CFUNC_DEF("jsMemory", 0, n_js_memory),
     JS_CFUNC_DEF("atob", 1, n_atob),
     JS_CFUNC_DEF("log", 1, n_log),
     JS_CFUNC_DEF("now", 0, n_now),

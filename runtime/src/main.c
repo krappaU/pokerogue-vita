@@ -790,6 +790,13 @@ static void gc_at_save(void) {
     host_log("[gc] collected after the game saved: %.0f ms, JS heap %.1f -> %.1f MB", ms, before / 1048576.0, gc_left / 1048576.0);
 }
 
+// What the last collection left of the JS heap, and the fixed heap's size (0 on the desktop), in
+// bytes: js/sprite_gc.js unloads unused Pokemon sprites when the first gets large.
+void host_js_memory(double *live, double *heap_size) {
+    *live = (double)gc_left;
+    *heap_size = (double)HEAP_SIZE;
+}
+
 // An allocation for pixels failed (canvas2d.c): collect now, from inside the game's call, and let
 // the caller try once more. log225: after an hour, at 226 of 256 MB in use, a 1224x357 canvas found
 // no room (garbage and fragmentation), its text drawing threw in Phaser's render, and the game

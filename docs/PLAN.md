@@ -138,7 +138,9 @@ Performance:
      loaded keeps ~0.27 MB of JS (desktop) for the rest of the session (Phaser's atlas frames and
      animation); the starter screen loads one per species the cursor visits. Unloading the atlases
      and animations no object uses (and the atlas JSON copy nothing reads) would bound it. (1.0.17:
-     a failed allocation collects and retries, and one failing frame no longer stops the game.)
+     a failed allocation collects and retries, and one failing frame no longer stops the game.
+     1.0.19: unused Pokemon sprites unloaded at a new biome or run and under memory pressure,
+     js/sprite_gc.js; Vita numbers pending.)
   10. The starter select screen (log225): idle 45-75 ms of JS a frame (drawing); a filter change ~0.7 s
      (filterStarters works out every filter for each of ~600 starters; each visible slot remakes its
      icon sprite). (1.0.18: the listeners that piled up with every cursor move, Phaser's and the
