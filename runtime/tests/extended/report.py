@@ -5,7 +5,8 @@
 # out-of-memory lines, stalls, the slowest frames, memory, sprite unloading and the gamefix rules
 # that applied. Exit status 1 if a scenario failed: no "[bot] done" line, the bot stuck or erring,
 # an uncaught JS error or rejection, an out-of-memory line, or a scenario that should have reached
-# its target and didn't (the game over one may also end at the title).
+# its target and didn't (the game over one may also end at the title), or a wave-199 run that didn't
+# end in a victory.
 # Usage: report.py <dir> <scenario>...
 import collections
 import json
@@ -56,6 +57,8 @@ for name in names:
     elif reason not in ok_reasons:
         problems.append(f"ended with '{reason}'" + (f" ({bot.get('handler')}, mode {bot.get('mode')}: {bot.get('message', '')!r})" if reason == "stuck" else "")
                         + (f": {bot.get('error')}" if bot.get("error") else ""))
+    if name == "wave199" and bot and bot.get("victory") is not True:
+        problems.append("the final boss wasn't beaten (no victorious game over)")
     if js:
         problems.append(f"{len(js)} uncaught JS errors/rejections")
     if oom:

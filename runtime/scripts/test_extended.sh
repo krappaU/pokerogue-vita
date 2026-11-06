@@ -11,7 +11,7 @@
 # Needs the desktop build (scripts/build_linux.sh). Results: .cache/ext/<scenario>/ (log.txt,
 # end.png) and .cache/ext/report.md; the exit status is 1 if a scenario failed.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 2
 ZIP=${PKR_GAME_ZIP:-.cache/offline/game.zip}
 SCALE=${PKR_EXT_SCALE:-1}
 OUT=.cache/ext
@@ -20,11 +20,11 @@ NAME=${PKR_CONTAINER:-pkr-ext}
 [[ -x build-linux/pokerogue-rt ]] || { echo "no desktop build (scripts/build_linux.sh)" >&2; exit 2; }
 
 # name | snapshot ("" = a fresh save; "double" = the wave-163 run with a second wild Pokemon) |
-# waves | heal | config.txt lines | minutes allowed | what it covers
+# waves | heal (0; 1: at each wave; turn: each turn too) | config.txt lines | minutes allowed | what it covers
 SCENARIOS=(
   "fresh||6|1||25|a new save: title, New Game, Classic, starter select, the first waves"
   "wave163|fixtures/run-wave163.json|12|1||45|a late run (12 waves, items, a biome change and its sprite unloading)"
-  "wave199|fixtures/run-wave199.json|3|1||25|the last wave: the final boss, the end of the run, back to the title"
+  "wave199|fixtures/run-wave199.json|3|turn||25|the last wave: the final boss won, the ending, back to the title"
   "double|double|4|1||25|double battles (the enemy AI's move choice for two)"
   "nogamefix|fixtures/run-wave163.json|4|1|gamefix=0|25|the game as published: config.txt gamefix=0"
   "gameover|fixtures/run-wave163.json|8|0||30|no healing: a lost battle, the game over, back to the title"
@@ -36,7 +36,7 @@ docker rm -f "$NAME" >/dev/null 2>&1
 ran=()
 for s in "${SCENARIOS[@]}"; do
   IFS='|' read -r name snap waves heal conf minutes what <<< "$s"
-  if [[ ${#want[@]} -gt 0 && ! " ${want[*]} " =~ " $name " ]]; then continue; fi
+  if [[ ${#want[@]} -gt 0 && " ${want[*]} " != *" $name "* ]]; then continue; fi
   waves=$(( waves * SCALE )); minutes=$(( minutes * SCALE ))
   dir=$OUT/$name
   rm -rf "$dir"; mkdir -p "$dir"
@@ -61,7 +61,8 @@ for s in "${SCENARIOS[@]}"; do
     if grep -aq "pkrready$i=1" "$dir/log.txt" 2>/dev/null; then ready=1; break; fi
   done
   if [[ $ready = 1 ]]; then
-    printf '%s\n' "eval (globalThis.__botConfig={waves:$waves,heal:$([[ $heal = 1 ]] && echo true || echo false)},'cfg')" \
+    case $heal in 1) healjs=true ;; turn) healjs='"turn"' ;; *) healjs=false ;; esac
+    printf '%s\n' "eval (globalThis.__botConfig={waves:$waves,heal:$healjs},'cfg')" \
       "evalfile tests/extended/autoplay.js" >> "$dir/control.txt"
     end=$(( SECONDS + minutes * 60 ))
     while (( SECONDS < end )); do

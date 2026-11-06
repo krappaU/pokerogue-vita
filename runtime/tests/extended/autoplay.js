@@ -11,7 +11,8 @@
 // stuckSeconds.
 // Config: targetWave (absolute), or waves (more than the first wave seen); gameSpeed (the game's
 // own setting, 1-5); stuckSeconds; starters (fresh save); heal (the party at full HP, PP and no
-// status at each new wave).
+// status at each new wave; "turn": at each turn too). "[bot] done" says whether a game over was a
+// victory.
 (function (g) {
   "use strict";
   const N = g.__native, rt = g.__rt;
@@ -32,7 +33,7 @@
   function finish(reason, extra) {
     if (st.done) return;
     st.done = true;
-    const r = Object.assign({ reason, firstWave: st.firstWave, lastWave: st.lastWave, seconds: +secs(), presses: st.presses, waves: st.waves }, extra || {});
+    const r = Object.assign({ reason, firstWave: st.firstWave, lastWave: st.lastWave, seconds: +secs(), victory: st.victory, presses: st.presses, waves: st.waves }, extra || {});
     log("done " + JSON.stringify(r));
     rt.frameHooks.splice(rt.frameHooks.indexOf(hook), 1);
   }
@@ -78,7 +79,16 @@
       const target = cfg.targetWave || (st.firstWave + cfg.waves);
       if (wave >= target) return finish("target");
     }
-    if (b && b.turn !== st.lastTurn) st.lastTurn = b.turn, st.turns++, st.progressAt = now;
+    if (b && b.turn !== st.lastTurn) {
+      st.lastTurn = b.turn, st.turns++, st.progressAt = now;
+      if (cfg.heal === "turn") heal(s);
+    }
+    // how the run ended: the game's GameOverPhase says whether it was won
+    const pm = s.phaseManager, phase = pm && typeof pm.getCurrentPhase === "function" ? pm.getCurrentPhase() : null;
+    if (phase && phase.phaseName === "GameOverPhase" && st.victory === undefined) {
+      st.victory = !!phase.isVictory;
+      log("game over at wave " + wave + (st.victory ? ": victory" : ": lost"));
+    }
     if (st.firstWave && !wave && mode === MODE.TITLE) return finish("title"); // after a battle: game over or the run's end
     // stuck: no new wave nor turn for stuckSeconds
     if (now - st.progressAt > cfg.stuckSeconds * 1000) {
