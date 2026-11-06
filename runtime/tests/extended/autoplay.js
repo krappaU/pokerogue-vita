@@ -49,11 +49,14 @@
     } catch (e) { return ""; }
   }
 
-  // heal: the party at full HP and PP, without status, at each new wave (a long run for the
-  // runtime's sake shouldn't end on the bot's tactics; the game over path has its own scenario)
-  function heal(s) {
+  // heal: the party at full HP and PP, without status, at each new wave (a long run for the runtime's
+  // sake shouldn't end on the bot's tactics; the game over path has its own scenario)
+  // revive: fainted ones too, only at a new wave (a battle handles a faint as it happens: mid-battle
+  // a revived one is still fainted to the game, and the faint switch goes round in circles)
+  function heal(s, revive) {
     for (const p of typeof s.getPlayerParty === "function" ? s.getPlayerParty() : []) {
       try {
+        if (!p || (!revive && (p.hp <= 0 || (typeof p.isFainted === "function" && p.isFainted())))) continue;
         p.hp = p.getMaxHp();
         if (typeof p.resetStatus === "function") p.resetStatus(true, false, false); else p.status = null;
         for (const m of p.getMoveset()) if (m) m.ppUsed = 0;
@@ -75,13 +78,13 @@
       log("wave " + wave + " (" + (b.double ? "double" : "single") + (b.trainer ? ", trainer" : "") + ") at " + secs() + " s" +
         (st.lastWave ? "; wave " + st.lastWave + " took " + took + " s, " + st.turns + " turns" : ""));
       st.lastWave = wave, st.waveAt = now, st.progressAt = now, st.turns = 0, st.lastTurn = b.turn;
-      if (cfg.heal) heal(s);
+      if (cfg.heal) heal(s, true);
       const target = cfg.targetWave || (st.firstWave + cfg.waves);
       if (wave >= target) return finish("target");
     }
     if (b && b.turn !== st.lastTurn) {
       st.lastTurn = b.turn, st.turns++, st.progressAt = now;
-      if (cfg.heal === "turn") heal(s);
+      if (cfg.heal === "turn") heal(s, false);
     }
     // how the run ended: the game's GameOverPhase says whether it was won
     const pm = s.phaseManager, phase = pm && typeof pm.getCurrentPhase === "function" ? pm.getCurrentPhase() : null;
@@ -157,7 +160,8 @@
         if (st.partyPresses > 40) return press(ui, BTN.CANCEL, mode);
         if (h && h.optionsMode) return press(ui, BTN.ACTION, mode);
         const party = typeof s.getPlayerParty === "function" ? s.getPlayerParty() : [];
-        const ok = party.map((p, i) => (p && p.hp > 0 && !(typeof p.isOnField === "function" && p.isOnField()) ? i : -1)).filter((i) => i >= 0);
+        const fainted = (p) => !p || p.hp <= 0 || (typeof p.isFainted === "function" && p.isFainted());
+        const ok = party.map((p, i) => (!fainted(p) && !(typeof p.isOnField === "function" && p.isOnField()) ? i : -1)).filter((i) => i >= 0);
         const pool = ok.length ? ok : party.map((p, i) => i);
         const pick = pool[Math.floor((st.partyPresses - 1) / 2) % pool.length];
         if (h && typeof h.setCursor === "function" && h.cursor !== pick) h.setCursor(pick);
