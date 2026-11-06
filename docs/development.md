@@ -348,6 +348,33 @@ runtime's copy from AnimMouse/SceShaccCg, pinned to a commit and hash-checked, o
 Vita3K doesn't write its rendering back to the Vita's memory, so `readPixels` returns zeros there;
 the smoke test skips pixel comparisons on the Vita's GPU.
 
+**Extended test (before a release):** `runtime/scripts/test_extended.sh` plays the offline game on
+the desktop runtime for most of an hour; in CI, Actions -> "Extended test" -> Run workflow
+(`.github/workflows/extended.yml`, by hand only; the report becomes the run's summary, the logs and
+end screenshots an artifact). A bot (`tests/extended/autoplay.js`, loaded through the control
+channel) presses the game's own buttons: it fights with the move the game's damage estimate rates
+best, takes the first reward, sends out the next Pokemon, answers questions (no, except those that
+only end with a yes), and goes through evolutions, hatches, mystery encounters and menus. Scenarios,
+each in its own data folder under `.cache/ext/`:
+
+| scenario | plays |
+|---|---|
+| `fresh` | a new save: title, New Game, Classic, starter select, waves 1-7 |
+| `wave163` | the late fixture for 12 waves (rewards, a biome change and its sprite unloading) |
+| `wave199` | the last wave: the final boss, the end of the run, back to the title |
+| `double` | the wave-163 run as a double battle (`tests/extended/make_double.py`) |
+| `nogamefix` | the game as published (`gamefix=0`) |
+| `gameover` | no healing: lost battles, the game over, back to the title |
+
+All but `gameover` heal the party at each new wave, so a long run tests the runtime rather than the
+bot's tactics. `tests/extended/report.py` writes `.cache/ext/report.md` and fails a scenario that
+didn't reach its target (or the title, where that is the expected end), got stuck (no new turn for
+3 minutes), logged an uncaught JS error or rejection, or ran out of memory; it also lists the
+game's error lines, stalls, the slowest frames (desktop timings), collections, sprite unloading and
+the gamefix rules applied. `scripts/fetch_offline_game.sh` downloads the offline game (Admiral-Billy's
+latest `game.zip`, ~530 MB; CI caches it per release); locally `PKR_GAME_ZIP` points at one.
+`scripts/test_extended.sh wave163 double` runs only those; `PKR_EXT_SCALE=3` triples the waves.
+
 ## Measuring the real game
 See [tools/measure/README.md](../tools/measure/README.md): headless Chrome running a local dev
 build of PokeRogue, with hooks that count what Phaser draws each frame.

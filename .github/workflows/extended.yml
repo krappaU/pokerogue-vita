@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# The extended test, by hand before a release (Actions -> Extended test -> Run workflow): the desktop
+# runtime plays the offline game for most of an hour in several scenarios (a new save, late saved
+# runs, the last wave, double battles, the game as published, a game over) with a bot pressing the
+# game's buttons, and checks each log for JS errors, stalls, out-of-memory and how far it got
+# (runtime/scripts/test_extended.sh). The report is the run's summary; logs and screenshots are an
+# artifact. Not on every push: CI (ci.yml) covers each build.
+name: Extended test
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenarios:
+        description: Scenarios (space-separated; empty = all)
+        required: false
+        default: ""
+      scale:
+        description: Multiply each scenario's waves and time limit by
+        required: false
+        default: "1"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: runtime
+
+jobs:
+  extended:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v7
+      - run: scripts/fetch_deps.sh
+      - run: scripts/build_linux.sh
+      - name: Offline game's release tag
+        id: game
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "tag=$(curl -sf -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/Admiral-Billy/pokerogue/releases/latest | jq -r .tag_name)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: runtime/.cache/offline-game
+          key: offline-game-${{ steps.game.outputs.tag }}
+      - name: Offline game
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "PKR_GAME_ZIP=$(scripts/fetch_offline_game.sh)" >> "$GITHUB_ENV"
+      - name: Play
+        env:
+          PKR_EXT_SCALE: ${{ inputs.scale }}
+          SCENARIOS: ${{ inputs.scenarios }}
+        run: |
+          read -ra list <<< "$SCENARIOS"
+          scripts/test_extended.sh "${list[@]}"
+      - name: Report
+        if: always()
+        run: '[ -f .cache/ext/report.md ] && cat .cache/ext/report.md >> "$GITHUB_STEP_SUMMARY" || true'
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: extended-test-results
+          include-hidden-files: true
+          if-no-files-found: ignore
+          path: |
+            runtime/.cache/ext/report.md
+            runtime/.cache/ext/*/log.txt
+            runtime/.cache/ext/*/stdout.txt
+            runtime/.cache/ext/*/end.png
