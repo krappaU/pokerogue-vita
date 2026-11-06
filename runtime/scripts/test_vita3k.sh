@@ -11,7 +11,7 @@ scripts/get_vita3k.sh
 docker build -q -t pkrb-vita3k -f docker/vita3k.Dockerfile docker >/dev/null
 TESTS=("$@")
 if [ ${#TESTS[@]} -eq 0 ]; then
-  for d in tests/*/; do TESTS+=("$(basename "$d")"); done
+  for d in tests/*/; do [ -f "$d/index.html" ] && TESTS+=("$(basename "$d")"); done # (not tests/extended: no page)
 fi
 docker run --rm --init -v "$PWD":/w -w /w pkrb-vita3k bash -c \
   'rc=0; for t in "$@"; do tests/run_vita3k_page.sh "$t" || rc=1; done; exit $rc' _ "${TESTS[@]}"

@@ -8,7 +8,7 @@ tests/fetch_test_deps.sh >/dev/null
 docker build -q -t pkr-rt-linux -f docker/linux.Dockerfile docker >/dev/null
 TESTS=("$@")
 if [ ${#TESTS[@]} -eq 0 ]; then
-  for d in tests/*/; do TESTS+=("$(basename "$d")"); done
+  for d in tests/*/; do [ -f "$d/index.html" ] && TESTS+=("$(basename "$d")"); done # (not tests/extended: no page)
 fi
 docker run --rm --init -v "$PWD":/w -w /w pkr-rt-linux bash -c \
   'rc=0; for t in "$@"; do tests/run_page.sh "$t" || rc=1; done; exit $rc' _ "${TESTS[@]}"
