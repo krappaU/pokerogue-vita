@@ -15,7 +15,7 @@ on:
         description: Version tag to create (v0.69-beta)
         required: true
       commit:
-        description: Commit of main to release (empty = main's newest)
+        description: Commit of main to release, the full 40-character hash (empty = main's newest)
         required: false
 
 concurrency:
