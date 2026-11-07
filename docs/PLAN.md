@@ -175,4 +175,4 @@ Features and checks:
   Each user installs their own copy, for example with PIB-Configuration-Tool, ShaRKBR33D or ShaRKF00D.
 - Wi-Fi: the app loads the live game from pokerogue.net
 - Logs go to `ux0:data/pokerogue/log.txt` (dev builds; player builds only with `log=1` in
-  `ux0:data/pokerogue/config.txt`)
+  `ux0:data/pokerogue/config.txt`, which the start screen's "Write a log" toggle sets)

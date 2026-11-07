@@ -35,6 +35,10 @@ typedef struct {
 } toggle;
 static const toggle toggles[] = {
     {"30 fps lock (L+R+Square)", "fps30", &g_cfg.fps30, false},
+#ifndef PKR_DEBUG
+    // config.txt log=1 (for bug reports, README): turned on, it starts log.txt at once
+    {"Write a log (log.txt)", "log", &g_cfg.log, false},
+#endif
 #ifdef PKR_DEBUG
     {"Game fixes (gamefix)", "gamefix", &g_cfg.no_gamefix, true},
     {"Shader fixes (shaderfix)", "shaderfix", &g_cfg.no_shader_fix, true},
@@ -170,6 +174,7 @@ static int move(int sel, int n, int dy, int dx) {
 static void flip(int i) {
     *toggles[i].v = !*toggles[i].v;
     config_set(toggles[i].key, toggle_on(i) ? "1" : "0");
+    if (!strcmp(toggles[i].key, "log") && toggle_on(i)) host_log_open("log turned on at the start screen");
     host_log("[start] %s=%d", toggles[i].key, toggle_on(i));
 }
 
@@ -203,8 +208,11 @@ int launcher_run(bool offline_ok, const char *offline_version, bool bench_ok, vo
         if ((modes[i] == M_OFFLINE && !strcmp(saved, "offline")) || (modes[i] == M_BENCH && !strcmp(saved, "bench"))) sel = i;
     bool prev[18] = {0}, prev_dir[4] = {0}, dirty = true, chosen = false, quit = false;
     int ox = 0, oy = 0;
-    // Buttons held from the previous app (or from launching) don't count until released.
-    bool armed = false;
+    // Only presses count, not buttons already held when the screen opens (cross from launching the
+    // app): the first reading only sets what is held. Until 1.1 nothing counted until every button
+    // read as released at once, and fingers resting on the rear touchpad's upper half (L2 / R2) kept
+    // the screen from taking input for half a minute and more (log235: 47 s, log240: 27 s).
+    bool seen_pad = false, first_input_logged = false;
     char status[96] = "";
     double shown = host_now_ms(), last = shown;
     while (!chosen && !quit) {
@@ -237,15 +245,20 @@ int launcher_run(bool offline_ok, const char *offline_version, bool bench_ok, vo
         if (plat_gamepads(&pad, 1) > 0) {
             bool now[18], dir[4] = {pad.buttons[12] > 0.5f || pad.axes[1] < -0.6f, pad.buttons[13] > 0.5f || pad.axes[1] > 0.6f,
                                     pad.buttons[14] > 0.5f || pad.axes[0] < -0.6f, pad.buttons[15] > 0.5f || pad.axes[0] > 0.6f};
-            bool any = dir[0] || dir[1] || dir[2] || dir[3];
-            for (int i = 0; i < 18; i++) now[i] = pad.buttons[i] > 0.5f, any |= now[i];
-            if (!armed) armed = !any;
-            else {
-                if (dir[0] && !prev_dir[0]) sel = move(sel, n, -1, 0), dirty = true;
-                if (dir[1] && !prev_dir[1]) sel = move(sel, n, 1, 0), dirty = true;
-                if ((dir[2] && !prev_dir[2]) || (dir[3] && !prev_dir[3])) sel = move(sel, n, 0, 1), dirty = true;
-                if ((now[0] && !prev[0]) || (now[9] && !prev[9])) pick = sel;
+            for (int i = 0; i < 18; i++) now[i] = pad.buttons[i] > 0.5f;
+            if (seen_pad) {
+                bool moved = false;
+                if (dir[0] && !prev_dir[0]) sel = move(sel, n, -1, 0), moved = true;
+                if (dir[1] && !prev_dir[1]) sel = move(sel, n, 1, 0), moved = true;
+                if ((dir[2] && !prev_dir[2]) || (dir[3] && !prev_dir[3])) sel = move(sel, n, 0, 1), moved = true;
+                if ((now[0] && !prev[0]) || (now[9] && !prev[9])) pick = sel, moved = true;
+                if (moved) dirty = true;
+                if (moved && !first_input_logged) {
+                    first_input_logged = true;
+                    host_log("[start] first button press after %.1f s", (host_now_ms() - shown) / 1000);
+                }
             }
+            seen_pad = true;
             memcpy(prev, now, sizeof prev), memcpy(prev_dir, dir, sizeof prev_dir);
         }
         if (pick >= n) flip(pick - n), dirty = true;

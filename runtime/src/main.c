@@ -90,6 +90,20 @@ static int log_thread_state; // 0: not started, 1: running, -1: couldn't start (
 
 bool host_logging(void) { return log_fp != NULL; }
 
+// Starts log.txt (the previous one becomes log-prev.txt) and writes its first line: at startup, or
+// in a player build when the start screen's "Write a log" toggle is turned on (`why` says so).
+void host_log_open(const char *why) {
+    if (log_fp) return;
+    char path[512], prev[512];
+    snprintf(path, sizeof path, "%s/log.txt", g_cfg.data_dir);
+    snprintf(prev, sizeof prev, "%s/log-prev.txt", g_cfg.data_dir);
+    remove(prev);
+    rename(path, prev);
+    log_fp = fopen(path, "w");
+    host_log("%s, built %s | QuickJS-ng %s | page %s%s%s", host_version_string(), __DATE__, JS_GetVersion(),
+             g_cfg.base_url, why ? " | " : "", why ? why : "");
+}
+
 static void log_out(const char *p, size_t n) {
     fwrite(p, 1, n, stderr);
     if (log_fp) {
@@ -1151,18 +1165,12 @@ int main(int argc, char **argv) {
     }
     mkdirs(g_cfg.data_dir);
     char path[512], prev_log[512];
-    snprintf(path, sizeof path, "%s/log.txt", g_cfg.data_dir);
     // The previous run's log is kept: after a crash it is the one that matters.
     snprintf(prev_log, sizeof prev_log, "%s/log-prev.txt", g_cfg.data_dir);
 #ifndef PKR_DEBUG
     if (g_cfg.log)
 #endif
-    {
-        remove(prev_log);
-        rename(path, prev_log);
-        log_fp = fopen(path, "w");
-    }
-    host_log("%s, built %s | QuickJS-ng %s | page %s", host_version_string(), __DATE__, JS_GetVersion(), g_cfg.base_url);
+        host_log_open(NULL);
 
 
     mem_report("start");

@@ -1666,3 +1666,16 @@ padding, spacing...) are those its texture was last drawn with isn't drawn again
 same change. A text measured in another state since its last draw (its sizes are that state's now)
 is drawn as before. tests/phaser checks: unchanged, not drawn; another colour, drawn once; measured as
 other words and set back, drawn once with Phaser's size. Switch: __rt.textSkipSame = false.
+
+### The start screen ignoring input; a log toggle for players (runtime 1.1.1, 2026-11-07)
+The start screen still took no input for a while after launch in log235 (47.5 s) and log240 (27 s,
+1.1), though the new lines showed it running all along (no "didn't run" stall) and its background
+jobs done in 0.6-1.9 s. Its input guard waited for a frame with every button released before any
+press counted (against cross held from launching the app), and buttons 6 and 7 are the rear
+touchpad's upper half (L2 / R2): fingers resting there kept it waiting until they moved, the same
+thing 1.0.9 fixed for the dialogs. Now the first reading only records what is held and later presses
+count (a button held from launching still doesn't, until pressed again), and the log says when the
+first press came ("[start] first button press after N s").
+Player builds' start screen gets a "Write a log (log.txt)" toggle beside the 30 fps lock: it sets
+config.txt log=1 (the README's way to write a log for a bug report), and turned on there it starts
+log.txt at once (main.c host_log_open, as at startup), so that run is logged too.

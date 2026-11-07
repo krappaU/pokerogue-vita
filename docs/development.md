@@ -23,7 +23,8 @@ Homebrew**. Builds are marked unsafe so they can raise the CPU clock.
    ```
 3. In VitaShell, open `ux0:data/`, press ✕ on the .vpk, install it, and accept the permissions prompt.
 4. Logs are written to `ux0:data/pokerogue/log.txt` (dev builds; a player build only with `log=1`
-   in `ux0:data/pokerogue/config.txt`, see "Debug features" below):
+   in `ux0:data/pokerogue/config.txt` or the start screen's "Write a log" toggle, see "Debug
+   features" below):
    ```bash
    curl ftp://VITA_IP:1337/ux0:/data/pokerogue/log.txt -o log.txt
    ```
@@ -145,7 +146,8 @@ control channel (`ux0:data/pokerogue/control.txt` on the Vita, read every frame)
 profiler, the debug line, the watchdog thread, `<data>/debug.js` and config.txt's debugging options
 (`url`, `frames`, `interrupt`, `hud`, `profile`, `sample`, `profile_rate`, `sample_ms`, `nettrace`).
 A player build writes no log and its JS `console.*` does nothing, unless `log=1` is in config.txt
-(for a bug report). `-DPKR_DEBUG=OFF` builds the player variant on the desktop for testing.
+(for a bug report): the start screen's "Write a log (log.txt)" toggle (player builds only) sets it,
+and turned on there it starts the log at once. `-DPKR_DEBUG=OFF` builds the player variant on the desktop for testing.
 
 **Releases for players:** set `runtime/VERSION` to the release's version (1.1), write the notes as
 `docs/releases/v<version>.md`, commit, and push a tag `v<version>` on that commit (`runtime/VERSION`
