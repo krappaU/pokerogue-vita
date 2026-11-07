@@ -47,6 +47,10 @@ and `gamefix=0` in config.txt still gives the game as published.
 - Any native fast path that replaces Phaser code must be checked against Phaser's own output
   (`runtime/scripts/probe_verify_render.js`, `probe_verify_uniforms.js`, `probe_verify_batching.js`).
 - Record measured results in the relevant README or `docs/`, with dates and game/Phaser versions.
+- Releases: run the "Release" workflow (Actions, or the GitHub tools' run_workflow on release.yml)
+  with `tag` and, to pin it, `commit` = the release commit's full hash (`git rev-parse <commit>`).
+  Never a short hash: before 2026-11-07 the workflow's checkout failed on one (v1.1's first run); it
+  now resolves short hashes too, but pass the full one anyway. Publish only when the owner says so.
 - Stop heavy containers when done (`docker rm -f pkr-rt pkr-browse pkr-serve`): headless rendering
   with software GL is CPU-heavy, and leftover runtimes skew performance measurements.
 

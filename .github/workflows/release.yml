@@ -15,7 +15,7 @@ on:
         description: Version tag to create (v0.69-beta)
         required: true
       commit:
-        description: Commit of main to release, the full 40-character hash (empty = main's newest)
+        description: Commit of main to release, full or short hash (empty = main's newest)
         required: false
 
 concurrency:
@@ -34,10 +34,20 @@ jobs:
       GH_REPO: ${{ github.repository }}
       TAG: ${{ inputs.tag || github.ref_name }}
     steps:
+      # The run's own commit (main's newest, or the pushed tag's), with all history; the commit asked
+      # for comes next: actions/checkout takes only a full hash, a short one is looked up as a branch
+      # or tag name and fails (the first v1.1 run).
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.commit || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
+      - name: Check out the commit to release
+        if: inputs.commit != ''
+        env:
+          COMMIT: ${{ inputs.commit }}
+        run: |
+          sha=$(git rev-parse --verify --quiet "$COMMIT^{commit}") || { echo "no commit $COMMIT"; exit 1; }
+          git checkout -q --detach "$sha"
       - name: Check the tag, version and notes
         run: |
           version=$(cat runtime/VERSION)

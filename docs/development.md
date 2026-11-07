@@ -150,7 +150,7 @@ A player build writes no log and its JS `console.*` does nothing, unless `log=1`
 **Releases for players:** set `runtime/VERSION` to the release's version (1.1), write the notes as
 `docs/releases/v<version>.md`, commit, and push a tag `v<version>` on that commit (`runtime/VERSION`
 must match), or run the "Release" workflow
-by hand with that tag name (and optionally a commit of main; default the newest), which tags the
+by hand with that tag name (and optionally a commit of main, full or short hash; default the newest), which tags the
 commit itself (cloud sessions can't push tags). CI runs on main are never cancelled by a newer
 push, so a release can wait for an older commit's run. `.github/workflows/release.yml` waits for the commit's CI run to pass and publishes its
 player .vpk (the file CI ran in Vita3K) as a release with those notes.
