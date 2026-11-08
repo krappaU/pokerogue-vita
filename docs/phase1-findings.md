@@ -1679,3 +1679,17 @@ first press came ("[start] first button press after N s").
 Player builds' start screen gets a "Write a log (log.txt)" toggle beside the 30 fps lock: it sets
 config.txt log=1 (the README's way to write a log for a bug report), and turned on there it starts
 log.txt at once (main.c host_log_open, as at startup), so that run is logged too.
+
+### Memory over returns to the title: unloaded animations kept alive (log243; runtime 1.1.2, 2026-11-08)
+log243 (1.1, waves 71-103 in 48 minutes, four returns to the title): JS left by a collection 47 ->
+60 -> 67 -> 74 -> 77 MB, heap in use up to 218 of 256 MB. Desktop, wave-163 save, six resets with
+Continue (no waves between): +0.5 MB of JS each, +1,660 objects, +600 strings, +5 tweens and +26
+listeners on Phaser's AnimationManager. Those listeners were the leak: every Phaser Animation listens
+to the manager's PAUSE_ALL and RESUME_ALL from its constructor, and js/sprite_gc.js (1.0.19) took an
+unloaded animation out of the manager's map without them. The manager then kept each one alive with
+its ~88 frames, and through them the destroyed texture's frames: at every new biome and return to
+the title, the sprites "unloaded" stayed in memory (83 such listeners after a few resets). Unloading
+now removes both listeners and the animation's frames, as Phaser's Animation.destroy does (still
+without the REMOVE_ANIMATION event, which would call every sprite's animation state for each one).
+tests/phaser checks that an unloaded animation leaves no listener. Still left per reset: 5 endless
+tweens of the game's PokemonIconAnimHelper (the screens are rebuilt with new helpers; small).

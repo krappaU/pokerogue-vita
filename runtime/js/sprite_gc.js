@@ -135,6 +135,23 @@
     return false;
   }
 
+  // An animation out of the manager: what Phaser's Animation.destroy does, without the manager's
+  // REMOVE_ANIMATION event (it calls every sprite's animation state, thousands of them, for each one,
+  // and no object plays an animation unloaded here). Each Animation listens to the manager's
+  // PAUSE_ALL and RESUME_ALL: until 1.1.2 those stayed, and through them the manager kept every
+  // unloaded animation alive with its frames and the destroyed texture's (log243: JS left by a
+  // collection 47 -> 77 MB in 48 minutes; 83 such listeners on the desktop after a few retries).
+  function unloadAnim(am, key) {
+    const anim = am.anims.get(key);
+    if (!anim) return;
+    const E = Phaser.Animations.Events;
+    if (typeof am.off === "function") am.off(E.PAUSE_ALL, anim.pause, anim), am.off(E.RESUME_ALL, anim.resume, anim);
+    am.anims.delete(key);
+    am.removeMix(key);
+    if (Array.isArray(anim.frames)) for (const f of anim.frames) if (f && typeof f.destroy === "function") f.destroy();
+    anim.frames = [];
+  }
+
   // One pass. Returns how many were unloaded, or -1 if it couldn't run now.
   function pass(game, reason, minAge = MIN_AGE_MS) {
     const s = game.scene.getScene("battle");
@@ -156,9 +173,7 @@
       if (!img || typeof img.getContext === "function") continue; // a canvas the game drew: not an atlas
       if (used.has(key) || (byTexture.get(key) || []).some((a) => used.has(a))) { kept++; continue; }
       if (t0 - (added.has(key) ? added.get(key) : start) < minAge) { young++; continue; }
-      // no object plays them (above), so no animation state needs telling: out of the map quietly
-      // (AnimationManager.remove would call every sprite's state, thousands, for each)
-      for (const a of byTexture.get(key) || []) { am.anims.delete(a); am.removeMix(a); }
+      for (const a of byTexture.get(key) || []) unloadAnim(am, a);
       tm.remove(key);
       added.delete(key);
       n++;
@@ -212,5 +227,6 @@
   rt.spriteGcStats = () => Object.assign({}, stats);
   rt.spriteGcNow = (reason, minAge) => { const game = rt.renderer && rt.renderer.game; return game ? pass(game, reason || "asked", minAge) : -1; };
   rt.spriteGcInUse = (game, roots) => inUse(game, roots || []); // tests/phaser
+  rt.spriteGcUnloadAnim = (am, key) => unloadAnim(am, key); // tests/phaser
   rt.frameHooks.push(() => { try { poll(); } catch (e) { rt.spriteGc = false; N.log("[sprites] stopped: " + e + "\n" + (e && e.stack)); } });
 })(globalThis);

@@ -470,6 +470,20 @@ async function run() {
       detail = got !== "abce" ? "found " + got + " (want abce)" : "";
       box.destroy(), b.destroy(), c.destroy(), e.destroy();
       sc.anims.remove("pkmn__c");
+      // an unloaded animation leaves no listener on the manager (each Animation listens to its
+      // PAUSE_ALL and RESUME_ALL; left there, they kept it and its frames alive)
+      if (!detail && rt.spriteGcUnloadAnim) {
+        const am = sc.anims, E = Phaser.Animations.Events;
+        const count = () => am.listenerCount(E.PAUSE_ALL) + "/" + am.listenerCount(E.RESUME_ALL);
+        const before = count();
+        am.create({ key: "pkmn__d", frames: [{ key: "pkmn__d", frame: "__BASE" }], repeat: -1 });
+        const made = count(), anim = am.get("pkmn__d");
+        rt.spriteGcUnloadAnim(am, "pkmn__d");
+        const after = count();
+        detail = made === before ? "the animation added no listeners (test stale?)" : after !== before
+          ? "listeners " + after + " after unloading, " + before + " before" : am.exists("pkmn__d") ? "still in the manager"
+          : anim.frames.length ? "its frames kept" : "";
+      }
       for (const k of keys) sc.textures.remove(k);
     }
     report("sprite_gc: textures in use are found on lists, off them and in animations", !detail, detail);
