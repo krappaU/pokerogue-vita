@@ -9,6 +9,13 @@
 //   playing buffers, each with a start time on the output sample clock (AudioBufferSourceNode.start
 //   (when, offset, duration)), looping, playback rate (linear interpolation) and left/right gain
 //   (js/audio.js folds the gain/panner node chain into those).
+// - M4A buffers (cries, most move animations' sounds) keep their file, and their decoded samples
+//   are kept within KEPT_PCM_BUDGET: past it, the samples of the least recently played ones that
+//   aren't playing are dropped, and decoded again on the decode thread when one plays next (its
+//   voice starts once they are back, a few tens of ms late). The game loads a cry for every species
+//   it shows and a sound for every move animation, and keeps them for the session: decoded, they
+//   grew from 13 to 27 MB in 30 minutes on the Vita (log246; ~8x their files). WAVs (the common
+//   sound effects) are about as big as their samples and stay decoded.
 // One mutex protects voices and buffer reference counts; the mixer holds it while it mixes one block.
 
 #include <math.h>
@@ -27,6 +34,8 @@
 #define MAX_VOICES 32
 #define STREAM_MIN_BYTES (384 * 1024) // MP3s bigger than this play from the compressed data
 #define WINDOW_FRAMES 2304            // decoded frames held per streaming voice
+#define KEPT_PCM_BUDGET kept_budget // decoded M4A samples kept beyond what is playing
+static size_t kept_budget = (size_t)6 << 20; // config.txt audiokeep=<MB>
 
 typedef struct abuf {
     int refs;
@@ -35,6 +44,13 @@ typedef struct abuf {
     int16_t *pcm;          // interleaved PCM, or NULL for a streamed MP3
     uint8_t *mp3;          // compressed MP3 (streamed)
     size_t mp3_size;
+    // M4A: its file, kept so that pcm can be dropped and decoded again (see KEPT_PCM_BUDGET)
+    uint8_t *src;
+    size_t src_size;
+    uint64_t used;         // play_counter at its last start (least recently played go first)
+    int playing;           // voices using it
+    bool decoding;         // a decode of src is queued (its pcm is NULL until then)
+    struct abuf *kept_prev, *kept_next;
 } abuf;
 
 typedef struct {
@@ -47,6 +63,7 @@ typedef struct {
     double loop_start, loop_end;
     double rate;               // playbackRate (and detune) times source/output rate
     float gl, gr;
+    bool pending;              // its buffer's samples are being decoded again: starts once they are back
     // streamed MP3: a window of decoded frames [win_base, win_base + win_frames)
     mp3dec_ex_t *mp3;
     int16_t *win;
@@ -62,16 +79,47 @@ static uint32_t ended_ids[256];
 static int ended_n;
 static size_t pcm_bytes, mp3_bytes; // memory held by buffers (for the log)
 static bool output_ok;
+static abuf *kept_head;             // buffers with a kept file (M4A)
+static size_t kept_pcm_bytes, src_bytes;
+static uint64_t play_counter;
+static int n_dropped, n_redecoded;
+static void redecode_queue(abuf *b);
 
 // ---------------------------------------------------------------- buffers
 
+static size_t pcm_size(const abuf *b) { return (size_t)b->frames * b->channels * 2; }
+
 static void abuf_unref_locked(abuf *b) {
     if (!b || --b->refs > 0) return;
-    if (b->pcm) pcm_bytes -= (size_t)b->frames * b->channels * 2;
+    if (b->pcm) pcm_bytes -= pcm_size(b);
     if (b->mp3) mp3_bytes -= b->mp3_size;
+    if (b->src) {
+        if (b->pcm) kept_pcm_bytes -= pcm_size(b);
+        src_bytes -= b->src_size;
+        if (b->kept_prev) b->kept_prev->kept_next = b->kept_next;
+        else kept_head = b->kept_next;
+        if (b->kept_next) b->kept_next->kept_prev = b->kept_prev;
+    }
     free(b->pcm);
     free(b->mp3);
+    free(b->src);
     free(b);
+}
+
+// Drops the samples of the least recently played kept buffers (not playing, not being decoded)
+// until those kept fit KEPT_PCM_BUDGET.
+static void evict_locked(void) {
+    while (kept_pcm_bytes > KEPT_PCM_BUDGET) {
+        abuf *victim = NULL;
+        for (abuf *b = kept_head; b; b = b->kept_next)
+            if (b->pcm && !b->playing && !b->decoding && (!victim || b->used < victim->used)) victim = b;
+        if (!victim) return;
+        size_t n = pcm_size(victim);
+        free(victim->pcm);
+        victim->pcm = NULL;
+        pcm_bytes -= n, kept_pcm_bytes -= n;
+        n_dropped++;
+    }
 }
 
 void audio_buffer_release(void *p) {
@@ -189,6 +237,7 @@ typedef struct job {
     uint8_t *data;
     size_t size;
     abuf *result;
+    abuf *redo; // a kept buffer whose samples to decode again (not reported to JS)
     struct job *next;
 } job;
 static pthread_mutex_t jlock = PTHREAD_MUTEX_INITIALIZER;
@@ -207,18 +256,48 @@ static void *decode_thread(void *arg) {
         if (!jin) jin_tail = NULL;
         pthread_mutex_unlock(&jlock);
 
-        bool took = false;
+        if (j->redo) { // samples dropped: decode the kept file again (the job holds a reference)
+            abuf *b = j->redo;
+            int16_t *pcm = NULL;
+            int ch = 0, rate = 0;
+            int64_t frames = 0;
+            bool ok = audio_decode_m4a(b->src, b->src_size, &pcm, &ch, &rate, &frames) != NULL;
+            pthread_mutex_lock(&lock);
+            if (ok && ch == b->channels && frames == b->frames) {
+                b->pcm = pcm;
+                pcm_bytes += pcm_size(b), kept_pcm_bytes += pcm_size(b);
+                n_redecoded++;
+            } else {
+                free(pcm); // (its waiting voices end without playing)
+            }
+            b->decoding = false;
+            evict_locked();
+            abuf_unref_locked(b);
+            pthread_mutex_unlock(&lock);
+            free(j);
+            continue;
+        }
+        bool took = false, m4a = false;
         abuf *b = NULL;
         if (j->size >= 12 && !memcmp(j->data, "RIFF", 4)) b = decode_wav(j->data, j->size);
-        else if (j->size >= 12 && !memcmp(j->data + 4, "ftyp", 4)) b = decode_m4a(j->data, j->size);
+        else if (j->size >= 12 && !memcmp(j->data + 4, "ftyp", 4)) b = decode_m4a(j->data, j->size), m4a = true;
         else b = decode_mp3(j->data, j->size, &took);
+        if (b && m4a) b->src = j->data, b->src_size = j->size, took = true; // kept (see KEPT_PCM_BUDGET)
         if (!took) free(j->data);
         j->data = NULL;
         if (b) {
             b->refs = 1;
             pthread_mutex_lock(&lock);
-            if (b->pcm) pcm_bytes += (size_t)b->frames * b->channels * 2;
+            if (b->pcm) pcm_bytes += pcm_size(b);
             if (b->mp3) mp3_bytes += b->mp3_size;
+            if (b->src) {
+                src_bytes += b->src_size, kept_pcm_bytes += pcm_size(b);
+                b->used = ++play_counter; // as if just played: not the first to go
+                b->kept_next = kept_head;
+                if (kept_head) kept_head->kept_prev = b;
+                kept_head = b;
+                evict_locked();
+            }
             pthread_mutex_unlock(&lock);
         }
         j->result = b;
@@ -228,6 +307,25 @@ static void *decode_thread(void *arg) {
         pthread_mutex_unlock(&jlock);
     }
     return NULL;
+}
+
+// Queues a kept buffer's file for decoding again (called with `lock` not held).
+static void redecode_queue(abuf *b) {
+    job *j = calloc(1, sizeof *j);
+    if (!j) {
+        pthread_mutex_lock(&lock);
+        b->decoding = false;
+        abuf_unref_locked(b);
+        pthread_mutex_unlock(&lock);
+        return;
+    }
+    j->redo = b;
+    pthread_mutex_lock(&jlock);
+    if (jin_tail) jin_tail->next = j;
+    else jin = j;
+    jin_tail = j;
+    pthread_cond_signal(&jcond);
+    pthread_mutex_unlock(&jlock);
 }
 
 // Queues `data` (copied) for decoding; returns the job id.
@@ -281,6 +379,7 @@ static void voice_free_locked(voice *v, bool report) {
         free(v->mp3);
     }
     free(v->win);
+    if (v->b) v->b->playing--;
     abuf_unref_locked(v->b);
     memset(v, 0, sizeof *v);
 }
@@ -291,7 +390,7 @@ uint32_t audio_start(void *buffer, double when, double offset, double duration, 
     if (!b || b->frames <= 0) return 0;
     mp3dec_ex_t *mp3 = NULL;
     int16_t *win = NULL;
-    if (!b->pcm) { // streamed: its own decoder (the scan for the seek index happens here, not in the mixer)
+    if (!b->pcm && b->mp3) { // streamed: its own decoder (the scan for the seek index happens here, not in the mixer)
         mp3 = malloc(sizeof *mp3);
         win = malloc(WINDOW_FRAMES * b->channels * sizeof(int16_t));
         if (!mp3 || !win || mp3dec_ex_open_buf(mp3, b->mp3, b->mp3_size, MP3D_SEEK_TO_SAMPLE)) {
@@ -315,6 +414,14 @@ uint32_t audio_start(void *buffer, double when, double offset, double duration, 
     if (!v->id) v->id = next_voice_id++;
     v->b = b;
     b->refs++;
+    b->playing++;
+    b->used = ++play_counter;
+    // samples dropped (a kept M4A): decoded again first, the voice waits for them
+    bool redo = false;
+    if (!b->pcm && !b->mp3) {
+        v->pending = true;
+        if (!b->decoding && b->src) b->decoding = true, b->refs++, redo = true;
+    }
     int64_t at = (int64_t)llround(when * OUT_RATE);
     v->start_at = at > out_clock ? at : out_clock;
     v->stop_at = INT64_MAX;
@@ -332,6 +439,7 @@ uint32_t audio_start(void *buffer, double when, double offset, double duration, 
     v->mp3 = mp3, v->win = win, v->win_base = 0, v->win_frames = 0;
     uint32_t id = v->id;
     pthread_mutex_unlock(&lock);
+    if (redo) redecode_queue(b);
     return id;
 }
 
@@ -377,6 +485,14 @@ int audio_ended(uint32_t *ids, int max) {
     ended_n -= n;
     pthread_mutex_unlock(&lock);
     return n;
+}
+
+void audio_set_keep_budget(size_t bytes) { kept_budget = bytes; }
+
+void audio_memory_kept(size_t *kept_pcm, size_t *files, int *dropped, int *redecoded) {
+    pthread_mutex_lock(&lock);
+    *kept_pcm = kept_pcm_bytes, *files = src_bytes, *dropped = n_dropped, *redecoded = n_redecoded;
+    pthread_mutex_unlock(&lock);
 }
 
 void audio_memory(size_t *pcm, size_t *mp3, int *active) {
@@ -447,6 +563,15 @@ void audio_mix(int16_t *out, int frames) {
     for (int vi = 0; vi < MAX_VOICES; vi++) {
         voice *v = &voices[vi];
         if (!v->used) continue;
+        if (v->pending) { // its samples are being decoded again
+            if (out_clock >= v->stop_at || (!v->b->pcm && !v->b->decoding)) { // stopped, or the decode failed
+                voice_free_locked(v, true);
+                continue;
+            }
+            if (!v->b->pcm) continue;
+            v->pending = false;
+            if (v->start_at < out_clock) v->start_at = out_clock; // late by the decode: from its start
+        }
         int i = 0;
         if (v->start_at > out_clock) {
             int64_t wait = v->start_at - out_clock;

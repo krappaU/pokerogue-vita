@@ -1693,3 +1693,26 @@ now removes both listeners and the animation's frames, as Phaser's Animation.des
 without the REMOVE_ANIMATION event, which would call every sprite's animation state for each one).
 tests/phaser checks that an unloaded animation leaves no listener. Still left per reset: 5 endless
 tweens of the game's PokemonIconAnimHelper (the screens are rebuilt with new helpers; small).
+
+### What else grows over waves; cries kept compressed (log246; runtime 1.1.3, 2026-11-09)
+log246 (1.1.2, waves 103-121, 30 minutes): the start screen took its first press after 2.5 s (the
+1.1.1 fix). Heap in use peaked at 181 MB (log243, 1.1: 218); unloaded sprites are freed now (17-20
+per biome, a "memory" pass at 71 MB), but JS left by a collection still rose 47 -> 69 MB, and the
+decoded audio 13 -> 27 MB (C memory, inside the same 256 MB).
+Desktop, wave-163 save, the bot for 14 waves with a collection and counts after each wave: JS
+101.9 -> 123.9 MB (+9 MB in the first wave, then ~1 MB a wave; the biome change at 171 gave 2.3 MB
+back), arrays 96k -> 155k, objects 330k -> 427k, move animation textures ("PRAS-") 58 -> 104,
+Phaser's audio cache 145 -> 294 entries, decoded audio 8.6 -> 25.1 MB. By kind, decoded: move
+animation sounds 11.6 MB (220, mostly WAV: "PRSFX- ..."), cries 8.2 MB (33, M4A), sound effects 5.2 MB
+(37, WAV). All 86 move animation textures came to 3.1 MB of JS (removing them in an experiment):
+the rest of the JS growth is the move animations' data the game parses once per move and keeps
+(AnimConfig frames), which only a change to the game could drop. The move textures could only go at
+the title screen and would need the game's list of common animations (loaded once at startup), so
+they stay.
+1.1.3: M4A buffers (every cry, some move sounds) keep their file (~1/8 of their samples), and their
+decoded samples are kept within 6 MB (config.txt audiokeep=<MB>): past it, the least recently played
+that aren't playing are dropped; one played again is decoded on the decode thread and its voice
+starts once the samples are back (tens of ms late; the game's frame doesn't wait). WAVs stay decoded
+(their files are as big). Same 14 waves: decoded audio grew 9.6 MB (was 16.5), M4A held at 5.7 MB
+(18 dropped, 1 decoded again). With audiokeep=0 (every M4A dropped after each play): 53 dropped, 27
+decoded again in 5 waves, no voice left waiting, no errors. The [mem] audio line reports both.

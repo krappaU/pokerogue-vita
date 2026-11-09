@@ -222,6 +222,8 @@ void audio_init(void);                                    // audio.c: decoder th
 void audio_register(JSContext *ctx, JSValue native);      // audio.c: __native.audio*
 void savecrypt_register(JSContext *ctx, JSValue native);  // savecrypt.c: __native.aesEncrypt/aesDecrypt
 void audio_memory(size_t *pcm, size_t *mp3, int *active_voices);
+void audio_set_keep_budget(size_t bytes); // decoded M4A samples kept (config.txt audiokeep=<MB>, audio.c)
+void audio_memory_kept(size_t *kept_pcm, size_t *files, int *dropped, int *redecoded); // M4A buffers (audio.c)
 
 // Status messages drawn before the game takes over the screen (overlay.c).
 void overlay_set(const char *msg);
