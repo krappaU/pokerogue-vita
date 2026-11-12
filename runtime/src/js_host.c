@@ -628,11 +628,15 @@ static JSValue n_read_file(JSContext *ctx, JSValueConst this_val, int argc, JSVa
     return v;
 }
 
-// rename() that replaces `to` also where the system's can't (then `to` is removed first).
+// rename() that replaces `to` also where the system's can't (then `to` is removed first). Without
+// a `from` nothing is touched, and that is checked before rename is called at all: on the Vita
+// build, renaming a file that isn't there left `to` deleted (1.1.4's first Vita3K run), which
+// here would be the saves' backup.
 static bool rename_over(const char *from, const char *to) {
+    FILE *f = fopen(from, "rb");
+    if (!f) return false;
+    fclose(f);
     if (rename(from, to) == 0) return true;
-    struct stat st;
-    if (stat(from, &st) != 0) return false; // nothing to move: `to` stays
     remove(to);
     return rename(from, to) == 0;
 }

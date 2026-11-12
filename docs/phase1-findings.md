@@ -1728,7 +1728,10 @@ or kept the app from starting. Desktop runtime, each case made by hand:
   replaces as `<file>.bak` (a rename, on the writer thread); a file that is damaged, empty or
   unreadable is moved to `<file>.bad`, the backup is loaded, and a dialog says so. The backup is
   also what is left if the app dies between a write's two renames. tests/smoke checks it across its
-  two runs (the first leaves a damaged file, the second must start from the backup).
+  two runs (the first leaves a damaged file, the second must start from the backup). Its first run
+  in Vita3K (CI) failed one check: renaming a file that doesn't exist deleted the target there
+  (on the desktop it leaves it), which for a missing save file would have been its backup. The
+  source is now checked before rename is called.
 - Compiled code (`<data>/bytecode/`, now `.qbc4`): QuickJS trusts bytecode as it reads it, so a
   damaged file could crash every start. Each file ends with a checksum (Adler-32, miniz), checked
   where it is read (the prefetch thread, mostly); a mismatch deletes the file and the module is
