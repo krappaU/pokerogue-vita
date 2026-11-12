@@ -1,12 +1,43 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // localStorage / sessionStorage and document.cookie, persisted as JSON files in the data dir.
-// Writes are batched: at most once per second, and the files are replaced atomically.
+// Writes are batched: at most once per second, and the files are replaced atomically; the file a
+// write replaces stays as <file>.bak.
 (function (g) {
   "use strict";
   const N = g.__native, rt = g.__rt;
 
+  function parse(s) {
+    const v = JSON.parse(s);
+    if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error("not an object");
+    return v;
+  }
+  // A file that is there but can't be used (damaged, empty, unreadable) is never written over: the
+  // offline game's saves exist nowhere else. It is moved to <file>.bad, and the backup (the file
+  // the last write replaced) is loaded in its place. The backup is also what is left when the app
+  // died between a write's two renames.
   function load(file) {
-    try { const s = N.readFile(file); return s ? JSON.parse(s) : {}; } catch (e) { N.log("[storage] " + file + " unreadable: " + e); return {}; }
+    let why = "";
+    try {
+      const s = N.readFile(file);
+      if (s) return parse(s);
+      if (s === "") why = "empty";
+    } catch (e) { why = String(e); }
+    const kept = !!N.renameFile && N.renameFile(file, file + ".bad");
+    if (kept && !why) why = "can't be read";
+    let data = null;
+    try {
+      const s = N.readFile(file + ".bak");
+      if (s) { data = parse(s); N.writeFile(file, s); } // at once: the next write's backup is this, not a damaged file
+    } catch (e) { N.log("[storage] " + file + ".bak unreadable: " + e); }
+    if (why || data) {
+      N.log("[storage] " + file + (why ? " unusable (" + why + ")" : " missing") + (kept ? ", kept as " + file + ".bad" : "") +
+        (data ? "; loaded its backup" : "; no usable backup, starting empty"));
+      // told once the game draws (a dialog over it)
+      if (N.notice) (rt.storageNotices || (rt.storageNotices = [])).push(data
+        ? "Some saved data (" + file + ") was damaged or missing.\nThe copy from just before the last save was loaded."
+        : "Some saved data (" + file + ") was damaged and couldn't be loaded.\nIt is kept as " + file + ".bad in " + N.dataDir + ".");
+    }
+    return data || {};
   }
   const dirty = new Set();
   let lastFlush = 0;
@@ -22,12 +53,15 @@
     // waiting for the game's next change to it (a failed write on the card is retried by the
     // writer thread, js_host.c).
     for (const f of dirty) {
-      if (write(f, JSON.stringify(writers[f]()))) dirty.delete(f);
+      if (write(f, JSON.stringify(writers[f]()), true)) dirty.delete(f);
       else N.log("[storage] failed to write " + f);
     }
     if (force && N.waitWrites) N.waitWrites();
   }
-  rt.frameHooks.push(() => { if (dirty.size) flush(false); });
+  rt.frameHooks.push(() => {
+    if (dirty.size) flush(false);
+    if (rt.storageNotices && rt.storageNotices.length) N.notice(rt.storageNotices.splice(0).join("\n\n"));
+  });
   rt.flushStorage = () => flush(true);
 
   function makeStorage(file) {

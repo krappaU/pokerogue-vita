@@ -10,5 +10,7 @@ cd "$(dirname "$0")/.."
 if [ "${PKR_DEV:-}" = 1 ]; then dir=build-vita-dev dev=ON suffix=-dev; else dir=build-vita dev=OFF suffix=; fi
 docker run --rm -e PKR_COMMIT="$(scripts/build_id.sh)" -e DIR="$dir" -e DEV="$dev" -v "$PWD":/w -w /w vitasdk/vitasdk:latest sh -c '
   cmake -S . -B "$DIR" -DVITA=ON -DCMAKE_TOOLCHAIN_FILE=$VITASDK/share/vita.toolchain.cmake -DCMAKE_BUILD_TYPE=Release -DPKR_COMMIT="$PKR_COMMIT" -DPKR_DEV="$DEV" >/dev/null &&
-  cmake --build "$DIR" -j4 2>&1 | grep -E "error|undefined reference|warning: implicit" | sort -u | head -60; true'
+  cmake --build "$DIR" -j4 > "$DIR/build.log" 2>&1; rc=$?
+  grep -E "error|undefined reference|warning: implicit" "$DIR/build.log" | sort -u | head -60
+  exit $rc' || { echo "build_vita: the build failed (full output: $dir/build.log)" >&2; exit 1; }
 ls -la "$dir/pokerogue-$(cat VERSION)$suffix.vpk"
