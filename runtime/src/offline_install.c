@@ -3,20 +3,30 @@
 //
 // The build is the one Admiral-Billy's PokeRogue App uses for its offline mode: game.zip from the
 // latest release of github.com/Admiral-Billy/pokerogue (about 530 MB). It is downloaded to
-// <data>/game.zip.part (an interrupted download resumes) and renamed when complete. The game is
-// played straight from the zip (net.c): unpacking its 34,000 files took hours on the Vita.
+// <data>/game.zip.part (an interrupted download resumes), checked (size, the release's SHA-256,
+// that it opens as a zip) and renamed when complete. The game is played straight from the zip
+// (net.c): unpacking its 34,000 files took hours on the Vita.
 
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <strings.h>
 #include <time.h>
+
+#include <openssl/evp.h>
 
 #include "host.h"
 #include "miniz.h"
 
-#define RELEASE_API "https://api.github.com/repos/Admiral-Billy/pokerogue/releases/latest"
+#define RELEASE_API_URL "https://api.github.com/repos/Admiral-Billy/pokerogue/releases/latest"
+#ifdef __vita__
+#define RELEASE_API RELEASE_API_URL
+#else
+// PKR_RELEASE_API (desktop): another address for the release's JSON, to try the install with a small file.
+#define RELEASE_API (getenv("PKR_RELEASE_API") ? getenv("PKR_RELEASE_API") : RELEASE_API_URL)
+#endif
 #define ASSET_NAME "game.zip"
 
 typedef struct {
@@ -223,7 +233,41 @@ bool ui_confirm(const char *msg) {
 
 bool ui_download(const char *url, const char *path, const char *what, char *err, size_t errn) {
     progress_ui ui = {.t0 = host_now_ms(), .what = what};
-    return net_download_file(url, path, show_progress, &ui, err, errn);
+    return net_download_file(url, path, show_progress, NULL, &ui, err, errn);
+}
+
+// The download's SHA-256 is worked out as it arrives (reading 530 MB back from the memory card
+// would take minutes): each piece written goes into it, and a part left by an earlier attempt is
+// read once before the download continues.
+typedef struct {
+    progress_ui ui; // first: show_progress gets this struct
+    EVP_MD_CTX *md; // NULL: the release names no SHA-256
+} hashed_download;
+
+static void hash_piece(const void *p, size_t n, void *ud) {
+    hashed_download *h = ud;
+    if (h->md) EVP_DigestUpdate(h->md, p, n);
+}
+
+// False if the part can't be read or the player cancelled.
+static bool hash_part(hashed_download *h, const char *path, long long size) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return size == 0;
+    enum { CHUNK = 256 * 1024 };
+    char *buf = malloc(CHUNK);
+    progress_ui ui = {.t0 = host_now_ms(), .what = "Checking the part downloaded before"};
+    long long done = 0;
+    size_t n;
+    bool ok = buf != NULL;
+    while (ok && (n = fread(buf, 1, CHUNK, f)) > 0) {
+        EVP_DigestUpdate(h->md, buf, n);
+        done += (long long)n;
+        ok = show_progress(done, size, &ui);
+    }
+    ok = ok && !ferror(f) && done == size;
+    free(buf);
+    fclose(f);
+    return ok;
 }
 
 // Downloads the latest release to <data>/game.zip (replacing an installed one only once the
@@ -250,6 +294,13 @@ bool offline_install(void) {
         ui_message_wait("The latest release has no game.zip.\nTry again later.");
         return false;
     }
+    // "digest":"sha256:<64 hex>", GitHub's checksum of the file (this asset's: it comes before its
+    // download URL; older releases have none, and the file is then checked by size and as a zip only).
+    char digest[96] = "";
+    const char *dg = strstr(asset, "\"digest\":"), *dl_at = strstr(asset, "\"browser_download_url\":");
+    if (!dg || !dl_at || dg > dl_at || !json_str(dg, "digest", digest, sizeof digest) || strncmp(digest, "sha256:", 7) ||
+        strlen(digest) != 7 + 64)
+        digest[0] = 0;
     free(json);
 
     char zip_path[700], game_zip[700], version_path[700];
@@ -296,8 +347,19 @@ bool offline_install(void) {
     host_log("[offline] downloading %s (release %s, %.0f MB)", url, tag, size / 1048576.0);
     char what[160];
     snprintf(what, sizeof what, "Downloading the offline game (%s)", tag);
-    progress_ui ui = {.t0 = host_now_ms(), .what = what};
-    if (!net_download_file(url, zip_path, show_progress, &ui, err, sizeof err)) {
+    hashed_download dl_h = {.ui = {.t0 = host_now_ms(), .what = what}};
+    if (digest[0] && (dl_h.md = EVP_MD_CTX_new()) && !EVP_DigestInit_ex(dl_h.md, EVP_sha256(), NULL)) {
+        EVP_MD_CTX_free(dl_h.md);
+        dl_h.md = NULL;
+    }
+    if (!dl_h.md) host_log("[offline] no SHA-256 for this download (%s)", digest[0] ? "couldn't start one" : "the release names none");
+    if (dl_h.md && stat(zip_path, &st) == 0 && st.st_size > 0 && !hash_part(&dl_h, zip_path, st.st_size)) {
+        EVP_MD_CTX_free(dl_h.md);
+        return false; // cancelled (or the part can't be read: the next attempt tries again)
+    }
+    dl_h.ui.t0 = host_now_ms();
+    if (!net_download_file(url, zip_path, show_progress, hash_piece, &dl_h, err, sizeof err)) {
+        if (dl_h.md) EVP_MD_CTX_free(dl_h.md);
         host_log("[offline] download stopped: %s", err);
         if (strcmp(err, "cancelled")) {
             char m[700];
@@ -309,23 +371,37 @@ bool offline_install(void) {
     // Done: check it before it replaces anything. A download that stopped early, was cut off or
     // came back damaged (a server answering 416 to the resume of a wrong part counts as complete)
     // would otherwise replace a working game with one that doesn't open: its size must be the
-    // release's, and it must open as a zip (that reads only the zip's directory at its end).
+    // release's, its SHA-256 the one the release names (damage inside the file, which the other
+    // two checks can't see), and it must open as a zip (that reads only the zip's directory at
+    // its end).
     struct stat dl;
     bool size_ok = stat(zip_path, &dl) == 0 && (size <= 0 || dl.st_size == size);
+    char sum[65] = "";
+    bool hashed = dl_h.md != NULL;
+    if (hashed) {
+        unsigned char raw[EVP_MAX_MD_SIZE];
+        unsigned rawn = 0;
+        if (EVP_DigestFinal_ex(dl_h.md, raw, &rawn) && rawn == 32)
+            for (int i = 0; i < 32; i++) snprintf(sum + 2 * i, 3, "%02x", raw[i]);
+        EVP_MD_CTX_free(dl_h.md);
+    }
+    bool sum_ok = !hashed || !strcasecmp(sum, digest + 7);
     mz_zip_archive z;
     memset(&z, 0, sizeof z);
-    bool zip_ok = size_ok && mz_zip_reader_init_file(&z, zip_path, 0);
+    bool zip_ok = size_ok && sum_ok && mz_zip_reader_init_file(&z, zip_path, 0);
     unsigned files = zip_ok ? mz_zip_reader_get_num_files(&z) : 0;
     if (zip_ok) mz_zip_reader_end(&z);
-    if (!size_ok || !zip_ok || !files) {
+    if (!size_ok || !sum_ok || !zip_ok || !files) {
         host_log("[offline] downloaded file rejected: %lld bytes (release: %lld), %s", (long long)(size_ok ? dl.st_size : -1),
-                 size, !size_ok ? "wrong size" : !zip_ok ? "not a zip" : "empty zip");
+                 size, !size_ok ? "wrong size" : !sum_ok ? "wrong SHA-256" : !zip_ok ? "not a zip" : "empty zip");
+        if (!sum_ok) host_log("[offline] SHA-256 %s, the release's %s", sum, digest + 7);
         remove(zip_path);
-        ui_message_wait("The downloaded file is damaged (wrong size or not a zip)\n"
-                        "and was deleted. The installed game, if any, is kept.\n\nTry the download again.");
+        ui_message_wait("The downloaded file is damaged (wrong size or checksum,\n"
+                        "or not a zip) and was deleted. The installed game, if any,\nis kept.\n\nTry the download again.");
         return false;
     }
-    host_log("[offline] download checked: %lld bytes, %u files", (long long)dl.st_size, files);
+    host_log("[offline] download checked: %lld bytes, %u files, SHA-256 %s", (long long)dl.st_size, files,
+             sum[0] ? "as the release's" : "not checked");
     // The game is played straight from the zip (no unpacking). An older version goes now.
     remove(game_zip);
     if (rename(zip_path, game_zip) != 0) {

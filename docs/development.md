@@ -209,7 +209,8 @@ renamed to `<data>/game.zip`). The game is played straight from the zip (miniz, 
 unpacking its 34,000 files ran at ~0.1 MB/s on the Vita's memory card. An unpacked folder in
 `<data>/game/` also works. The choice is remembered in `<data>/launcher.txt`. The offline game is
 played served under the made-up origin `https://offline.invalid`, no login,
-saves in `<data>/localStorage-offline.json`. `online=1` in `config.txt` ignores the folder;
+saves in `<data>/localStorage-offline.json` (the file each save replaced stays as `.bak` and is
+loaded if the file is damaged, which is then kept as `.bad`). `online=1` in `config.txt` ignores the folder;
 `local=<dir>` names another one. The build used for testing is the one Admiral-Billy's PokeRogue
 App downloads for its offline mode (`game.zip` from github.com/Admiral-Billy/pokerogue/releases,
 ~530 MB, 735 MB unpacked; the `.map` files can be deleted).

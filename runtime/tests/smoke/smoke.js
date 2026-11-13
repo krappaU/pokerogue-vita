@@ -588,6 +588,27 @@ async function run() {
     eq(saved["smoke-saved"], "on the card", file);
     localStorage.removeItem("smoke-saved");
   });
+  // The page runs twice on the same data folder (tests/run_page.sh): the first run leaves a damaged
+  // file and its backup, the second must have started from the backup.
+  let damage = null;
+  await check("storage: a write keeps the file it replaces; a damaged file is kept aside and the backup loaded", () => {
+    const N = globalThis.__native, file = N.baseURL && String(N.baseURL).startsWith("https://offline.invalid") ? "localStorage-offline.json" : "localStorage.json";
+    if (localStorage.getItem("smoke-bak") != null) { // the second run
+      eq(localStorage.getItem("smoke-bak"), "older", "loaded from the backup");
+      eq(N.readFile(file + ".bad"), "{damaged", "the damaged file is kept");
+      eq(JSON.parse(N.readFile(file))["smoke-bak"], "older", "the file is whole again");
+      return;
+    }
+    localStorage.setItem("smoke-bak", "older");
+    globalThis.__rt.flushStorage();
+    localStorage.setItem("smoke-bak", "newer");
+    globalThis.__rt.flushStorage();
+    eq(JSON.parse(N.readFile(file + ".bak"))["smoke-bak"], "older", "the replaced file is the backup");
+    eq(JSON.parse(N.readFile(file))["smoke-bak"], "newer", file);
+    if (!N.writeFile("smoke-move.txt", "x") || !N.renameFile("smoke-move.txt", file + ".bad") || N.readFile(file + ".bad") !== "x") return "renameFile";
+    if (N.renameFile("smoke-none.txt", file + ".bad") || N.readFile(file + ".bad") !== "x") return "renaming a missing file must leave the target";
+    damage = () => N.writeFile(file, "{damaged");
+  });
 
   // ------------------------------------------------------------ images and Canvas 2D
   let img;
@@ -730,6 +751,10 @@ async function run() {
     if (!/^rejected/.test(settled)) return "abort: " + settled;
   });
 
+  if (damage) { // last, so that no later save replaces it
+    globalThis.__rt.flushStorage();
+    damage();
+  }
   const failed = results.filter((r) => !r).length;
   console.log("[test] DONE passed=" + (results.length - failed) + " failed=" + failed);
 }

@@ -190,14 +190,16 @@ void net_poll(JSContext *ctx);                 // deliver finished requests
 void net_pump(void);                           // progress transfers only (from long JS runs)
 void net_set_origin(const char *page_url);
 double net_clock_offset_ms(void);              // server time - console clock (0 if unknown/close)     // the page origin sent as Origin/Referer
+// data (or NULL) gets every piece once it is written to the file, in order (a running checksum).
 bool net_download_file(const char *url, const char *path, bool (*progress)(long long done, long long total, void *ud),
-                       void *ud, char *err, size_t errn);
+                       void (*data)(const void *p, size_t n, void *ud), void *ud, char *err, size_t errn);
 void net_stats(char *out, size_t n);           // one-line summary for the log
 void image_decode_stats(char *out, size_t n);   // images decoded since the last call (canvas2d.c)
 void net_register(JSContext *ctx, JSValue native);
 bool host_random_bytes(void *buf, size_t n);
 // Blocking GET used by the module loader. Returns malloc'd body or NULL.
 char *net_get_sync(const char *url, size_t *len, long *status);
+bool net_cache_forget(const char *url); // drops url's disk-cache copy; true if there was one
 char *net_get_threadsafe(const char *url, size_t *len, long *status); // own connection, any thread
 long net_post_threadsafe(const char *url, const char *const *headers, const void *body, size_t len, char *err, size_t errn);
 #define LOCAL_ORIGIN "https://offline.invalid" // origin of the game in local mode (local=<dir>)

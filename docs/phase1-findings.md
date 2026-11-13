@@ -1716,3 +1716,42 @@ starts once the samples are back (tens of ms late; the game's frame doesn't wait
 (their files are as big). Same 14 waves: decoded audio grew 9.6 MB (was 16.5), M4A held at 5.7 MB
 (18 dropped, 1 decoded again). With audiokeep=0 (every M4A dropped after each play): 53 dropped, 27
 decoded again in 5 waves, no voice left waiting, no errors. The [mem] audio line reports both.
+
+### Damaged files on the memory card: saves, cached code, the offline download (runtime 1.1.4, 2026-11-12)
+From a code review (no device log): five places where a failed write or a damaged file lost data
+or kept the app from starting. Desktop runtime, each case made by hand:
+- `config_set` (the start screen's toggles, the fps lock) removed config.txt before checking that
+  its new copy was written: a full card left none. Now the old file goes only when the new one is
+  whole (temp file on /dev/full: config.txt unchanged, a `[config]` log line).
+- localStorage and cookies (`js/storage.js`): a file that didn't parse loaded as empty, and the next
+  save replaced it. The offline game's saves exist nowhere else. Now every write keeps the file it
+  replaces as `<file>.bak` (a rename, on the writer thread); a file that is damaged, empty or
+  unreadable is moved to `<file>.bad`, the backup is loaded, and a dialog says so. The backup is
+  also what is left if the app dies between a write's two renames. tests/smoke checks it across its
+  two runs (the first leaves a damaged file, the second must start from the backup). Its first run
+  in Vita3K (CI) failed one check: renaming a file that doesn't exist deleted the target there
+  (on the desktop it leaves it), which for a missing save file would have been its backup. The
+  source is now checked before rename is called.
+- Compiled code (`<data>/bytecode/`, now `.qbc4`): QuickJS trusts bytecode as it reads it, so a
+  damaged file could crash every start. Each file ends with a checksum (Adler-32, miniz), checked
+  where it is read (the prefetch thread, mostly); a mismatch deletes the file and the module is
+  compiled again. All 13 files of the smoke page damaged or emptied: 13 "is damaged" lines, the
+  page's 39 checks pass. Every module is compiled once more after this update (the new extension).
+- HTTP disk cache: entries start with a 16-byte header (magic, length, Adler-32); a mismatch
+  deletes the entry and it is downloaded again. Entries from before have no header and are served
+  as they are (no re-download of the cache). And source from the cache that doesn't compile is
+  dropped and fetched once more in the same start (`net_cache_forget`), which also covers the old
+  entries. The smoke page over HTTP: 11 entries damaged -> 11 re-downloaded; 11 old-format entries
+  holding text that isn't JavaScript -> 11 "doesn't compile; downloading it again"; same results
+  as an undamaged run each time.
+- Offline game.zip: checked against the SHA-256 GitHub gives for the release's file (`digest` in
+  the release JSON), worked out as the download arrives; a part left by an earlier attempt is read
+  once first ("Checking the part downloaded before"). Size and the zip's directory can't see damage
+  inside the file. With a 4 MB stand-in release (`PKR_RELEASE_API=<url>` on the desktop): right
+  digest installs; wrong digest, and a resumed part with one changed byte, are rejected and
+  deleted; a release without a digest is checked by size and as a zip, as before. Not measured on
+  the Vita: the hash of 530 MB as it downloads, and the extra rename per save.
+- `build_vita.sh` ended with `; true`: after a compile error an older .vpk passed its check. It
+  now fails with the build's status (the full output is in `<build dir>/build.log`).
+tests/smoke and tests/phaser pass. tests/shaders fails two variant pixel checks on this machine's
+Mesa (Ubuntu 24.04, outside the Docker image) with and without these changes.

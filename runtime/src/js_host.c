@@ -10,6 +10,7 @@
 #include <time.h>
 
 #include "host.h"
+#include "miniz.h"
 
 static JSRuntime *rt;
 static JSContext *g_ctx;
@@ -207,7 +208,12 @@ static char *module_normalize(JSContext *ctx, const char *base, const char *name
 // gamefix.c's rewrites are in the compiled code: a new set of them (or gamefix=0) must not find code
 // compiled with another. Bump with every change to its FIXES.
 #define GAMEFIX_SALT "gamefix-17"
-#define BYTECODE_EXT ".qbc3"
+// .qbc4: each file ends with a checksum of its bytes (BC_MAGIC and their Adler-32). The engine
+// trusts compiled code as it reads it, so a file damaged on the memory card could crash every
+// start; one that doesn't match is deleted and its module compiled again.
+#define BYTECODE_EXT ".qbc4"
+#define BC_MAGIC "PKB1"
+#define BC_TRAILER 8
 
 // Phaser's chunk keeps its source: js/fastpath.js installs each native fast path only after
 // checking Phaser's code (String(fn)), and a function without source prints as "[native code]",
@@ -277,6 +283,30 @@ static void bytecode_cleanup(void) {
     closedir(d);
 }
 
+static void bc_trailer(const void *bc, size_t len, unsigned char *out) {
+    uint32_t sum = (uint32_t)mz_adler32(MZ_ADLER32_INIT, bc, len);
+    memcpy(out, BC_MAGIC, 4);
+    for (int i = 0; i < 4; i++) out[4 + i] = (unsigned char)(sum >> (8 * i));
+}
+
+// Reads a compiled module's file (any thread) and checks it; *len is the code's length. A file
+// that doesn't match its checksum is deleted.
+static char *bytecode_read(const char *path, size_t *len) {
+    size_t n = 0;
+    char *buf = read_file(path, &n);
+    if (!buf) return NULL;
+    unsigned char want[BC_TRAILER];
+    if (n > BC_TRAILER) bc_trailer(buf, n - BC_TRAILER, want);
+    if (n <= BC_TRAILER || memcmp(buf + n - BC_TRAILER, want, BC_TRAILER)) {
+        host_log("[module] %s is damaged (%lu bytes, checksum); deleted", path, (unsigned long)n);
+        free(buf);
+        remove(path);
+        return NULL;
+    }
+    *len = n - BC_TRAILER;
+    return buf;
+}
+
 // Writes a compiled module (any thread). Returns false if the file couldn't be written.
 bool module_bytecode_write(const char *path, const void *bc, size_t blen) {
     char dir[600], tmp[720];
@@ -288,7 +318,9 @@ bool module_bytecode_write(const char *path, const void *bc, size_t blen) {
 #endif
     snprintf(tmp, sizeof tmp, "%s.tmp", path);
     FILE *f = fopen(tmp, "wb");
-    bool ok = f && fwrite(bc, 1, blen, f) == blen;
+    unsigned char trailer[BC_TRAILER];
+    bc_trailer(bc, blen, trailer);
+    bool ok = f && fwrite(bc, 1, blen, f) == blen && fwrite(trailer, 1, sizeof trailer, f) == sizeof trailer;
     if (f) ok &= fclose(f) == 0;
     if (ok) ok = rename(tmp, path) == 0;
     if (!ok) remove(tmp);
@@ -365,7 +397,7 @@ static char *bytecode_take(const char *path, size_t *len, bool *from_table) {
     }
     if (e) e->state = BC_TAKEN;
     pthread_mutex_unlock(&bc_lock);
-    return buf ? buf : read_file(path, len);
+    return buf ? buf : bytecode_read(path, len);
 }
 
 static void *bytecode_prefetch_thread(void *arg) {
@@ -383,7 +415,7 @@ static void *bytecode_prefetch_thread(void *arg) {
         memcpy(path, e->path, sizeof path);
         pthread_mutex_unlock(&bc_lock);
         size_t len = 0;
-        char *buf = read_file(path, &len);
+        char *buf = bytecode_read(path, &len);
         pthread_mutex_lock(&bc_lock);
         e->buf = buf, e->len = len;
         e->state = buf ? BC_READY : BC_TAKEN;
@@ -526,6 +558,22 @@ static JSModuleDef *module_load(JSContext *ctx, const char *url, void *opaque) {
         char *fixed = gamefix_source(url, src, len, &flen);
         if (fixed) free(src), src = fixed, len = flen;
         fn = JS_Eval(ctx, src, len, url, JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+        // Source that doesn't compile and came from the disk cache: the copy may be damaged, and
+        // it would be read again at every start. It is dropped and downloaded once more.
+        if (JS_IsException(fn) && net_cache_forget(url)) {
+            host_log("[module] %s from the disk cache doesn't compile; downloading it again", url);
+            char *again = net_get_sync(url, &len, &status);
+            if (again && status == 200) {
+                JS_FreeValue(ctx, JS_GetException(ctx));
+                free(src);
+                src = again;
+                if (!by_url) bytecode_path(url, src, len, bc_path, sizeof bc_path);
+                if ((fixed = gamefix_source(url, src, len, &flen))) free(src), src = fixed, len = flen;
+                fn = JS_Eval(ctx, src, len, url, JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+            } else {
+                free(again);
+            }
+        }
         t_load = host_now_ms() - t;
         if (!JS_IsException(fn)) bytecode_save(ctx, fn, bc_path, bytecode_write_flags(src, len));
     }
@@ -580,15 +628,40 @@ static JSValue n_read_file(JSContext *ctx, JSValueConst this_val, int argc, JSVa
     return v;
 }
 
+// rename() that replaces `to` also where the system's can't (then `to` is removed first). Without
+// a `from` nothing is touched, and that is checked before rename is called at all: on the Vita
+// build, renaming a file that isn't there left `to` deleted (1.1.4's first Vita3K run), which
+// here would be the saves' backup.
+static bool rename_over(const char *from, const char *to) {
+    FILE *f = fopen(from, "rb");
+    if (!f) return false;
+    fclose(f);
+    if (rename(from, to) == 0) return true;
+    remove(to);
+    return rename(from, to) == 0;
+}
+
 // Writes data to `path` through a temp file and a rename, so a crash never leaves half a file.
-static bool write_atomic(const char *path, const char *data, size_t len) {
+// keep_bak: the file it replaces stays as <path>.bak (the saves: js/storage.js reads it when the
+// file itself is missing or damaged). The file is whole before anything is moved, and at every
+// point one of the two is a complete copy.
+static bool write_atomic(const char *path, const char *data, size_t len, bool keep_bak) {
     char tmp[1100];
     snprintf(tmp, sizeof tmp, "%s.tmp", path);
     FILE *f = fopen(tmp, "wb");
     if (!f) return false;
     bool ok = fwrite(data, 1, len, f) == len;
     ok &= fclose(f) == 0;
-    return ok && rename(tmp, path) == 0;
+    if (!ok) {
+        remove(tmp);
+        return false;
+    }
+    if (keep_bak) {
+        char bak[1100];
+        snprintf(bak, sizeof bak, "%s.bak", path);
+        rename_over(path, bak);
+    }
+    return rename_over(tmp, path);
 }
 
 // `rel` under the data folder, with its missing parent folders created; false for "..".
@@ -624,16 +697,30 @@ static const char *js_bytes(JSContext *ctx, JSValueConst v, size_t *len, const c
     return bin;
 }
 
-// writeFile(relPath, string | ArrayBuffer | TypedArray) -> bool. Written at once, atomically;
-// missing folders on the way are created.
+// writeFile(relPath, string | ArrayBuffer | TypedArray, keepBackup = false) -> bool. Written at once,
+// atomically; missing folders on the way are created. keepBackup: see write_atomic.
 static JSValue n_write_file(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     const char *rel = JS_ToCString(ctx, argv[0]), *s;
     size_t len;
     const char *data = js_bytes(ctx, argv[1], &len, &s);
     char path[1024];
-    bool ok = data && data_path(rel, path, sizeof path) && write_atomic(path, data, len);
+    bool ok = data && data_path(rel, path, sizeof path) && write_atomic(path, data, len, argc > 2 && JS_ToBool(ctx, argv[2]) > 0);
     JS_FreeCString(ctx, rel);
     JS_FreeCString(ctx, s);
+    return JS_NewBool(ctx, ok);
+}
+
+// renameFile(relFrom, relTo) -> bool: moves a file within the data folder, replacing relTo.
+static JSValue n_rename_file(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    const char *from = JS_ToCString(ctx, argv[0]), *to = JS_ToCString(ctx, argv[1]);
+    char a[1024], b[1024];
+    bool ok = from && to && !strstr(from, "..") && data_path(to, b, sizeof b);
+    if (ok) {
+        snprintf(a, sizeof a, "%s/%s", g_cfg.data_dir, from);
+        ok = rename_over(a, b);
+    }
+    JS_FreeCString(ctx, from);
+    JS_FreeCString(ctx, to);
     return JS_NewBool(ctx, ok);
 }
 
@@ -645,6 +732,7 @@ typedef struct wjob {
     char path[1024];
     char *data;
     size_t len;
+    bool keep_bak;
     struct wjob *next;
 } wjob;
 static pthread_mutex_t wq_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -676,7 +764,7 @@ static void *writer_thread(void *arg) {
                 struct timespec ts = {1, 0};
                 nanosleep(&ts, NULL);
             }
-            ok = write_atomic(j->path, j->data, j->len);
+            ok = write_atomic(j->path, j->data, j->len, j->keep_bak);
             if (!ok) host_log("[storage] failed to write %s (attempt %d)", j->path, attempt + 1);
         }
         if (ok && host_now_ms() - t0 >= 100) host_log("[storage] %s written in %.0f ms (on its own thread)", j->path, host_now_ms() - t0);
@@ -695,8 +783,8 @@ void host_writes_flush(void) {
     pthread_mutex_unlock(&wq_lock);
 }
 
-// writeFileLater(relPath, string | ArrayBuffer | TypedArray) -> bool: copies the data and writes
-// it on the writer thread (false only if it can't even be queued).
+// writeFileLater(relPath, string | ArrayBuffer | TypedArray, keepBackup = false) -> bool: copies the
+// data and writes it on the writer thread (false only if it can't even be queued).
 static JSValue n_write_file_later(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     const char *rel = JS_ToCString(ctx, argv[0]), *s;
     size_t len;
@@ -704,7 +792,7 @@ static JSValue n_write_file_later(JSContext *ctx, JSValueConst this_val, int arg
     wjob *j = calloc(1, sizeof *j);
     bool ok = j && data && data_path(rel, j->path, sizeof j->path) && (j->data = malloc(len ? len : 1));
     JS_FreeCString(ctx, rel);
-    if (ok) memcpy(j->data, data, len), j->len = len;
+    if (ok) memcpy(j->data, data, len), j->len = len, j->keep_bak = argc > 2 && JS_ToBool(ctx, argv[2]) > 0;
     JS_FreeCString(ctx, s);
     if (!ok) {
         if (j) free(j->data), free(j);
@@ -725,7 +813,7 @@ static JSValue n_write_file_later(JSContext *ctx, JSValueConst this_val, int arg
     }
     if (wq_state < 0) {
         pthread_mutex_unlock(&wq_lock);
-        ok = write_atomic(j->path, j->data, j->len);
+        ok = write_atomic(j->path, j->data, j->len, j->keep_bak);
         free(j->data), free(j);
         return JS_NewBool(ctx, ok);
     }
@@ -1342,8 +1430,9 @@ static const JSCFunctionListEntry native_funcs[] = {
     JS_CFUNC_DEF("log", 1, n_log),
     JS_CFUNC_DEF("now", 0, n_now),
     JS_CFUNC_DEF("readFile", 1, n_read_file),
-    JS_CFUNC_DEF("writeFile", 2, n_write_file),
-    JS_CFUNC_DEF("writeFileLater", 2, n_write_file_later),
+    JS_CFUNC_DEF("writeFile", 3, n_write_file),
+    JS_CFUNC_DEF("renameFile", 2, n_rename_file),
+    JS_CFUNC_DEF("writeFileLater", 3, n_write_file_later),
     JS_CFUNC_DEF("waitWrites", 0, n_wait_writes),
     JS_CFUNC_DEF("gamepads", 0, n_gamepads),
     JS_CFUNC_DEF("resolveURL", 2, n_resolve_url),

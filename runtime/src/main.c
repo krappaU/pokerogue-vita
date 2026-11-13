@@ -1021,9 +1021,18 @@ void config_set(const char *key, const char *value) {
     }
     if (!done) fprintf(out, "%s=%s\n", key, value);
     if (in) fclose(in);
-    bool ok = fclose(out) == 0;
-    remove(path);
-    if (ok) rename(tmp, path);
+    // The old file goes only once the new one is whole: a failed write (a full card) used to
+    // leave no config.txt at all.
+    bool ok = !ferror(out);
+    ok &= fclose(out) == 0;
+    if (ok && rename(tmp, path) != 0) { // where rename can't replace a file
+        remove(path);
+        ok = rename(tmp, path) == 0;
+    }
+    if (!ok) {
+        remove(tmp);
+        host_log("[config] couldn't write %s; %s stays as it was", path, key);
+    }
 }
 
 static void load_config_file(void) {

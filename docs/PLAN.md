@@ -151,6 +151,11 @@ Performance:
 
 Reliability and maintenance (from [review-2026-10.md](review-2026-10.md); findings 3, 4, 5 and 9
 done in 1.0.4: renderbuffer leak, disk cache cleaning, missing-compiler message, download check):
+- Done in 1.1.4 (code review, 2026-11-12): saves keep a backup and a damaged file is never written
+  over; compiled code and disk cache entries carry a checksum; game.zip is checked against the
+  release's SHA-256; config.txt survives a failed write; `build_vita.sh` fails when the build does.
+  Open from that review: a gamefix rule that stops matching is silent; `fetch_deps.sh` downloads
+  aren't hash-checked.
 - Unpinned build inputs: `vitasdk/vitasdk:latest` (finding 8; Vita3K is pinned since 2026-10-28,
   with a weekly scheduled check for newer builds).
 - Cg reserved-word renaming doesn't rename uniform/attribute lookups (finding 7; latent).

@@ -302,6 +302,16 @@ static char *cache_read(const char *url, size_t *len) {
     return d;
 }
 
+// An entry starts with CACHE_MAGIC, the body's length and its Adler-32 (little-endian): a copy
+// damaged on the memory card would otherwise be served for as long as the game asks for it (code
+// that doesn't compile, an image that doesn't decode, at every start). One that doesn't match is
+// deleted and downloaded again. Entries written before 1.1.4 have no header and are served as
+// they are.
+#define CACHE_MAGIC "PKRCACH1"
+#define CACHE_HEADER 16
+
+static uint32_t le32(const unsigned char *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
+
 static char *cache_read_raw(const char *url, size_t *len) {
     char path[600];
     cache_path(url, path, sizeof path);
@@ -317,15 +327,28 @@ static char *cache_read_raw(const char *url, size_t *len) {
     fseek(f, 0, SEEK_END);
     long n = ftell(f);
     fseek(f, 0, SEEK_SET);
+    unsigned char head[CACHE_HEADER];
+    bool checked = n >= CACHE_HEADER && fread(head, 1, sizeof head, f) == sizeof head && !memcmp(head, CACHE_MAGIC, 8);
+    if (checked) n -= CACHE_HEADER;
+    else fseek(f, 0, SEEK_SET);
     char *d = n >= 0 ? malloc(n + 1) : NULL;
+    bool damaged = false;
     if (!d || fread(d, 1, n, f) != (size_t)n) {
         free(d);
         d = NULL;
+    } else if (checked && (le32(head + 8) != (uint32_t)n || le32(head + 12) != (uint32_t)mz_adler32(MZ_ADLER32_INIT, (const unsigned char *)d, n))) {
+        free(d);
+        d = NULL;
+        damaged = true;
     } else {
         d[n] = 0;
         *len = n;
     }
     fclose(f);
+    if (damaged) {
+        host_log("[net] the disk cache's copy of %s is damaged; deleted, downloading it again", url);
+        remove(path);
+    }
     if (d && touch) utime(path, NULL);
     return d;
 }
@@ -341,9 +364,20 @@ static void cache_write(const char *url, const char *data, size_t len) {
         mkdir(dir, 0777);
         if (!(f = fopen(tmp, "wb"))) return;
     }
-    bool ok = fwrite(data, 1, len, f) == len;
+    unsigned char head[CACHE_HEADER];
+    uint32_t sum = (uint32_t)mz_adler32(MZ_ADLER32_INIT, (const unsigned char *)data, len);
+    memcpy(head, CACHE_MAGIC, 8);
+    for (int i = 0; i < 4; i++) head[8 + i] = (unsigned char)(len >> (8 * i)), head[12 + i] = (unsigned char)(sum >> (8 * i));
+    bool ok = fwrite(head, 1, sizeof head, f) == sizeof head && fwrite(data, 1, len, f) == len;
     if (fclose(f) == 0 && ok && rename(tmp, path) == 0) return;
     remove(tmp);
+}
+
+bool net_cache_forget(const char *url) {
+    if (net_is_local(url) || !is_cacheable("GET", url)) return false;
+    char path[600];
+    cache_path(url, path, sizeof path);
+    return remove(path) == 0;
 }
 
 // ---------------------------------------------------------------- curl helpers
@@ -468,6 +502,7 @@ static CURL *sync_easy;
 typedef struct {
     FILE *f;
     bool (*progress)(long long done, long long total, void *ud);
+    void (*data)(const void *p, size_t n, void *ud);
     void *ud;
     long long base;
     bool write_error;
@@ -480,6 +515,7 @@ static size_t dl_write(char *p, size_t size, size_t n, void *ud) {
         d->write_error = true;
         return 0;
     }
+    if (d->data) d->data(p, len, d->ud);
     return len;
 }
 
@@ -489,11 +525,11 @@ static int dl_progress(void *ud, curl_off_t total, curl_off_t now, curl_off_t ut
     return d->progress(d->base + now, total ? d->base + total : 0, d->ud) ? 0 : 1;
 }
 
-bool net_download_file(const char *url, const char *path, bool (*progress)(long long, long long, void *), void *ud,
-                       char *err, size_t errn) {
+bool net_download_file(const char *url, const char *path, bool (*progress)(long long, long long, void *),
+                       void (*data)(const void *, size_t, void *), void *ud, char *err, size_t errn) {
     struct stat st;
     long long have = stat(path, &st) == 0 ? (long long)st.st_size : 0;
-    dl_state d = {.f = fopen(path, have ? "ab" : "wb"), .progress = progress, .ud = ud, .base = have};
+    dl_state d = {.f = fopen(path, have ? "ab" : "wb"), .progress = progress, .data = data, .ud = ud, .base = have};
     if (!d.f) {
         snprintf(err, errn, "can't write %s", path);
         return false;
