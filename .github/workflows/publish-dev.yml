@@ -48,11 +48,12 @@ jobs:
           fi
           [ -n "$run" ] || { echo "no successful CI run found"; exit 1; }
           gh run view "$run" --json headSha,headBranch,displayTitle > run.json
-          # By itself, only main's newest commit: a re-run of an older commit's CI finishing later
+          # By itself, only main's newest CI run: a re-run of an older commit's CI finishing later
           # must not replace a newer dev build (it did, and GitHub refused the older tag: 403).
-          tip=$(gh api "repos/$GH_REPO/commits/main" -q .sha)
-          if [ "$GITHUB_EVENT_NAME" = workflow_run ] && [ "$(jq -r .headSha run.json)" != "$tip" ]; then
-            echo "run $run is for an older commit than main's ($tip): not published"
+          # Not main's newest commit: pushes that change only docs have no CI run (ci.yml).
+          newest=$(gh run list --workflow ci.yml --branch main --event push --limit 1 --json databaseId -q '.[0].databaseId')
+          if [ "$GITHUB_EVENT_NAME" = workflow_run ] && [ "$run" != "$newest" ]; then
+            echo "run $run is older than main's newest CI run ($newest): not published"
             echo "SKIP=1" >> "$GITHUB_ENV"
           fi
           echo "RUN=$run" >> "$GITHUB_ENV"

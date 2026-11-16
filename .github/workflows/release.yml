@@ -57,6 +57,11 @@ jobs:
           sha=$(git rev-parse HEAD)
           git merge-base --is-ancestor "$sha" origin/main || { echo "$sha is not on main"; exit 1; }
           echo "SHA=$sha" >> "$GITHUB_ENV"
+          # CI skips pushes that change only docs (paths-ignore in ci.yml, the same list): any CI run
+          # from the newest commit that changed something else up to this one built the same files.
+          build=$(git log -1 --first-parent --format=%H "$sha" -- . ':(exclude)docs' ':(exclude,glob)**/*.md' ':(exclude)LICENSE')
+          { echo "$build"; git rev-list --first-parent "$build..$sha"; } | jq -R . | jq -sc . > commits.json
+          echo "commits whose CI run builds this one: $(jq -r 'map(.[0:7]) | join(" ")' commits.json)"
           if gh release view "$TAG" >/dev/null 2>&1; then echo "release $TAG exists already"; exit 1; fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
       - name: Wait for a passed CI run of the commit
@@ -65,11 +70,14 @@ jobs:
           # show as neither running nor passed for a moment, so "nothing left" must hold 3 rounds.
           idle=0
           for _ in $(seq 100); do
-            runs=$(gh run list --workflow ci.yml --commit "$SHA" --json databaseId,status,conclusion)
-            run=$(jq -r '[.[] | select(.status == "completed" and .conclusion == "success")][0].databaseId // empty' <<< "$runs")
-            if [ -n "$run" ]; then echo "RUN=$run" >> "$GITHUB_ENV"; exit 0; fi
+            runs=$(gh run list --workflow ci.yml --limit 200 --json databaseId,headSha,status,conclusion |
+              jq --slurpfile c commits.json '[.[] | select(.headSha as $s | $c[0] | index($s))]')
+            run=$(jq -r '[.[] | select(.status == "completed" and .conclusion == "success")][0] // empty | "\(.databaseId) \(.headSha)"' <<< "$runs")
+            if [ -n "$run" ]; then
+              echo "RUN=${run% *}" >> "$GITHUB_ENV"; echo "RUN_SHA=${run#* }" >> "$GITHUB_ENV"; exit 0
+            fi
             if [ "$(jq '[.[] | select(.status != "completed")] | length' <<< "$runs")" -gt 0 ]; then idle=0; else idle=$((idle + 1)); fi
-            [ "$idle" -lt 3 ] || { echo "no passed or running CI run for $SHA"; exit 1; }
+            [ "$idle" -lt 3 ] || { echo "no passed or running CI run for $SHA (or the docs-only commits before it)"; exit 1; }
             sleep 30
           done
           echo "CI didn't finish in time"; exit 1
@@ -77,7 +85,7 @@ jobs:
         with:
           run-id: ${{ env.RUN }}
           github-token: ${{ github.token }}
-          name: pokerogue-${{ env.VERSION }}-${{ env.SHA }}
+          name: pokerogue-${{ env.VERSION }}-${{ env.RUN_SHA }}
           path: dl
       - name: Publish
         run: |

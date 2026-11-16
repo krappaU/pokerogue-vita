@@ -1,11 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Checks every push and pull request: lint, desktop build + test pages, Vita build (.vpk artifact),
 # and the .vpk in the Vita3K emulator. The same scripts run locally (docs/development.md, "Tests").
+# Pushes that change only documentation are skipped: nothing that is built or tested changed. The
+# same list is in release.yml, which then takes the build of the newest commit before them.
 name: CI
 
 on:
   push:
+    paths-ignore: ['docs/**', '**.md', 'LICENSE']
   pull_request:
+    paths-ignore: ['docs/**', '**.md', 'LICENSE']
   workflow_dispatch:
 
 # A newer push cancels a branch's running check, except on main: every commit of main gets a full
