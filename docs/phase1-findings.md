@@ -1755,3 +1755,22 @@ or kept the app from starting. Desktop runtime, each case made by hand:
   now fails with the build's status (the full output is in `<build dir>/build.log`).
 tests/smoke and tests/phaser pass. tests/shaders fails two variant pixel checks on this machine's
 Mesa (Ubuntu 24.04, outside the Docker image) with and without these changes.
+
+### 1.1.4 on the Vita: a 25-minute session (log252/253, 2026-11-16)
+Game build of 2026-11-16 (battle-scene-DoWf36tN, loading-scene-Dd5CI3_R, egg-BDrHFWNL; Phaser 3.90).
+Waves 121-136 from a save (ice cave, then snowy forest, mostly doubles), two returns to the title.
+- All 23 gamefix rules matched the updated game's code.
+- First start after the update: every module compiled again (1.1.4's checksummed `.qbc4` and the
+  new game chunks): 23 modules in 20.6 s, the page's script evaluated after 36.7 s. Once only, like
+  log230/log243 after earlier updates.
+- The start screen took its first press at 35.1 s with no stall line, and the background work
+  (log upload, build check) finished within a second, so the wait was the player's.
+- Memory, against log246 (1.1.2, 18 waves): heap in use peaked at 171 MB (181), decoded audio
+  ended at 16.3 MB (26.8), JS left by collections 47 -> 57 -> 65 MB (47 -> 71). The M4A budget
+  dropped 6 sounds, none of which were played again (0 decoded again), so the replay path is
+  still unexercised on the console. WAV move sounds are now the bulk of decoded audio (~14 MB).
+- Battle JS per frame: median p50 32.8 ms (log246: 30.6, log243: 29.8), within what the biome and
+  doubles change. One minute of a trainer double at wave 122 ran at 12-19 fps (41 draw calls,
+  frames of ~420 ms every second or so); the sampler was off, so its cause is unknown.
+- Errors: only "Texture key already in use: PRAS- Psychic BG" (the game loading a move background
+  twice, also in log246/247) and the game's own "cry/N not found" warnings (also before 1.1.3).
