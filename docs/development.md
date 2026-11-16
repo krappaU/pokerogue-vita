@@ -60,7 +60,9 @@ build that was declined isn't offered again.
 The updater (like VitaShell's VSUPDATER) is built with every dev build.
 
 Publishing: every push to `main` whose CI run passes is published by itself ("Publish dev build"
-runs after CI, with the commit title as the label); pull requests and other branches never are. It
+runs after CI, with the commit title as the label), unless a newer CI run of `main` has started;
+pull requests and other branches never are. A push of only docs has no CI run, so it publishes
+nothing and leaves the dev build as it is. It
 replaces the release with that run's dev .vpk and its `build.json`. By hand (Actions -> "Publish dev
 build" -> Run workflow, with a label and optionally a CI run; empty: the newest successful CI run on
 `main`) it publishes another run: an older one is a rollback. From a shell:
@@ -155,7 +157,9 @@ must match), or run the "Release" workflow
 by hand with that tag name (and optionally a commit of main, full or short hash; default the newest), which tags the
 commit itself (cloud sessions can't push tags). CI runs on main are never cancelled by a newer
 push, so a release can wait for an older commit's run. `.github/workflows/release.yml` waits for the commit's CI run to pass and publishes its
-player .vpk (the file CI ran in Vita3K) as a release with those notes.
+player .vpk (the file CI ran in Vita3K) as a release with those notes. For a commit that changed
+only docs (no CI run of its own), it takes a run from the newest commit before it that changed
+anything else, or from a docs commit after that one: they all built the same files.
 
 In debug builds, TRIANGLE while holding L + R switches the shader variants (gl.c) off and on at
 once, with a notice in the corner and a `[gl] shader variants` line in the log (`variants` on the
@@ -326,7 +330,9 @@ of API requests. Don't test logins in a loop from a server: Cloudflare starts bl
   (`runtime/patches/vitagl-0002-*.patch`).
 
 ## Tests
-CI (`.github/workflows/ci.yml`) runs on every push and pull request; the same scripts run locally:
+CI (`.github/workflows/ci.yml`) runs on every push and pull request, except those that change only
+documentation (`docs/`, `*.md`, `LICENSE`: nothing built or tested; since 2026-11-16, 1.1.4); the
+same scripts run locally:
 
 | script | what it checks |
 |---|---|
