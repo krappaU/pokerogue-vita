@@ -1774,3 +1774,23 @@ Waves 121-136 from a save (ice cave, then snowy forest, mostly doubles), two ret
   frames of ~420 ms every second or so); the sampler was off, so its cause is unknown.
 - Errors: only "Texture key already in use: PRAS- Psychic BG" (the game loading a move background
   twice, also in log246/247) and the game's own "cry/N not found" warnings (also before 1.1.3).
+
+### 1.1.4 over 1 h 42 min of play (log254-256, 2026-11-17)
+The run of log252/253 continued (the console suspended in between): waves 121-184 from a save,
+seven returns to the title, 6108 s of play. No errors of ours, no failed allocation, no stall.
+- It ended at wave 184 (space, a trainer): the game's save check got "500 Internal Server Error"
+  from pokerogue.net ("System savedata verification failed!"), and the game reloaded itself to the
+  title as it does in a browser. The log stops ~10 s later at the title (app closed).
+- JS per frame follows the battle, not the session: mean p50 per wave 23-50 ms, tracking the draw
+  calls (busy doubles and weather: 28-31 draws, 44-50 ms; waves 181-184: 26-32 ms). No step after
+  title returns, so no per-run leak shows here. Mean over the session 34 ms (log246: 31).
+- Memory: heap in use peaked at 217 MB of 256 (the GC keeps 40 MB free; no emergency collection
+  was needed). What grew, waves 123 -> 184:
+  - JS left by collections 57 -> 90 MB (~0.55 MB a wave; the game's parsed move animations, see
+    1.1.3), and collections at wave starts took 2.0 -> 3.1 s as a result.
+  - Decoded audio 15 -> 32 MB: M4A held at 6 MB (89 dropped, 9 decoded again, nothing heard wrong),
+    so the growth is WAV move sounds, now ~26 MB.
+  - Decoded images 0.3 -> 8.7 MB: images drawn into canvases keep two decoded copies (straight
+    and premultiplied alpha) for as long as the image lives (canvas2d.c bitmap_surface).
+- Warnings, all the game's own and in earlier logs: "PRAS- Brave Bird"/"Dark void" have no frame N
+  (138), BattlerTag ... is missing a score, cry/N not found.
