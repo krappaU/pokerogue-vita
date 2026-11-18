@@ -446,16 +446,17 @@ async function run() {
     const fixed = await import("./assets/anims-Pk7rTstC.js"); // a chunk: src/gamefix.c rewrites it
     await fixed.initMoveAnim(1);
     if (globalThis.__pkrMoveAnims !== fixed.moveAnims()) return "the game's map isn't reachable";
-    for (const id of [2, 3, 4, 5, 33, 39, 116, 165]) await fixed.initMoveAnim(id);
-    fixed.moveAnims().set(6, null); // still loading
     // the player's Pokemon knows 1; the enemy knows 2 and, transformed, 3
     const s = {
       getPlayerParty: () => [{ moveset: [{ moveId: 1 }] }],
       getEnemyParty: () => [{ moveset: [{ moveId: 2 }], summonData: { moveset: [{ moveId: 3 }] }, getMoveset() { return this.summonData.moveset; } }],
       getField: () => [],
     };
-    const [none] = __rt.moveAnimGcNow(s); // first seen: none dropped yet
-    eq(none, 0, "dropped on the first pass");
+    __rt.moveAnimGcNow(s); // the first pass starts noting when animations are loaded
+    for (const id of [2, 3, 4, 5, 33, 39, 116, 165]) await fixed.initMoveAnim(id);
+    fixed.moveAnims().set(6, null); // still loading
+    const [none] = __rt.moveAnimGcNow(s); // loaded within the last minute: none dropped yet
+    eq(none, 0, "dropped while young");
     const [dropped, kept] = __rt.moveAnimGcNow(s, 0);
     eq([dropped, kept], [2, 8], "dropped, kept");
     eq([...fixed.moveAnims().keys()].sort((a, b) => a - b), [1, 2, 3, 6, 33, 39, 116, 165], "kept");

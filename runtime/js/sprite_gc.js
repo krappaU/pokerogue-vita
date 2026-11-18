@@ -22,9 +22,9 @@
 // The same passes drop the game's parsed move animations (1.1.5): the game keeps each move's
 // AnimConfig for the session (~0.5 MB of JS a wave late in a run, log256), reachable through
 // src/gamefix.c's "move animations reachable for unloading" (none with gamefix=0). Dropped: those
-// of moves no Pokemon in either party has (moveset, or one copied by Transform or Mimic), seen by
-// an earlier pass, never the four the game copies for moves without their own (Tackle, Tail Whip,
-// Focus Energy) or Struggle, nor one still loading (null). Before it plays a move the game loads
+// of moves no Pokemon in either party has (moveset, or one copied by Transform or Mimic), loaded at
+// least a minute ago (the map's set is wrapped to note when), never the four the game copies for
+// moves without their own (Tackle, Tail Whip, Focus Energy) or Struggle, nor one still loading (null). Before it plays a move the game loads
 // it again when missing (initMoveAnim: a summoned Pokemon's moveset, LoadMoveAnimPhase for called
 // moves, a learned move), from the disk cache; a missing one is simply not drawn (getAnim's ?.).
 // Charge animations stay (read without that check, and few). Switch: __rt.moveAnimGc = false.
@@ -40,7 +40,17 @@
   const PRESSURE_NEW_SPRITES = 20;
   const stats = { passes: 0, unloaded: 0, lastMs: 0, movesDropped: 0 };
   const KEEP_MOVES = [33, 39, 116, 165]; // the game's defaults (useDefaultAnim) and Struggle
-  const movesSeen = new Map(); // move id -> the pass that first saw its animation
+  const movesAdded = new Map(); // move id -> when its animation was loaded (unknown: before the hook)
+  let movesHooked = null;
+  // Notes when the game puts a loaded animation in its map (an own property: the game's calls only).
+  function hookMoves(anims) {
+    movesHooked = anims;
+    const set = Map.prototype.set;
+    Object.defineProperty(anims, "set", {
+      configurable: true, writable: true,
+      value: function (k, v) { if (v !== null) movesAdded.set(k, N.now()); return set.call(this, k, v); },
+    });
+  }
   const added = new Map(); // texture key -> when it was added (unknown: loaded before the hook)
   let hooked = null, lastCheck = 0, lastBiome, lastArena = null, pending = null, lastPass = 0, loadedSincePass = 0;
   const start = N.now();
@@ -158,20 +168,16 @@
   function dropMoveAnims(s, minAge) {
     const anims = g.__pkrMoveAnims;
     if (rt.moveAnimGc === false || !(anims instanceof Map)) return [0, 0];
-    const keep = partyMoves(s), n = stats.passes;
+    if (movesHooked !== anims) hookMoves(anims);
+    const keep = partyMoves(s), now = N.now();
     let dropped = 0;
     for (const [id, a] of anims) {
       if (a === null || keep.has(id)) continue;
-      if (minAge > 0) {
-        const first = movesSeen.get(id);
-        if (first === undefined) { movesSeen.set(id, n); continue; }
-        if (first === n) continue;
-      }
+      if (now - (movesAdded.has(id) ? movesAdded.get(id) : start) < minAge) continue;
       anims.delete(id);
-      movesSeen.delete(id);
+      movesAdded.delete(id);
       dropped++;
     }
-    for (const id of movesSeen.keys()) if (!anims.has(id)) movesSeen.delete(id);
     stats.movesDropped += dropped;
     return [dropped, anims.size];
   }

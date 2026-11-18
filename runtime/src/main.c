@@ -474,11 +474,12 @@ void mem_breakdown(const char *stage) {
              "%d WAVs written out) + %.1f MB streamed music, %d playing", stage, a_pcm / 1048576.0, k_pcm / 1048576.0,
              k_files / 1048576.0, k_dropped, k_redone, k_written, a_mp3 / 1048576.0, a_voices);
     int img_dropped, img_redone;
-    canvas_image_trim_stats(&img_dropped, &img_redone);
+    double img_redone_ms;
+    canvas_image_trim_stats(&img_dropped, &img_redone, &img_redone_ms);
     host_log("[mem] %s: heap in use %.0f MB | JS %.0f MB%s | canvases %.1f MB (%d) | fonts %.1f MB | images %.1f MB "
-             "files + %.1f MB decoded (%d dropped, %d decoded again) | GPU textures %.1f MB (%d), peak %.1f MB",
+             "files + %.1f MB decoded (%d dropped, %d decoded again in %.0f ms) | GPU textures %.1f MB (%d), peak %.1f MB",
              stage, (unsigned)mi.uordblks / 1048576.0, js, js_estimate ? " after the last collection" : "", canv / 1048576.0, n_canv, fonts / 1048576.0,
-             img_enc / 1048576.0, img_dec / 1048576.0, img_dropped, img_redone, tex / 1048576.0, n_tex, tex_peak / 1048576.0);
+             img_enc / 1048576.0, img_dec / 1048576.0, img_dropped, img_redone, img_redone_ms, tex / 1048576.0, n_tex, tex_peak / 1048576.0);
 #ifdef __vita__
     // vitaGL's GPU memory pools (textures, buffers); when they're full it falls back to the heap.
     host_log("[mem] %s: GPU pools free: video %.1f of %.0f MB, RAM %.1f of %.0f MB, contiguous %.1f of %.0f MB, "

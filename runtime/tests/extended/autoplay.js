@@ -78,6 +78,7 @@
       log("wave " + wave + " (" + (b.double ? "double" : "single") + (b.trainer ? ", trainer" : "") + ") at " + secs() + " s" +
         (st.lastWave ? "; wave " + st.lastWave + " took " + took + " s, " + st.turns + " turns" : ""));
       st.lastWave = wave, st.waveAt = now, st.progressAt = now, st.turns = 0, st.lastTurn = b.turn;
+      st.shopPresses = 0; // per wave: a message between the rewards and the party (a reward nobody can take) reset it before
       if (cfg.heal) heal(s, true);
       const target = cfg.targetWave || (st.firstWave + cfg.waves);
       if (wave >= target) return finish("target");
@@ -99,7 +100,6 @@
       return finish("stuck", { mode, handler: h && h.constructor && h.constructor.name, message: messageText(ui).slice(0, 160) });
     }
     if (mode === st.lastMode) st.sameMode++; else st.sameMode = 0, st.lastMode = mode;
-    if (mode !== MODE.MODIFIER_SELECT && mode !== MODE.PARTY) st.shopPresses = 0;
     if (mode !== MODE.PARTY) st.partyPresses = 0;
     if (mode !== MODE.FIGHT) st.fightPresses = 0;
     const h = ui.getHandler && ui.getHandler();

@@ -283,7 +283,7 @@ const char *host_version_string(void);  // "PokeRogue Vita 0.18 (abc1234)"
 // Bytes held by decoded-image objects: compressed files kept, and decoded pixels currently alive.
 void canvas_image_memory(size_t *encoded, size_t *decoded);
 void canvas_trim_images(void);
-void canvas_image_trim_stats(int *dropped, int *redecoded);
+void canvas_image_trim_stats(int *dropped, int *redecoded, double *redecode_ms);
 void canvas_memory(size_t *canvas_bytes, int *canvas_count, size_t *font_bytes);
 
 // Pixel source lookup shared by gl.c (texImage2D) and canvas2d.c (drawImage).

@@ -48,6 +48,7 @@ typedef struct bitmap {
 static size_t mem_encoded, mem_decoded;
 static bitmap *holding; // bitmaps with decoded pixels
 static int images_dropped, images_redecoded;
+static double images_redecode_ms;
 
 static void bitmap_hold(bitmap *b) {
     b->used = host_now_ms();
@@ -82,8 +83,9 @@ static void bitmap_drop_pixels(bitmap *b) {
 static const uint8_t *bitmap_pixels(bitmap *b) {
     if (!b->rgba) {
         int w, h, comp;
+        double t0 = host_now_ms();
         b->rgba = stbi_load_from_memory(b->encoded, (int)b->encoded_len, &w, &h, &comp, 4);
-        if (b->rgba) mem_decoded += (size_t)b->w * b->h * 4, images_redecoded++;
+        if (b->rgba) mem_decoded += (size_t)b->w * b->h * 4, images_redecoded++, images_redecode_ms += host_now_ms() - t0;
     }
     if (b->rgba) bitmap_hold(b);
     return b->rgba;
@@ -318,9 +320,10 @@ void canvas_image_memory(size_t *encoded, size_t *decoded) {
     *decoded = mem_decoded;
 }
 
-void canvas_image_trim_stats(int *dropped, int *redecoded) {
+void canvas_image_trim_stats(int *dropped, int *redecoded, double *redecode_ms) {
     *dropped = images_dropped;
     *redecoded = images_redecoded;
+    *redecode_ms = images_redecode_ms;
 }
 
 
