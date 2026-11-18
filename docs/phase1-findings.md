@@ -1794,3 +1794,38 @@ seven returns to the title, 6108 s of play. No errors of ours, no failed allocat
     and premultiplied alpha) for as long as the image lives (canvas2d.c bitmap_surface).
 - Warnings, all the game's own and in earlier logs: "PRAS- Brave Bird"/"Dark void" have no frame N
   (138), BattlerTag ... is missing a score, cry/N not found.
+
+### Memory over long sessions: move animations, WAV sounds, drawn images (runtime 1.1.5, 2026-11-18)
+From log256 (above). Game build of 2026-11-16; the extended test's offline game (1.12.1.1) on the
+desktop for measurements, GitHub Actions (this environment can't download the offline game).
+- Move animations: the game parses each move's battle-anims JSON into an AnimConfig once
+  (`initMoveAnim`, module map `ur`) and keeps it. A gamefix rule ("move animations reachable for
+  unloading") stores the map in `globalThis.__pkrMoveAnims` at each initMoveAnim call; the sprite
+  passes (new biome, new run, title, memory) drop animations loaded over a minute ago of moves no
+  Pokemon in either party has (moveset, summonData.moveset, getMoveset()). Kept always: Tackle,
+  Tail Whip, Focus Energy (the defaults useDefaultAnim copies) and Struggle, and entries still
+  loading (null). Safe because every path that plays a move loads it first when missing (a summoned
+  Pokemon's moveset through loadAssets, LoadMoveAnimPhase for called moves, a learned move, a
+  mystery encounter's loadCustomMovesForEncounter), and MoveAnim.getAnim reads with `?.` (a missing
+  one isn't drawn). Charge animations (`dr`) are read without that and stay. The first version
+  counted passes ("seen by an earlier pass") and dropped nothing in 15 waves; the map's set is now
+  wrapped to note load times. Extended test: 53 dropped, 36 kept at the biome change of wave 170,
+  no JS errors in the waves after; all six scenarios pass (gamefix=0: no map, nothing dropped).
+- WAV sounds: decoded samples are as big as the files (16-bit at their own rate), so keeping the
+  file saves nothing. WAVs now share the M4A budget (audiokeep, default 10 MB for both, was 6 for
+  M4A): a WAV chosen to drop has its samples written to `<data>/audio-cache/<n>.pcm` on the decode
+  thread (never under the mixer's lock) and is read back there when it plays next, its voice
+  waiting as for an M4A. The folder is emptied at start. tests/smoke checks write, drop and play.
+- Images: one drawn into a canvas kept its straight-alpha pixels and a premultiplied surface for
+  as long as it lived. The surface now replaces the pixels (a later texture upload decodes the file
+  again), and pixels unused for a minute are dropped every perf window (canvas_trim_images) and
+  decoded again when used. tests/smoke checks one copy, the drop and the redraw.
+- Desktop, wave-163 save, the same 15 waves with the savings on and off (scenario `keepall`:
+  audiokeep=10000, move animations kept): JS heap after a final collection 131 vs 139.3 MB;
+  decoded audio 9.9 vs 26.0 MB (231 dropped, 36 brought back, 195 WAVs written); decoded images
+  0.0 MB (1.1.4: 2.2), 66 decoded again in 21 ms in all. On the Vita the JS saving should be larger
+  (log256: ~0.55 MB a wave over six biome changes).
+- The [mem] lines now give images dropped and decoded again (with the time) and the WAVs written.
+- The extended test's bot looped in the party screen at wave 178 in 1.1.4 and 1.1.5 alike (a
+  Lum Berry reward); two bot fixes didn't get past it. Open; a stuck report now shows the party
+  handler's input flags.

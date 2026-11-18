@@ -168,6 +168,15 @@ From the pokerogue-nx fork (Switch/Android, merged our 1.0.6; reviewed 2026-11-0
 - Login and register screens without D-pad navigation (login still needs a tap or SELECT-and-cross
   after the password); the fork's runtime/js/modal-controls.js adds focus navigation. Not ported yet.
 
+Memory over long sessions (log256: 217 of 256 MB in use after 1 h 42 min):
+- Done in 1.1.5 (2026-11-18): unused parsed move animations dropped at new biomes (a gamefix rule
+  exposes the game's map), WAV sounds share the decoded-audio budget (written to the memory card
+  when first dropped), drawn images keep one decoded copy and unused ones are dropped. Desktop, 15
+  waves: JS 131 vs 139 MB, decoded audio 9.9 vs 26 MB. Not yet measured on the console.
+- Still kept: the move animations' textures ("PRAS-", ~3 MB for 86) and charge animations.
+- The extended test's bot stops at wave 178 of the wave-163 save (1.1.4 too): the party screen
+  takes no input after a Lum Berry reward; a stuck report now gives the handler's input flags.
+
 Features and checks:
 - Untested on the console: save import/export and the restart after an import (0.41), QR links (0.40).
 - Login uses the built-in keyboard; Discord/Google sign-in can't work (a QR code explains it).

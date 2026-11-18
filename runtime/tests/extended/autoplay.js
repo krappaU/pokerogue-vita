@@ -101,7 +101,9 @@
     // stuck: no new wave nor turn for stuckSeconds
     if (now - st.progressAt > cfg.stuckSeconds * 1000) {
       const h = ui.getHandler && ui.getHandler();
-      return finish("stuck", { mode, handler: h && h.constructor && h.constructor.name, message: messageText(ui).slice(0, 160) });
+      const flags = {};
+      if (h) for (const k of ["blockInput", "pendingPrompt", "awaitingActionInput", "optionsMode", "partyUiMode", "cursor", "transferMode"]) if (k in h) flags[k] = h[k];
+      return finish("stuck", { mode, handler: h && h.constructor && h.constructor.name, message: messageText(ui).slice(0, 160), flags });
     }
     if (mode === st.lastMode) st.sameMode++;
     else {
