@@ -21,6 +21,7 @@ NAME=${PKR_CONTAINER:-pkr-ext}
 
 # name | snapshot ("" = a fresh save; "double" = the wave-163 run with a second wild Pokemon) |
 # waves | heal (0; 1: at each wave; turn: each turn too) | config.txt lines | minutes allowed | what it covers
+# [| more of the bot's settings, as JS object members]
 SCENARIOS=(
   "fresh||6|1||25|a new save: title, New Game, Classic, starter select, the first waves"
   "wave163|fixtures/run-wave163.json|12|1||45|a late run (12 waves, items, a biome change and its sprite unloading)"
@@ -28,15 +29,19 @@ SCENARIOS=(
   "double|double|4|1||25|double battles (the enemy AI's move choice for two)"
   "nogamefix|fixtures/run-wave163.json|4|1|gamefix=0|25|the game as published: config.txt gamefix=0"
   "gameover|fixtures/run-wave163.json|8|0||30|no healing: a lost battle, the game over, back to the title"
+  # by hand only (not in the default list): wave163 with 1.1.5's memory savings off, to compare with
+  "keepall|fixtures/run-wave163.json|12|1|audiokeep=10000|45|wave163 keeping move animations and decoded sounds (as 1.1.4)|keepMoveAnims:true"
 )
+DEFAULT=(fresh wave163 wave199 double nogamefix gameover)
 want=("$@")
+[[ ${#want[@]} -gt 0 ]] || want=("${DEFAULT[@]}")
 
 mkdir -p "$OUT"
 docker rm -f "$NAME" >/dev/null 2>&1
 ran=()
 for s in "${SCENARIOS[@]}"; do
-  IFS='|' read -r name snap waves heal conf minutes what <<< "$s"
-  if [[ ${#want[@]} -gt 0 && " ${want[*]} " != *" $name "* ]]; then continue; fi
+  IFS='|' read -r name snap waves heal conf minutes what botopts <<< "$s"
+  if [[ " ${want[*]} " != *" $name "* ]]; then continue; fi
   waves=$(( waves * SCALE )); minutes=$(( minutes * SCALE ))
   dir=$OUT/$name
   rm -rf "$dir"; mkdir -p "$dir"
@@ -62,7 +67,7 @@ for s in "${SCENARIOS[@]}"; do
   done
   if [[ $ready = 1 ]]; then
     case $heal in 1) healjs=true ;; turn) healjs='"turn"' ;; *) healjs=false ;; esac
-    printf '%s\n' "eval (globalThis.__botConfig={waves:$waves,heal:$healjs},'cfg')" \
+    printf '%s\n' "eval (globalThis.__botConfig={waves:$waves,heal:$healjs${botopts:+,$botopts}},'cfg')" \
       "evalfile tests/extended/autoplay.js" >> "$dir/control.txt"
     end=$(( SECONDS + minutes * 60 ))
     while (( SECONDS < end )); do

@@ -93,6 +93,15 @@ for name in names:
         d.append(f"- slow frames after the start: {len(slow)}, longest {', '.join(f'{x:.0f}' for x in slow[:5])} ms (desktop timings)")
     if gcs:
         d.append(f"- collections: {len(gcs)}; last `{gcs[-1][:150]}`")
+    if bot and bot.get("jsMB") is not None:
+        d.append(f"- JS heap at the end, after a collection: {bot['jsMB']} MB")
+    audio = [l for l in lines if l.startswith("[mem] running: audio")]
+    if audio:
+        d.append(f"- `{audio[-1][len('[mem] running: '):][:200]}`")
+    if mem:
+        im = re.search(r"images [^|]*", mem[-1])
+        if im:
+            d.append(f"- {im.group(0).strip()}")
     for l in sprites:
         d.append(f"- `{l[:200]}`")
     d.append(f"- gamefix rules applied: {len(fixes)}")

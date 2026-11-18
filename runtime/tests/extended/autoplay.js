@@ -33,7 +33,10 @@
   function finish(reason, extra) {
     if (st.done) return;
     st.done = true;
-    const r = Object.assign({ reason, firstWave: st.firstWave, lastWave: st.lastWave, seconds: +secs(), victory: st.victory, presses: st.presses, waves: st.waves }, extra || {});
+    // what the JS heap holds at the end, after a collection (comparable between runs)
+    let jsMB;
+    try { N.gc(); jsMB = +(N.memoryUsage().malloc_size / 1048576).toFixed(1); } catch (e) { /* older runtime */ }
+    const r = Object.assign({ reason, firstWave: st.firstWave, lastWave: st.lastWave, seconds: +secs(), victory: st.victory, jsMB, presses: st.presses, waves: st.waves }, extra || {});
     log("done " + JSON.stringify(r));
     rt.frameHooks.splice(rt.frameHooks.indexOf(hook), 1);
   }
@@ -208,6 +211,7 @@
     last = now;
     try { tick(); } catch (e) { finish("bot error", { error: String(e) + " " + (e && e.stack) }); }
   }
+  if (cfg.keepMoveAnims) rt.moveAnimGc = false; // scenario keepall: compare with 1.1.4's memory
   log("started " + JSON.stringify(cfg));
   rt.frameHooks.push(hook);
 })(globalThis);
