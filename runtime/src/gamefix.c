@@ -270,6 +270,15 @@ static const fix FIXES[] = {
      "![`natureAttr`,`abilityAttr`,`passiveAttr`].includes(@1)?BigInt(@2??0):@2},"
      "[`gameStats`,`eggs`,`ribbons`],`Attr`,[`natureAttr`,`abilityAttr`,`passiveAttr`])",
      NULL, "parseSystemData", 0},
+    // The game parses each move's animation (battle-anims/<move>.json: AnimConfig frames) once and
+    // keeps it for the session: ~0.5 MB of JS a wave late in a run (log256). js/sprite_gc.js drops
+    // those of moves no Pokemon in either party has at a new biome; the game loads them again
+    // through initMoveAnim before it plays them (a summoned Pokemon's moveset, LoadMoveAnimPhase
+    // for called moves, a learned move), and a missing one isn't drawn rather than failing.
+    {"move animations reachable for unloading",
+     "function initMoveAnim(@1){return new Promise(@2=>{if(@3.has(@1)){",
+     "function initMoveAnim(@1){globalThis.__pkrMoveAnims=@3;return new Promise(@2=>{if(@3.has(@1)){",
+     NULL, "initMoveAnim", 0},
     {"enemy move choice remembers what it asks again",
      "getNextMove(){let @1=this.getMoveQueue();",
      "getNextMove(){return globalThis.__pkrAIChoice(this,()=>this.__pkrNextMove())}__pkrNextMove(){let @1=this.getMoveQueue();",

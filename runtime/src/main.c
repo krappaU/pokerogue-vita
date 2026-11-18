@@ -468,15 +468,17 @@ void mem_breakdown(const char *stage) {
     int a_voices;
     audio_memory(&a_pcm, &a_mp3, &a_voices);
     size_t k_pcm = 0, k_files = 0;
-    int k_dropped = 0, k_redone = 0;
-    audio_memory_kept(&k_pcm, &k_files, &k_dropped, &k_redone);
-    host_log("[mem] %s: audio %.1f MB decoded (M4A %.1f MB, their files %.1f MB; %d dropped, %d decoded again) + "
-             "%.1f MB streamed music, %d playing", stage, a_pcm / 1048576.0, k_pcm / 1048576.0, k_files / 1048576.0,
-             k_dropped, k_redone, a_mp3 / 1048576.0, a_voices);
+    int k_dropped = 0, k_redone = 0, k_written = 0;
+    audio_memory_kept(&k_pcm, &k_files, &k_dropped, &k_redone, &k_written);
+    host_log("[mem] %s: audio %.1f MB decoded (M4A and WAV %.1f MB, M4A files %.1f MB; %d dropped, %d brought back, "
+             "%d WAVs written out) + %.1f MB streamed music, %d playing", stage, a_pcm / 1048576.0, k_pcm / 1048576.0,
+             k_files / 1048576.0, k_dropped, k_redone, k_written, a_mp3 / 1048576.0, a_voices);
+    int img_dropped, img_redone;
+    canvas_image_trim_stats(&img_dropped, &img_redone);
     host_log("[mem] %s: heap in use %.0f MB | JS %.0f MB%s | canvases %.1f MB (%d) | fonts %.1f MB | images %.1f MB "
-             "files + %.1f MB decoded | GPU textures %.1f MB (%d), peak %.1f MB",
+             "files + %.1f MB decoded (%d dropped, %d decoded again) | GPU textures %.1f MB (%d), peak %.1f MB",
              stage, (unsigned)mi.uordblks / 1048576.0, js, js_estimate ? " after the last collection" : "", canv / 1048576.0, n_canv, fonts / 1048576.0,
-             img_enc / 1048576.0, img_dec / 1048576.0, tex / 1048576.0, n_tex, tex_peak / 1048576.0);
+             img_enc / 1048576.0, img_dec / 1048576.0, img_dropped, img_redone, tex / 1048576.0, n_tex, tex_peak / 1048576.0);
 #ifdef __vita__
     // vitaGL's GPU memory pools (textures, buffers); when they're full it falls back to the heap.
     host_log("[mem] %s: GPU pools free: video %.1f of %.0f MB, RAM %.1f of %.0f MB, contiguous %.1f of %.0f MB, "
@@ -535,6 +537,7 @@ static void perf_add(double js_ms) {
     double secs = (host_now_ms() - perf_t0) / 1000.0;
     // A window closes after 300 frames or 10 s, so slow stretches (loading) still get reported.
     if (perf_n < PERF_WINDOW && secs < 10) return;
+    canvas_trim_images();
     if (!host_logging()) {
         double d1, d2;
         int i1, i2;
@@ -904,7 +907,7 @@ static void save_screenshot(const char *path) {
 //                                   saves stay on the console); automatic if <data>/game exists
 //   online=1                        play the live site even if <data>/game exists
 //   log=1                           write log.txt (player builds; debug builds always do)
-//   audiokeep=6                     MB of decoded cries and move sounds kept (audio.c; 0: none)
+//   audiokeep=10                    MB of decoded cries and sounds kept (audio.c; 0: none)
 //   gamefix=0                       the game's code exactly as it is, without gamefix.c's rewrites
 //   fps30=1                         30 fps lock: a frame every other vblank (also on the start screen,
 //                                   and L + R + SQUARE in game)

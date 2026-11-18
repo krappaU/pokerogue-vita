@@ -23,6 +23,7 @@ function eq(a, b, what) {
 }
 const nextFrame = () => new Promise((r) => requestAnimationFrame(r));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const N = globalThis.__native;
 async function within(ms, p, what) {
   let timer;
   const timeout = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(what + " timed out")), ms); });
@@ -441,6 +442,29 @@ async function run() {
     if (p.during <= f.during * 2) return "plain " + p.during + " calls, rewritten " + f.during;
     if (f.outside >= p.outside) return "outside a choice, rewritten " + f.outside + " calls, plain " + p.outside;
   });
+  await check("gamefix: unused move animations dropped and loaded again, the rest kept", async () => {
+    const fixed = await import("./assets/anims-Pk7rTstC.js"); // a chunk: src/gamefix.c rewrites it
+    await fixed.initMoveAnim(1);
+    if (globalThis.__pkrMoveAnims !== fixed.moveAnims()) return "the game's map isn't reachable";
+    for (const id of [2, 3, 4, 5, 33, 39, 116, 165]) await fixed.initMoveAnim(id);
+    fixed.moveAnims().set(6, null); // still loading
+    // the player's Pokemon knows 1; the enemy knows 2 and, transformed, 3
+    const s = {
+      getPlayerParty: () => [{ moveset: [{ moveId: 1 }] }],
+      getEnemyParty: () => [{ moveset: [{ moveId: 2 }], summonData: { moveset: [{ moveId: 3 }] }, getMoveset() { return this.summonData.moveset; } }],
+      getField: () => [],
+    };
+    const [none] = __rt.moveAnimGcNow(s); // first seen: none dropped yet
+    eq(none, 0, "dropped on the first pass");
+    const [dropped, kept] = __rt.moveAnimGcNow(s, 0);
+    eq([dropped, kept], [2, 8], "dropped, kept");
+    eq([...fixed.moveAnims().keys()].sort((a, b) => a - b), [1, 2, 3, 6, 33, 39, 116, 165], "kept");
+    eq(fixed.getAnim(4), 0, "a dropped animation is simply not there");
+    const before = fixed.loaded();
+    await fixed.initMoveAnim(4);
+    eq([fixed.loaded() - before, fixed.getAnim(4)], [1, 3], "loaded again before use");
+    fixed.moveAnims().delete(6);
+  });
   await check("gamefix: starter screen tooltips are replaced, not added, and show the same", async () => {
     const fixed = await import("./assets/tips-Pk7rTstA.js"); // a chunk: src/gamefix.c rewrites it
     const text = await (await fetch("./assets/tips-Pk7rTstA.js")).text();
@@ -633,6 +657,29 @@ async function run() {
     const b = Array.from(d.slice(8, 12)); // half-transparent blue over yellow
     if (Math.abs(b[0] - 127) > 3 || Math.abs(b[2] - 128) > 3 || b[3] !== 255) return "blended pixel " + b;
   });
+  await check("image: one decoded copy when drawn; dropped when unused, decoded again when drawn", async () => {
+    const im = new Image();
+    const loaded = new Promise((res, rej) => { im.onload = res; im.onerror = () => rej(new Error("image error")); });
+    im.src = PNG_3x2;
+    await within(5000, loaded, "image load");
+    const draw = () => {
+      const c = document.createElement("canvas");
+      c.width = 4; c.height = 2;
+      const x = c.getContext("2d");
+      x.drawImage(im, 0, 0);
+      return Array.from(x.getImageData(0, 0, 2, 1).data);
+    };
+    const m0 = N.imageMemory();
+    eq(draw(), [255, 0, 0, 255, 0, 255, 0, 255], "drawn");
+    const m1 = N.imageMemory();
+    eq(m1[1] - m0[1], 0, "decoded bytes after drawing (the drawn copy replaces the decoded one)");
+    N.imageTrim(0);
+    const m2 = N.imageMemory();
+    if (!(m2[1] < m1[1] && m2[2] > m1[2])) return "not dropped: " + m1 + " -> " + m2;
+    eq(draw(), [255, 0, 0, 255, 0, 255, 0, 255], "drawn again");
+    const m3 = N.imageMemory();
+    if (!(m3[3] > m2[3])) return "not decoded again: " + m2 + " -> " + m3;
+  });
   await check("canvas2d: a canvas without pixels (out of memory) draws nothing and doesn't throw", () => {
     // 40000 px wide: plutovg refuses it, as an allocation that failed (log225); the runtime collects
     // garbage and tries once more, then the canvas stays without pixels
@@ -728,6 +775,27 @@ async function run() {
     src.connect(ctx.destination);
     src.start();
     await within(3000, new Promise((res) => { src.onended = res; }), "onended");
+  });
+
+  await check("audio: a WAV over the kept budget is written out, dropped, and played from its file", async () => {
+    const ctx = new AudioContext();
+    const before = N.audioKept(0); // no budget: samples that aren't playing go
+    try {
+      const buf = await within(5000, ctx.decodeAudioData(makeWav()), "decode");
+      let k = before;
+      for (let i = 0; i < 50 && !(k[4] > before[4] && k[2] > before[2]); i++) await sleep(100), (k = N.audioKept());
+      if (!(k[4] > before[4])) return "not written out: " + k;
+      if (!(k[2] > before[2])) return "not dropped: " + k;
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      src.start();
+      await within(3000, new Promise((res) => { src.onended = res; }), "onended");
+      const after = N.audioKept();
+      if (!(after[3] > k[3])) return "not brought back: " + after;
+    } finally {
+      N.audioKept(10 * 1048576);
+    }
   });
 
   // ------------------------------------------------------------ connection lost (last: it leaves its dialog open)

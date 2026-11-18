@@ -18,6 +18,16 @@
 // shows the texture or plays or waits to play an animation of it; nor any sprite of a Pokemon in
 // either party, shown or not (front, back, fusion). Never while a loader is busy.
 // Switch: __rt.spriteGc = false.
+//
+// The same passes drop the game's parsed move animations (1.1.5): the game keeps each move's
+// AnimConfig for the session (~0.5 MB of JS a wave late in a run, log256), reachable through
+// src/gamefix.c's "move animations reachable for unloading" (none with gamefix=0). Dropped: those
+// of moves no Pokemon in either party has (moveset, or one copied by Transform or Mimic), seen by
+// an earlier pass, never the four the game copies for moves without their own (Tackle, Tail Whip,
+// Focus Energy) or Struggle, nor one still loading (null). Before it plays a move the game loads
+// it again when missing (initMoveAnim: a summoned Pokemon's moveset, LoadMoveAnimPhase for called
+// moves, a learned move), from the disk cache; a missing one is simply not drawn (getAnim's ?.).
+// Charge animations stay (read without that check, and few). Switch: __rt.moveAnimGc = false.
 (function (g) {
   "use strict";
   const N = g.__native, rt = g.__rt;
@@ -28,7 +38,9 @@
   const PRESSURE_EVERY_MS = 60000;
   const PRESSURE_SHARE = 0.27; // of the fixed heap: 69 of 256 MB on the Vita
   const PRESSURE_NEW_SPRITES = 20;
-  const stats = { passes: 0, unloaded: 0, lastMs: 0 };
+  const stats = { passes: 0, unloaded: 0, lastMs: 0, movesDropped: 0 };
+  const KEEP_MOVES = [33, 39, 116, 165]; // the game's defaults (useDefaultAnim) and Struggle
+  const movesSeen = new Map(); // move id -> the pass that first saw its animation
   const added = new Map(); // texture key -> when it was added (unknown: loaded before the hook)
   let hooked = null, lastCheck = 0, lastBiome, lastArena = null, pending = null, lastPass = 0, loadedSincePass = 0;
   const start = N.now();
@@ -125,6 +137,45 @@
     }
   }
 
+  // Every move a Pokemon in either party may use without the game loading its animation first.
+  function partyMoves(s) {
+    const ids = new Set(KEEP_MOVES);
+    const add = (set) => { if (Array.isArray(set)) for (const m of set) if (m && m.moveId !== undefined) ids.add(m.moveId); };
+    const parties = [];
+    if (typeof s.getPlayerParty === "function") parties.push(s.getPlayerParty());
+    if (typeof s.getEnemyParty === "function") parties.push(s.getEnemyParty());
+    if (typeof s.getField === "function") parties.push(s.getField());
+    for (const party of parties) for (const p of party || []) {
+      if (!p) continue;
+      add(p.moveset);
+      if (p.summonData) add(p.summonData.moveset);
+      if (typeof p.getMoveset === "function") { try { add(p.getMoveset()); } catch (e) { /* a Pokemon being built */ } }
+    }
+    return ids;
+  }
+
+  // Drops the parsed animations of moves no party Pokemon has. Returns [dropped, kept].
+  function dropMoveAnims(s, minAge) {
+    const anims = g.__pkrMoveAnims;
+    if (rt.moveAnimGc === false || !(anims instanceof Map)) return [0, 0];
+    const keep = partyMoves(s), n = stats.passes;
+    let dropped = 0;
+    for (const [id, a] of anims) {
+      if (a === null || keep.has(id)) continue;
+      if (minAge > 0) {
+        const first = movesSeen.get(id);
+        if (first === undefined) { movesSeen.set(id, n); continue; }
+        if (first === n) continue;
+      }
+      anims.delete(id);
+      movesSeen.delete(id);
+      dropped++;
+    }
+    for (const id of movesSeen.keys()) if (!anims.has(id)) movesSeen.delete(id);
+    stats.movesDropped += dropped;
+    return [dropped, anims.size];
+  }
+
   function loaderBusy(game) {
     for (const sc of game.scene.scenes) {
       const l = sc.sys && sc.sys.load;
@@ -178,13 +229,15 @@
       added.delete(key);
       n++;
     }
+    const [movesDropped, movesKept] = dropMoveAnims(s, minAge);
     const ms = N.now() - t0;
     stats.passes++, stats.unloaded += n, stats.lastMs = ms;
     lastPass = N.now(), loadedSincePass = young;
-    if (n || reason !== "memory") {
+    if (n || movesDropped || reason !== "memory") {
       const [live] = N.jsMemory();
       N.log("[sprites] " + reason + ": unloaded " + n + " of " + total + " Pokemon sprites (" + kept + " in use, " + young +
-        " loaded in the last minute), " + ms.toFixed(0) + " ms; JS left by the last collection " + (live / 1048576).toFixed(0) + " MB");
+        " loaded in the last minute), " + movesDropped + " move animations (" + movesKept + " kept), " + ms.toFixed(0) +
+        " ms; JS left by the last collection " + (live / 1048576).toFixed(0) + " MB");
     }
     return n;
   }
@@ -228,5 +281,6 @@
   rt.spriteGcNow = (reason, minAge) => { const game = rt.renderer && rt.renderer.game; return game ? pass(game, reason || "asked", minAge) : -1; };
   rt.spriteGcInUse = (game, roots) => inUse(game, roots || []); // tests/phaser
   rt.spriteGcUnloadAnim = (am, key) => unloadAnim(am, key); // tests/phaser
+  rt.moveAnimGcNow = (s, minAge) => dropMoveAnims(s, minAge === undefined ? MIN_AGE_MS : minAge); // tests/smoke
   rt.frameHooks.push(() => { try { poll(); } catch (e) { rt.spriteGc = false; N.log("[sprites] stopped: " + e + "\n" + (e && e.stack)); } });
 })(globalThis);

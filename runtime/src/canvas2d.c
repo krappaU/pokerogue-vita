@@ -27,15 +27,43 @@ static JSClassID bitmap_class, canvas_class;
 // A decoded image. After its pixels are uploaded to the GPU the decoded copy is dropped and only
 // the compressed file is kept; the rare canvas drawImage/getImageData of an image decodes it again.
 // This keeps main memory to roughly the size of the PNG files instead of all their pixels.
-typedef struct {
+// Decoded pixels are kept only while used (1.1.5). An image keeps its file; its pixels go to the GPU
+// (texImage2D takes them) or, for an image the game draws into a canvas, become a premultiplied
+// surface. Until 1.1.4 such an image kept both decoded copies for as long as it lived: 0.3 -> 8.7 MB
+// over 1 h 42 min on the Vita (log256). Now the surface replaces the straight copy, and pixels not
+// used for IMAGE_KEEP_MS are dropped (canvas_trim_images, every perf window), decoded again from
+// the file when next drawn or uploaded.
+#define IMAGE_KEEP_MS 60000.0
+
+typedef struct bitmap {
     int w, h;
     uint8_t *encoded;           // the PNG/JPEG file
     size_t encoded_len;
     uint8_t *rgba;              // decoded pixels (straight alpha), or NULL
     plutovg_surface_t *surface; // premultiplied copy for drawImage, created on demand
+    double used;                // when its pixels were last made or read
+    struct bitmap *prev, *next; // in `holding` while it has pixels
 } bitmap;
 
 static size_t mem_encoded, mem_decoded;
+static bitmap *holding; // bitmaps with decoded pixels
+static int images_dropped, images_redecoded;
+
+static void bitmap_hold(bitmap *b) {
+    b->used = host_now_ms();
+    if (b->prev || b->next || holding == b) return;
+    b->next = holding;
+    if (holding) holding->prev = b;
+    holding = b;
+}
+
+static void bitmap_release(bitmap *b) {
+    if (b->rgba || b->surface) return;
+    if (b->prev) b->prev->next = b->next;
+    else if (holding == b) holding = b->next;
+    if (b->next) b->next->prev = b->prev;
+    b->prev = b->next = NULL;
+}
 
 static void bitmap_drop_pixels(bitmap *b) {
     if (b->rgba) {
@@ -48,16 +76,30 @@ static void bitmap_drop_pixels(bitmap *b) {
         mem_decoded -= (size_t)b->w * b->h * 4;
         b->surface = NULL;
     }
+    bitmap_release(b);
 }
 
 static const uint8_t *bitmap_pixels(bitmap *b) {
     if (!b->rgba) {
         int w, h, comp;
         b->rgba = stbi_load_from_memory(b->encoded, (int)b->encoded_len, &w, &h, &comp, 4);
-        if (b->rgba) mem_decoded += (size_t)b->w * b->h * 4;
+        if (b->rgba) mem_decoded += (size_t)b->w * b->h * 4, images_redecoded++;
     }
+    if (b->rgba) bitmap_hold(b);
     return b->rgba;
 }
+
+// Drops the pixels of images not used for keep_ms (the main loop: IMAGE_KEEP_MS, every perf window).
+static void trim_images(double keep_ms) {
+    double now = host_now_ms();
+    for (bitmap *b = holding, *next; b; b = next) {
+        next = b->next;
+        if (now - b->used < keep_ms) continue;
+        bitmap_drop_pixels(b);
+        images_dropped++;
+    }
+}
+void canvas_trim_images(void) { trim_images(IMAGE_KEEP_MS); }
 
 static void bitmap_finalizer(JSRuntime *rt, JSValue v) {
     bitmap *b = JS_GetOpaque(v, bitmap_class);
@@ -76,7 +118,12 @@ static plutovg_surface_t *bitmap_surface(bitmap *b) {
         mem_decoded += (size_t)b->w * b->h * 4;
         plutovg_convert_rgba_to_argb(plutovg_surface_get_data(b->surface), b->rgba, b->w, b->h,
                                      plutovg_surface_get_stride(b->surface));
+        // the surface is what drawImage reads; an upload to the GPU decodes the file again
+        stbi_image_free(b->rgba);
+        mem_decoded -= (size_t)b->w * b->h * 4;
+        b->rgba = NULL;
     }
+    if (b->surface) bitmap_hold(b);
     return b->surface;
 }
 
@@ -107,6 +154,7 @@ static JSValue n_decode_image(JSContext *ctx, JSValueConst this_val, int argc, J
     b->encoded_len = len;
     mem_encoded += len;
     mem_decoded += (size_t)w * h * 4;
+    bitmap_hold(b);
     JSValue v = JS_NewObjectClass(ctx, bitmap_class);
     JS_SetOpaque(v, b);
     JS_DefinePropertyValueStr(ctx, v, "width", JS_NewInt32(ctx, w), JS_PROP_ENUMERABLE);
@@ -228,6 +276,7 @@ static JSValue n_decode_image_poll(JSContext *ctx, JSValueConst this_val, int ar
             j->data = NULL;
             mem_encoded += b->encoded_len;
             mem_decoded += (size_t)b->w * b->h * 4;
+            bitmap_hold(b);
             JSValue v = JS_NewObjectClass(ctx, bitmap_class);
             JS_SetOpaque(v, b);
             JS_DefinePropertyValueStr(ctx, v, "width", JS_NewInt32(ctx, b->w), JS_PROP_ENUMERABLE);
@@ -245,17 +294,33 @@ static JSValue n_decode_image_poll(JSContext *ctx, JSValueConst this_val, int ar
     return arr;
 }
 
-// imageMemory() -> [compressed bytes kept, decoded bytes alive]
+// imageMemory() -> [compressed bytes kept, decoded bytes alive, images whose pixels were dropped,
+// images decoded again]
 static JSValue n_image_memory(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     JSValue a = JS_NewArray(ctx);
     JS_SetPropertyUint32(ctx, a, 0, JS_NewFloat64(ctx, (double)mem_encoded));
     JS_SetPropertyUint32(ctx, a, 1, JS_NewFloat64(ctx, (double)mem_decoded));
+    JS_SetPropertyUint32(ctx, a, 2, JS_NewInt32(ctx, images_dropped));
+    JS_SetPropertyUint32(ctx, a, 3, JS_NewInt32(ctx, images_redecoded));
     return a;
+}
+
+// imageTrim(keepMs): drops the pixels of images not used for keepMs now (tests/smoke)
+static JSValue n_image_trim(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    double ms = 0;
+    if (argc > 0) JS_ToFloat64(ctx, &ms, argv[0]);
+    trim_images(ms);
+    return JS_UNDEFINED;
 }
 
 void canvas_image_memory(size_t *encoded, size_t *decoded) {
     *encoded = mem_encoded;
     *decoded = mem_decoded;
+}
+
+void canvas_image_trim_stats(int *dropped, int *redecoded) {
+    *dropped = images_dropped;
+    *redecoded = images_redecoded;
 }
 
 
@@ -1031,6 +1096,7 @@ const uint8_t *pixels_from_js_ex(JSContext *ctx, JSValueConst obj, int *w, int *
         *h = b->h;
         b->rgba = NULL;
         mem_decoded -= (size_t)b->w * b->h * 4;
+        bitmap_release(b);
         *owned = true;
         return px;
     }
@@ -1109,6 +1175,7 @@ void canvas_register(JSContext *ctx, JSValue native) {
     JS_SetPropertyStr(ctx, native, "decodeImageAsync", JS_NewCFunction(ctx, n_decode_image_async, "decodeImageAsync", 1));
     JS_SetPropertyStr(ctx, native, "decodeImagePoll", JS_NewCFunction(ctx, n_decode_image_poll, "decodeImagePoll", 0));
     JS_SetPropertyStr(ctx, native, "imageMemory", JS_NewCFunction(ctx, n_image_memory, "imageMemory", 0));
+    JS_SetPropertyStr(ctx, native, "imageTrim", JS_NewCFunction(ctx, n_image_trim, "imageTrim", 1));
     JS_SetPropertyStr(ctx, native, "registerFont", JS_NewCFunction(ctx, n_register_font, "registerFont", 5));
     JS_SetPropertyStr(ctx, native, "createCanvas2D", JS_NewCFunction(ctx, n_create_canvas, "createCanvas2D", 2));
     JS_SetPropertyStr(ctx, native, "setCanvasRelease", JS_NewCFunction(ctx, n_set_canvas_release, "setCanvasRelease", 1));
