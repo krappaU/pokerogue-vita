@@ -78,6 +78,7 @@
       log("wave " + wave + " (" + (b.double ? "double" : "single") + (b.trainer ? ", trainer" : "") + ") at " + secs() + " s" +
         (st.lastWave ? "; wave " + st.lastWave + " took " + took + " s, " + st.turns + " turns" : ""));
       st.lastWave = wave, st.waveAt = now, st.progressAt = now, st.turns = 0, st.lastTurn = b.turn;
+      st.modeLog = 0;
       st.shopPresses = 0; // per wave: a message between the rewards and the party (a reward nobody can take) reset it before
       if (cfg.heal) heal(s, true);
       const target = cfg.targetWave || (st.firstWave + cfg.waves);
@@ -99,7 +100,12 @@
       const h = ui.getHandler && ui.getHandler();
       return finish("stuck", { mode, handler: h && h.constructor && h.constructor.name, message: messageText(ui).slice(0, 160) });
     }
-    if (mode === st.lastMode) st.sameMode++; else st.sameMode = 0, st.lastMode = mode;
+    if (mode === st.lastMode) st.sameMode++;
+    else {
+      // screen changes in the log once a wave runs long (what a loop goes through)
+      if (now - st.waveAt > 60000 && (st.modeLog = (st.modeLog || 0) + 1) <= 60) log("mode " + st.lastMode + " -> " + mode + ": " + messageText(ui).slice(0, 60));
+      st.sameMode = 0, st.lastMode = mode;
+    }
     if (mode !== MODE.PARTY) st.partyPresses = 0;
     if (mode !== MODE.FIGHT) st.fightPresses = 0;
     const h = ui.getHandler && ui.getHandler();
@@ -157,7 +163,9 @@
         // a Pokemon that can go (not fainted; not already in battle), then its first option (send
         // out, apply...); the next one when that leads nowhere; back out after a while
         st.partyPresses++;
-        if (st.partyPresses > 40) return press(ui, BTN.CANCEL, mode);
+        // backing out: A then B, B, B, which leaves from the list (B), from a Pokemon's options (B, B)
+        // and from a message waiting for A (a Lum Berry nobody can hold more of: B alone looped there)
+        if (st.partyPresses > 40) return press(ui, st.partyPresses % 4 === 1 ? BTN.ACTION : BTN.CANCEL, mode);
         if (h && h.optionsMode) return press(ui, BTN.ACTION, mode);
         const party = typeof s.getPlayerParty === "function" ? s.getPlayerParty() : [];
         const fainted = (p) => !p || p.hp <= 0 || (typeof p.isFainted === "function" && p.isFainted());
