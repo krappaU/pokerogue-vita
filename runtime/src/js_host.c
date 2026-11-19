@@ -207,7 +207,7 @@ static char *module_normalize(JSContext *ctx, const char *base, const char *name
 #define BYTECODE_SALT "pkr-bytecode-3" // -3: Phaser's chunk with its source (see bytecode_write_flags)
 // gamefix.c's rewrites are in the compiled code: a new set of them (or gamefix=0) must not find code
 // compiled with another. Bump with every change to its FIXES.
-#define GAMEFIX_SALT "gamefix-18"
+#define GAMEFIX_SALT "gamefix-19"
 // .qbc4: each file ends with a checksum of its bytes (BC_MAGIC and their Adler-32). The engine
 // trusts compiled code as it reads it, so a file damaged on the memory card could crash every
 // start; one that doesn't match is deleted and its module compiled again.

@@ -279,6 +279,17 @@ static const fix FIXES[] = {
      "function initMoveAnim(@1){return new Promise(@2=>{if(@3.has(@1)){",
      "function initMoveAnim(@1){globalThis.__pkrMoveAnims=@3;return new Promise(@2=>{if(@3.has(@1)){",
      NULL, "initMoveAnim", 0},
+    // The starter select screen loads the cursor's species and plays its sprite when the load is
+    // done (updateSprite), without cancelling an earlier request. loadAssets first awaits the
+    // species' variant colours, so moving on quickly can finish an earlier species after a later
+    // one, and its sprite then replaces the right one (log258's screenshots: Magnemite's details
+    // with Giratina's sprite; much likelier on the Vita's slower loads). Only the latest request
+    // plays now; without a race the same one plays as before.
+    {"starter sprite from the latest request only",
+     "updateSprite(@1,@2,@3,@4,@5){@1.loadAssets(@2,@3,@4,@5,!0).then(()=>{this.pokemonSprite.play(",
+     "updateSprite(@1,@2,@3,@4,@5){let pkrT=this.__pkrSpriteTicket=(this.__pkrSpriteTicket|0)+1;"
+     "@1.loadAssets(@2,@3,@4,@5,!0).then(()=>{if(this.__pkrSpriteTicket!==pkrT)return;this.pokemonSprite.play(",
+     NULL, "updateSprite", 0},
     {"enemy move choice remembers what it asks again",
      "getNextMove(){let @1=this.getMoveQueue();",
      "getNextMove(){return globalThis.__pkrAIChoice(this,()=>this.__pkrNextMove())}__pkrNextMove(){let @1=this.getMoveQueue();",

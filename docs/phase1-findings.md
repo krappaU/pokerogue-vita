@@ -1829,3 +1829,20 @@ desktop for measurements, GitHub Actions (this environment can't download the of
 - The extended test's bot looped in the party screen at wave 178 in 1.1.4 and 1.1.5 alike (a
   Lum Berry reward); two bot fixes didn't get past it. Open; a stuck report now shows the party
   handler's input flags.
+
+### Starter screen: another species' sprite after moving quickly (runtime 1.1.6, 2026-11-19)
+Reported with log258 (1.1.4) and two screenshots: Magnemite's details with Giratina's sprite,
+Pawniard's with Darkrai's, after moving through the starter list quickly. Nothing in the log (no
+missing animation, no sprite unloading on that screen). The game's own race, on the live build of
+2026-11-16: for a caught species the starter select screen hides the sprite and calls
+`updateSprite`, which awaits `species.loadAssets` and then plays and shows that species' sprite;
+nothing cancels an earlier request. loadAssets queues the atlas, then awaits the species' variant
+colours (a fetch) before waiting for the loader, so when the next species' colours come back first,
+its sprite shows and the earlier species' load then finishes and replaces it. The Vita's slower
+fetches and decodes make that order common. (The Pokedex page cancels its earlier load with
+assetLoadCancelled; this screen doesn't.)
+gamefix "starter sprite from the latest request only": updateSprite takes a ticket, and a load that
+finishes after a later request returns without playing. With loads in order the same sprite ends up
+shown (the earlier one is no longer flashed in between). tests/smoke runs the game's updateSprite
+both ways with loads finishing out of order and in order. Checked with node on the rewritten chunk;
+the desktop build couldn't be run here (Docker Hub refused the base image, 429), CI runs the tests.

@@ -466,6 +466,24 @@ async function run() {
     eq([fixed.loaded() - before, fixed.getAnim(4)], [1, 3], "loaded again before use");
     fixed.moveAnims().delete(6);
   });
+  await check("gamefix: the starter screen shows the latest species' sprite, whatever order loads finish in", async () => {
+    const fixed = await import("./assets/spritepick-Pk7rTstD.js"); // a chunk: src/gamefix.c rewrites it
+    const text = await (await fetch("./assets/spritepick-Pk7rTstD.js")).text();
+    const plain = new Function(text.replace(/export (function|class)/g, "$1") + "\nreturn { makeHandler };")();
+    const run = async (mod, order) => {
+      const shown = [];
+      const sprite = { play(k) { shown.push(k); return this; }, setPipelineData() { return this; }, setVisible() { return this; } };
+      const H = mod.makeHandler(), h = new H(sprite), done = {};
+      const species = (name) => ({ getSpriteKey: () => name, loadAssets: () => new Promise((res) => { done[name] = res; }) });
+      for (const name of ["giratina", "magnemite"]) h.updateSprite(species(name), false, 0, false, 0);
+      for (const name of order) { done[name](); await sleep(0); }
+      return shown.join(",");
+    };
+    eq(await run(plain, ["magnemite", "giratina"]), "magnemite,giratina", "as published, a late earlier load wins");
+    eq(await run(fixed, ["magnemite", "giratina"]), "magnemite", "rewritten, out of order");
+    // in order: the same sprite in the end (the earlier one is no longer flashed in between)
+    eq((await run(fixed, ["giratina", "magnemite"])).split(",").pop(), (await run(plain, ["giratina", "magnemite"])).split(",").pop(), "in order, the same");
+  });
   await check("gamefix: starter screen tooltips are replaced, not added, and show the same", async () => {
     const fixed = await import("./assets/tips-Pk7rTstA.js"); // a chunk: src/gamefix.c rewrites it
     const text = await (await fetch("./assets/tips-Pk7rTstA.js")).text();
