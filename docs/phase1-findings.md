@@ -1861,3 +1861,18 @@ screen included (the owner: the wrong-sprite bug no longer shows). No errors, no
   1.1.4 decoded again too, uncounted).
 Battle JS per frame: median p50 21.5 ms (early waves). Long frames only at start-up and behind the
 loading screen, as before.
+
+### 1.1.6 over half an hour (log263, 2026-11-20)
+A new start (waves 22-49 of the run from log261/262, 32 minutes, 28 waves). No errors, no failed
+allocation, start screen answered after 1.2 s; the audio cache folder emptied at start (145 files).
+- Memory flat: JS left by collections 47 -> 59 -> 59 MB (log246, 1.1.2: +22 MB in 18 waves); heap in
+  use peaked at 152 MB; decoded audio held at 10.0 MB (208 dropped, 43 brought back, 180 WAVs
+  written); decoded images at most 0.4 MB (193 decoded again in 691 ms over the session).
+- Move animations dropped at each of the six biome changes (11-27 each, 30-39 kept); no hitch from
+  parsing them again (one "[stuck]" in animation parsing, at start-up, as before).
+- Battle JS per frame: median p50 25.3 ms. Slow frames only at start-up and the session load.
+- 112 warnings "Texture "PRAS- Mud Shot" has no frame "1"" (1.1.4 logs: Brave Bird 105, Dark void,
+  Wish): the game makes each move animation's graphic sprite with frame 1 (addFieldSprite(0, 0,
+  graphic, 1)) before setting the frame it draws, and these graphics are one 96x96 frame (checked
+  the PNGs; Mud Shot's animation uses frame 0 only). Phaser warns and uses the base frame; the
+  same in a browser. Harmless; the count follows which moves are used.
