@@ -1846,3 +1846,18 @@ finishes after a later request returns without playing. With loads in order the 
 shown (the earlier one is no longer flashed in between). tests/smoke runs the game's updateSprite
 both ways with loads finishing out of order and in order. Checked with node on the rewritten chunk;
 the desktop build couldn't be run here (Docker Hub refused the base image, 429), CI runs the tests.
+
+### 1.1.6 on the Vita: first session (log261, 2026-11-19)
+Game build of 2026-11-19 (battle-scene-Bssq5EFj, loading-scene-Cc7TO1w9, egg-NfoxcPzD): all 25
+gamefix rules matched; the first start compiled every module again (23 in 23.4 s, the page's script
+evaluated after 39 s). A new run to wave 21 (~10 min) and two returns to the title, the starter
+screen included (the owner: the wrong-sprite bug no longer shows). No errors, no failed allocation.
+1.1.5's memory savings on the console for the first time:
+- move animations dropped by the sprite passes: 4 (34 kept) and 18 (32 kept) at biome changes, 23
+  (9 kept) at the title; nothing failed to animate afterwards;
+- decoded audio held at 9.9 MB (152 dropped, 8 brought back, 136 WAVs written to the card);
+- decoded images 0.0 MB at the end (log258, 1.1.4: 13.5 MB after a long run), 110 decoded again in
+  253 ms in all (most of them images uploaded or drawn after their pixels went elsewhere, which
+  1.1.4 decoded again too, uncounted).
+Battle JS per frame: median p50 21.5 ms (early waves). Long frames only at start-up and behind the
+loading screen, as before.
